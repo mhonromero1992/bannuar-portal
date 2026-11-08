@@ -105,6 +105,10 @@ sign-in is off, and guards have no company email.
   metadata directly and claim the record. Make `handle_new_user` accept an employee activation
   only with a one-time ticket that the Edge Function writes to a service-role-only table. Also
   rate-limit and log attempts per employee number and per IP.
+- **Demo logins already exist:** `supabase/demo-employee-logins.sql` makes app logins for DEMO-0001
+  (detachment commander) and DEMO-0002 (guard), password `password`, with login emails in the
+  format above. Keep the app's format and that script's `v_domain` the same. If you add the
+  activation ticket, make that script write one too, so the demo keeps working.
 - **Sign-in:** the guard enters employee number and password. The app turns the number into the
   login email and calls `signInWithPassword`, then `rpc('my_access')`. That returns `roles`,
   `must_change_password` and `employee {id, employee_no, full_name, position, status, site_id}`. If

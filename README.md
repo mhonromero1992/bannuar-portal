@@ -61,6 +61,9 @@ The project's sign-in settings, as read on 8 November 2026: email sign-in on, si
    For showing the portal, `supabase/demo-login.sql` makes a demo super admin
    (`bannuar@ibits.digital`, password `password`, already confirmed). Delete it before real records
    go in: `delete from auth.users where email = 'bannuar@ibits.digital';`
+   For the employee app, `supabase/demo-employee-logins.sql` (after the demo data) gives two demo
+   employees an app login, password `password`: DEMO-0001, a detachment commander, and DEMO-0002, a
+   guard. `remove-demo.sql` deletes them with the demo data.
 
 **Checked against the live project on 8 November 2026** (read-only): the schema is installed (open
 posts, the certificate and invitation checks answer; the employees table refuses public reads; all
