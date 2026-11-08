@@ -58,6 +58,9 @@ The project's sign-in settings, as read on 8 November 2026: email sign-in on, si
    nobody can sign up without one. The same confirmation step applies to them.
 5. Optional: `supabase/seed-demo.sql` fills an empty project with clearly marked demo records to
    try every screen; `supabase/remove-demo.sql` takes them out.
+   For showing the portal, `supabase/demo-login.sql` makes a demo super admin
+   (`bannuar@ibits.digital`, password `password`, already confirmed). Delete it before real records
+   go in: `delete from auth.users where email = 'bannuar@ibits.digital';`
 
 **Checked against the live project on 8 November 2026** (read-only): the schema is installed (open
 posts, the certificate and invitation checks answer; the employees table refuses public reads; all
