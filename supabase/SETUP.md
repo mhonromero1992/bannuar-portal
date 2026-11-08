@@ -86,6 +86,59 @@ select cron.schedule(
 Each employee with a login is reminded 60, 30, 14, 7 and 1 days before, on the day, and the day
 after a document expires.
 
+## 8. The employee app
+
+The app ([bannuar-app](https://github.com/mhonromero1992/bannuar-app)) needs the latest `schema.sql`
+and two Edge Functions from [`functions/`](functions/README.md).
+
+**a. Run the schema again.** SQL Editor → paste the whole new [`schema.sql`](schema.sql) → Run. It
+adds the activation tickets and attempt log, `begin_employee_activation`, `register_device_token`
+and the rule that an employee login needs a one-time ticket; it closes `check_employee_activation`
+to the public API (only the Edge Function may call it, with limits). Nothing is deleted. Check, in
+the SQL Editor:
+
+```sql
+select public.begin_employee_activation('NO-SUCH-NUMBER', '1990-01-01', '09170000000', null);
+-- {"status": "no_match"}
+```
+
+**b. Deploy the two functions** with the [Supabase CLI](https://supabase.com/docs/guides/cli), from
+this repository's folder:
+
+```bash
+supabase login
+supabase functions deploy activate-employee --no-verify-jwt --project-ref bcynizcgdgqznlxuzwjx
+supabase functions deploy send-push --no-verify-jwt --project-ref bcynizcgdgqznlxuzwjx
+```
+
+`--no-verify-jwt`: the app calls `activate-employee` before anyone is signed in (the database limits
+and logs every try instead), and `send-push` checks its own secret header.
+
+**c. Set the secrets** (Edge Functions → Secrets, or the CLI). `SUPABASE_URL` and the service role
+key are already there.
+
+| Secret | Value |
+|---|---|
+| `PUSH_WEBHOOK_SECRET` | a long random value, for example from `openssl rand -hex 32`; the webhook sends it |
+| `FCM_SERVICE_ACCOUNT` | the whole JSON key from Firebase console → Project settings → Service accounts → Generate new private key. Until it is set, `send-push` answers "not configured" and the app still shows notifications live while it is open |
+| `EMPLOYEE_LOGIN_DOMAIN` | optional; default `employees.bannuar.invalid`. Change it only together with the app's `.env`, before the first guard activates |
+
+**d. Add the webhook** that sends each new notification to the phones: Database → Webhooks → Create
+a new hook. Name `send-push`; table `public.notifications`; events: Insert; type: Supabase Edge
+Functions (or HTTP Request) → `send-push` (`https://bcynizcgdgqznlxuzwjx.supabase.co/functions/v1/send-push`),
+method POST, timeout 5000 ms; HTTP header `x-webhook-secret` with the `PUSH_WEBHOOK_SECRET` value.
+
+**e. Commanders.** The app shows "My post" to everyone operations names on a post (Posts and clients
+→ a post → commanders); the database lets them see that post's guards and endorse their leave.
+
+Activation attempts (employee number, IP, result) are kept 30 days for the limits: 5 wrong tries per
+employee number in 30 minutes, 20 per IP in an hour. They and the tickets are readable only with the
+service role or in the SQL Editor:
+
+```sql
+select occurred_at, employee_no, ip, result from public.activation_attempts order by occurred_at desc limit 50;
+```
+
 ## What is in the database
 
 | Area | Tables |
@@ -95,6 +148,7 @@ after a document expires.
 | Payroll | `payroll_periods` (cutoffs), `payslips`, `payroll_concerns` |
 | Requests | `leave_types`, `leave_credits`, `leave_requests`, `coe_requests`, `certificates`, `profile_change_requests` |
 | Communication | `announcements`, `announcement_receipts`, `notifications`, `device_tokens` |
+| App activation | `activation_tickets`, `activation_attempts` (service role only) |
 | Website | `job_openings`, `job_applications`, `inquiries` |
 | Access | `profiles`, `user_roles`, `staff_invitations`, `audit_log` |
 
@@ -140,7 +194,12 @@ pay that does not equal gross minus deductions is reported as a warning, not cha
 
 `schema.sql` was run against Postgres 16 with stand-ins for Supabase's `auth` and `storage`
 schemas and its `anon` / `authenticated` / `authenticator` roles, connecting the way the Supabase
-API does. 112 checks passed: sign-up rules, who sees which rows for every role, payroll import and
-publishing, the leave and COE flows, certificate verification, announcements, website forms,
-storage folders, admin tools, and running the file twice and over existing data. It has not yet
-been run inside a real Supabase project.
+API does. 143 checks passed: sign-up rules, employee activation through one-time tickets (rate
+limits per employee number and per IP, the facts removed from the login's metadata), who sees which
+rows for every role, payroll import and publishing, the leave and COE flows, certificate
+verification, announcements, website forms, storage folders, admin tools, push devices, and running
+the file again over existing data. Upgrading a database built with the previous `schema.sql` was
+tested too. It has not yet been run inside a real Supabase project.
+
+The Edge Functions have their own tests (Deno, with a mocked admin client): `deno task test` in
+`supabase/functions` (22 passed).

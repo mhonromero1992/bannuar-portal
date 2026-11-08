@@ -15,6 +15,8 @@
 --                            requests, check a certificate code
 --   authenticated            staff in the portal (by role) and employees in the app
 --                            (their own records only); row level security on every table
+--   service role             the Edge Functions in supabase/functions: employee activation
+--                            (activate-employee) and push notifications (send-push)
 -- =====================================================================================
 
 set client_min_messages = warning;

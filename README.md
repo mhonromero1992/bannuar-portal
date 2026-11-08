@@ -107,10 +107,17 @@ which shows whether it is genuine or withdrawn. A withdrawn certificate says so 
 ## Tests
 
 **Database** (`supabase/tests/run-tests.sh`, against Postgres 16 with stand-ins for Supabase's
-`auth` and `storage` schemas, connecting the way the Supabase API does): 112 checks of sign-up,
-row level security for every role, payroll import and publishing, the leave and COE flows,
-certificate verification, announcements, website forms, storage folders and admin tools, plus
-running `schema.sql` twice and over existing data. **112 passed.**
+`auth` and `storage` schemas, connecting the way the Supabase API does): 143 checks of sign-up,
+employee activation (one-time tickets, rate limits, nothing personal left in the login), row level
+security for every role, payroll import and publishing, the leave and COE flows, certificate
+verification, announcements, website forms, storage folders, admin tools and push devices, plus
+running `schema.sql` again over existing data. **143 passed.**
+
+**Edge Functions** (`deno task test` in `supabase/functions`): `activate-employee` and `send-push`
+against a mocked admin client and a mocked Google API: every answer of the activation check, Auth's
+errors, input checks, the IP used for the limits, logs without personal data; the webhook secret,
+the FCM message (an RS256 sign-in checked with its key), push text without amounts, tokens Google
+drops. **22 passed.**
 
 **Portal** (`npm run test:e2e`): builds the portal, serves it, and drives it in Chromium against a
 mocked Supabase API: sign-in (wrong and right password, return to the page asked for), all 17
@@ -122,7 +129,8 @@ and a bad row, publishing a cutoff, publishing an announcement to a post, hiring
 inviting staff, deploying a floating guard, setting up an account with an invitation code, the
 phone menu and sign-out. Every one of the database requests the portal made is then checked
 against the real schema exported from Postgres (`tests/schema-snapshot.json`): tables, views,
-columns, embedded relations, filters, functions and arguments. The test build is pointed at the
+columns, embedded relations (an embed PostgREST would find ambiguous fails the check), filters,
+functions and arguments. The test build is pointed at the
 mock and every real Supabase host is cut, so the tests never touch the live project. **72 passed,
 0 console errors.**
 
@@ -130,10 +138,16 @@ mock and every real Supabase host is cut, so the tests never touch the live proj
 after the first admin signs in, click through each screen once before rollout. Running PostgREST
 locally for a fully live test was not possible on the build machine.
 
-## Next phase: the employee app
+## The employee app
 
-The database already holds what the React Native app needs: employee activation by employee
-number, birthday and mobile (`check_employee_activation`; an Edge Function will create the login),
-payslips, leave filing and balances, COE requests and downloads, announcements with
-acknowledgment, contact detail changes, payroll concerns, document renewals from the phone,
-notifications and device tokens for push.
+[bannuar-app](https://github.com/mhonromero1992/bannuar-app) (React Native) reads and writes this
+database for the guards: activation and sign-in with the employee number, payslips, leave,
+certificates of employment, announcements with acknowledgment, the 201 file and document renewals,
+detail changes, payroll concerns, notifications and push, and the commander's leave endorsements.
+Its two Edge Functions live here in [`supabase/functions`](supabase/functions/README.md); set-up
+steps in [`supabase/SETUP.md`](supabase/SETUP.md), step 8.
+
+Employee activation: the `activate-employee` function checks the employee number, birthdate and
+mobile number with limits per employee number and per IP, then creates the login; the database
+accepts it only with the one-time ticket the check issued, so knowing the three facts is not enough
+to claim a record through the public sign-up.
