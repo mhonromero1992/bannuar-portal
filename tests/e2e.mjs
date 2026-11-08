@@ -409,6 +409,22 @@ function splitTop(s) {
   if (cur) out.push(cur);
   return out.map((x) => x.trim()).filter(Boolean);
 }
+/** The relationships PostgREST sees between two tables: foreign keys either way, and many-to-many
+ *  through a junction table whose primary key holds both foreign keys (PostgREST's addM2MRels). */
+function relationships(a, b) {
+  const fks = schema.fks ?? [];
+  const direct = fks.filter((f) => (f.from === a && f.to === b) || (f.from === b && f.to === a)).map((f) => f.name);
+  const viaJunction = [];
+  for (const [j, pk] of Object.entries(schema.pks ?? {})) {
+    if (j === a || j === b) continue;
+    const toA = fks.filter((f) => f.from === j && f.to === a);
+    const toB = fks.filter((f) => f.from === j && f.to === b);
+    for (const fa of toA) for (const fb of toB) {
+      if (fa !== fb && [...(fa.columns ?? []), ...(fb.columns ?? [])].every((c) => pk.includes(c))) viaJunction.push(j);
+    }
+  }
+  return [...direct, ...new Set(viaJunction)];
+}
 function checkSelect(table, select, where) {
   if (!cols[table]) return problems.add(`${where}: no table or view "${table}"`);
   for (const item of splitTop(select)) {
@@ -423,6 +439,11 @@ function checkSelect(table, select, where) {
       const linked = schema.fks.some((f) => (f.from === `${table}` && f.to === `${name}`) || (f.from === `${name}` && f.to === `${table}`) || (f.from === `public.${table}` && f.to === `public.${name}`));
       const viaView = !schema.fks.some((f) => f.from === table || f.to === table);
       if (!linked && !viaView) problems.add(`${where}: no foreign key between ${table} and ${name}`);
+      // without a foreign key name, PostgREST refuses an embed with more than one path (PGRST201)
+      if (!hint || hint === 'inner' || hint === 'left') {
+        const paths = relationships(table, name);
+        if (paths.length > 1) problems.add(`${where}: ${table} and ${name} are linked ${paths.length} ways (${paths.join(', ')}); name one, e.g. ${name}!${paths[0]}`);
+      }
       checkSelect(name, inner, `${where} > ${name}`);
     } else if (name !== '*' && !cols[table].includes(name)) problems.add(`${where}: no column ${table}.${name}`);
   }
@@ -468,10 +489,15 @@ if (failures.length) {
 }
 
 /* Refresh tests/schema-snapshot.json after changing supabase/schema.sql, from a scratch database where
-   supabase/tests/supabase-stubs.sql and schema.sql ran:
+   supabase/tests/supabase-stubs.sql and schema.sql ran (columns, foreign keys with their columns,
+   functions and arguments, primary keys, storage buckets):
    psql -d bannuar_test -tA -c "select json_build_object('columns', (select json_object_agg(t, cols) from (select table_name t,
    json_agg(column_name order by column_name) cols from information_schema.columns where table_schema='public' group by table_name) x),
-   'fks', (select json_agg(json_build_object('name', conname, 'from', conrelid::regclass::text, 'to', confrelid::regclass::text))
+   'fks', (select json_agg(json_build_object('name', conname, 'from', conrelid::regclass::text, 'to', confrelid::regclass::text,
+     'columns', (select json_agg(a.attname order by k.n) from unnest(conkey) with ordinality k(attnum, n) join pg_attribute a on a.attrelid = conrelid and a.attnum = k.attnum)))
    from pg_constraint where contype='f' and connamespace='public'::regnamespace), 'functions', (select json_object_agg(proname,
    json_build_object('args', coalesce(proargnames[1:pronargs], '{}'), 'defaults', pronargdefaults)) from pg_proc
-   where pronamespace='public'::regnamespace))" > tests/schema-snapshot.json */
+   where pronamespace='public'::regnamespace),
+   'pks', (select json_object_agg(conrelid::regclass::text, (select json_agg(a.attname order by a.attnum) from pg_attribute a where a.attrelid = conrelid and a.attnum = any (conkey)))
+   from pg_constraint where contype='p' and connamespace='public'::regnamespace),
+   'buckets', (select json_agg(id order by id) from storage.buckets))" > tests/schema-snapshot.json */
