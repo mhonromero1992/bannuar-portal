@@ -115,13 +115,13 @@ function DeployPicker({ siteId, onDone }: { siteId: string; onDone: () => void }
   const list = useQuery({
     queryKey: ['deployable', q],
     queryFn: async () => {
-      let req = supabase.from('employees').select('id,employee_no,first_name,middle_name,last_name,suffix,status,site:sites(name)').in('status', ['active', 'floating']).eq('is_field', true).neq('site_id', siteId).order('status', { ascending: false }).order('last_name').limit(50);
+      let req = supabase.from('employees').select('id,employee_no,first_name,middle_name,last_name,suffix,status,site:sites!employees_site_id_fkey(name)').in('status', ['active', 'floating']).eq('is_field', true).neq('site_id', siteId).order('status', { ascending: false }).order('last_name').limit(50);
       const s = safeSearch(q);
       if (s) req = req.or(`employee_no.ilike.%${s}%,last_name.ilike.%${s}%,first_name.ilike.%${s}%`);
       const { data, error } = await req;
       if (error) throw error;
       // employees with no post are not matched by neq: fetch the floating ones separately
-      let floatReq = supabase.from('employees').select('id,employee_no,first_name,middle_name,last_name,suffix,status,site:sites(name)').is('site_id', null).in('status', ['active', 'floating']).eq('is_field', true).order('last_name').limit(50);
+      let floatReq = supabase.from('employees').select('id,employee_no,first_name,middle_name,last_name,suffix,status,site:sites!employees_site_id_fkey(name)').is('site_id', null).in('status', ['active', 'floating']).eq('is_field', true).order('last_name').limit(50);
       if (s) floatReq = floatReq.or(`employee_no.ilike.%${s}%,last_name.ilike.%${s}%,first_name.ilike.%${s}%`);
       const floating = await floatReq;
       if (floating.error) throw floating.error;

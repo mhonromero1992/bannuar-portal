@@ -35,7 +35,7 @@ export default function Employees() {
     queryFn: async () => {
       let req = supabase
         .from('employees')
-        .select('id,employee_no,first_name,middle_name,last_name,suffix,position,status,date_hired,floating_since,user_id,site:sites(name)', { count: 'exact' })
+        .select('id,employee_no,first_name,middle_name,last_name,suffix,position,status,date_hired,floating_since,user_id,site:sites!employees_site_id_fkey(name)', { count: 'exact' })
         .order('last_name')
         .order('first_name')
         .range(page * PAGE, page * PAGE + PAGE - 1);

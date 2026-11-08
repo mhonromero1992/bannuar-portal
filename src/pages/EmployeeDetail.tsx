@@ -21,7 +21,7 @@ export default function EmployeeDetail() {
   const q = useQuery({
     queryKey: ['employee', id],
     queryFn: async () => {
-      const { data, error } = await supabase.from('employees').select('*, site:sites(id,name,city), area:areas(id,name)').eq('id', id).single();
+      const { data, error } = await supabase.from('employees').select('*, site:sites!employees_site_id_fkey(id,name,city), area:areas(id,name)').eq('id', id).single();
       if (error) throw error;
       return data as EmployeeRow & { site: { id: string; name: string; city: string | null } | null; area: { id: string; name: string } | null };
     },
