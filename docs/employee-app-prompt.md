@@ -181,8 +181,11 @@ Every list and detail screen comes from the schema. RLS already limits an employ
      Read `decide_leave_request` and `supervises()` first.
 10. **Account:** change password, the privacy notice (website `/privacy`), app version, sign out.
 
-PostgREST needs the foreign key name wherever a table has two links to `employees`, e.g.
-`employees!leave_requests_employee_id_fkey`.
+PostgREST refuses an embed when two tables are linked more than one way, so name the foreign key:
+`sites!employees_site_id_fkey(...)` from `employees` (`site_supervisors` links them too),
+`employees!leave_requests_employee_id_fkey`, `certificates!coe_requests_certificate_fk`. The
+portal's `tests/e2e.mjs` counts the links the way PostgREST does; run the same check on the app's
+requests.
 
 ## Database changes
 

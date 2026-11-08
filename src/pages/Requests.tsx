@@ -110,7 +110,7 @@ function LeaveDecision({ row, approve, onDone }: { row: Record<string, unknown>;
     queryKey: ['relievers', emp.site_id],
     enabled: approve,
     queryFn: async () => {
-      let req = supabase.from('employees').select('id,first_name,last_name,status,site:sites(name)').in('status', ['active', 'floating']).eq('is_field', true).neq('id', emp.id).order('last_name').limit(300);
+      let req = supabase.from('employees').select('id,first_name,last_name,status,site:sites!employees_site_id_fkey(name)').in('status', ['active', 'floating']).eq('is_field', true).neq('id', emp.id).order('last_name').limit(300);
       if (emp.site_id) req = req.or(`site_id.eq.${emp.site_id},status.eq.floating`);
       const { data, error } = await req;
       if (error) throw error;

@@ -396,7 +396,24 @@ check('the test build talked only to the mock, never to the live project', realH
 console.log('\nRequests against the schema');
 const cols = schema.columns;
 const fkNames = new Set(schema.fks.map((f) => f.name));
+const pks = schema.pks;
 const problems = new Set();
+/** The links PostgREST sees between two tables: each foreign key either way, and every junction table
+ *  whose primary key holds a foreign key to each side (many-to-many). An embed must resolve to one. */
+function links(from, to) {
+  const out = [];
+  for (const f of schema.fks) {
+    if (f.from === from && f.to === to) out.push({ kind: 'many-to-one', names: [f.name], cols: f.cols });
+    if (f.from === to && f.to === from) out.push({ kind: 'one-to-many', names: [f.name], cols: f.cols });
+  }
+  for (const a of schema.fks) for (const b of schema.fks) {
+    if (from === to || a.from !== b.from || a.name === b.name || a.to !== from || b.to !== to) continue;
+    const pk = pks[a.from] ?? [];
+    if ([...a.cols, ...b.cols].every((c) => pk.includes(c))) out.push({ kind: `many-to-many through ${a.from}`, names: [a.name, b.name], cols: [], junction: a.from });
+  }
+  return out;
+}
+const hintMatches = (link, hint) => link.names.includes(hint) || (link.cols.length === 1 && link.cols[0] === hint) || link.junction === hint;
 function splitTop(s) {
   const out = [];
   let depth = 0;
@@ -418,11 +435,18 @@ function checkSelect(table, select, where) {
     const [, , name, hint, , inner] = m;
     if (inner !== undefined) {
       if (inner.trim() === 'count') { if (!cols[name]) problems.add(`${where}: no table "${name}" to count`); continue; }
-      if (hint && hint !== 'inner' && hint !== 'left' && !fkNames.has(hint)) problems.add(`${where}: no foreign key "${hint}"`);
+      const fk = hint === 'inner' || hint === 'left' ? undefined : hint;
       if (!cols[name]) { problems.add(`${where}: no table "${name}" to embed`); continue; }
-      const linked = schema.fks.some((f) => (f.from === `${table}` && f.to === `${name}`) || (f.from === `${name}` && f.to === `${table}`) || (f.from === `public.${table}` && f.to === `public.${name}`));
-      const viaView = !schema.fks.some((f) => f.from === table || f.to === table);
-      if (!linked && !viaView) problems.add(`${where}: no foreign key between ${table} and ${name}`);
+      if (!pks[table] || !pks[name]) {
+        // a view: PostgREST follows the foreign keys of the tables underneath
+        if (fk && !fkNames.has(fk)) problems.add(`${where}: no foreign key "${fk}"`);
+      } else {
+        const all = links(table, name);
+        const chosen = fk ? all.filter((l) => hintMatches(l, fk)) : all;
+        if (all.length === 0) problems.add(`${where}: no foreign key between ${table} and ${name}`);
+        else if (chosen.length === 0) problems.add(`${where}: "${fk}" is none of the links between ${table} and ${name}`);
+        else if (chosen.length > 1) problems.add(`${where}: ${table} and ${name} are linked ${chosen.length} ways (${chosen.map((l) => `${l.names.join(' + ')}, ${l.kind}`).join('; ')}), so PostgREST refuses the embed; name one, e.g. ${name}!${chosen[0].names[0]}(...)`);
+      }
       checkSelect(name, inner, `${where} > ${name}`);
     } else if (name !== '*' && !cols[table].includes(name)) problems.add(`${where}: no column ${table}.${name}`);
   }
@@ -467,11 +491,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-/* Refresh tests/schema-snapshot.json after changing supabase/schema.sql, from a scratch database where
-   supabase/tests/supabase-stubs.sql and schema.sql ran:
-   psql -d bannuar_test -tA -c "select json_build_object('columns', (select json_object_agg(t, cols) from (select table_name t,
-   json_agg(column_name order by column_name) cols from information_schema.columns where table_schema='public' group by table_name) x),
-   'fks', (select json_agg(json_build_object('name', conname, 'from', conrelid::regclass::text, 'to', confrelid::regclass::text))
-   from pg_constraint where contype='f' and connamespace='public'::regnamespace), 'functions', (select json_object_agg(proname,
-   json_build_object('args', coalesce(proargnames[1:pronargs], '{}'), 'defaults', pronargdefaults)) from pg_proc
-   where pronamespace='public'::regnamespace))" > tests/schema-snapshot.json */
+/* Refresh tests/schema-snapshot.json after changing supabase/schema.sql: see tests/schema-snapshot.sql. */

@@ -125,7 +125,8 @@ and a bad row, publishing a cutoff, publishing an announcement to a post, hiring
 inviting staff, deploying a floating guard, setting up an account with an invitation code, the
 phone menu and sign-out. Every one of the database requests the portal made is then checked
 against the real schema exported from Postgres (`tests/schema-snapshot.json`): tables, views,
-columns, embedded relations, filters, functions and arguments. The test build is pointed at the
+columns, embedded relations (each must resolve to exactly one link, as PostgREST requires), filters,
+functions and arguments. The test build is pointed at the
 mock and every real Supabase host is cut, so the tests never touch the live project. **72 passed,
 0 console errors.**
 
