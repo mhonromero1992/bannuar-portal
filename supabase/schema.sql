@@ -242,6 +242,33 @@ create table if not exists public.staff_invitations (
   accepted_user_id uuid references auth.users (id) on delete set null
 );
 
+-- Employee app activation. The activate-employee Edge Function checks the employee number,
+-- birthdate and mobile number (begin_employee_activation), which writes a one-time ticket here;
+-- handle_new_user accepts an employee login only with that ticket. Only the hash is stored.
+-- Neither table has a policy: only the service role (Edge Functions) and the SQL editor reach them.
+create table if not exists public.activation_tickets (
+  id uuid primary key default gen_random_uuid(),
+  employee_id uuid not null references public.employees (id) on delete cascade,
+  token_hash text not null unique,
+  ip text,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default (now() + interval '10 minutes'),
+  used_at timestamptz,
+  used_by uuid references auth.users (id) on delete set null
+);
+create index if not exists activation_tickets_employee_idx on public.activation_tickets (employee_id);
+
+-- Every activation attempt, for the rate limits (per employee number and per IP). Kept 30 days.
+create table if not exists public.activation_attempts (
+  id bigint generated always as identity primary key,
+  occurred_at timestamptz not null default now(),
+  employee_no text not null,
+  ip text,
+  result text not null check (result in ('ok', 'no_match', 'already_active', 'rate_limited', 'activated'))
+);
+create index if not exists activation_attempts_no_idx on public.activation_attempts (employee_no, occurred_at desc);
+create index if not exists activation_attempts_ip_idx on public.activation_attempts (ip, occurred_at desc) where ip is not null;
+
 -- Detachment commanders and inspectors of each post
 create table if not exists public.site_supervisors (
   site_id uuid not null references public.sites (id) on delete cascade,
@@ -1190,6 +1217,7 @@ declare
   v_email text := lower(coalesce(new.email, ''));
   inv public.staff_invitations;
   emp public.employees;
+  v_ip text;
 begin
   if meta ->> 'account_type' = 'employee' then
     select * into emp from public.employees
@@ -1201,10 +1229,29 @@ begin
        or public.normalize_ph_mobile(emp.mobile_no) is distinct from public.normalize_ph_mobile(meta ->> 'mobile_no') then
       raise exception 'BANNUAR_ACTIVATION_FAILED' using errcode = 'P0001';
     end if;
+    -- only with the one-time ticket the activate-employee function got from begin_employee_activation:
+    -- knowing the three facts is not enough to claim the record through auth.signUp
+    update public.activation_tickets t set used_at = now(), used_by = new.id
+    where t.employee_id = emp.id and t.used_at is null and t.expires_at > now()
+      and t.token_hash = encode(extensions.digest(coalesce(meta ->> 'activation_ticket', ''), 'sha256'), 'hex')
+    returning t.ip into v_ip;
+    if not found then
+      raise exception 'BANNUAR_ACTIVATION_FAILED' using errcode = 'P0001';
+    end if;
     insert into public.profiles (id, full_name, email) values (new.id, public.full_name(emp), v_email)
     on conflict (id) do nothing;
     update public.employees set user_id = new.id where id = emp.id;
     insert into public.user_roles (user_id, role) values (new.id, 'employee') on conflict do nothing;
+    insert into public.activation_attempts (employee_no, ip, result) values (emp.employee_no, v_ip, 'activated');
+    -- the birthdate, mobile number and ticket were needed only for this check; user metadata is
+    -- copied into every access token, so they do not stay there (strip_activation_metadata below
+    -- also catches Auth writing its own copy back when it confirms the email)
+    begin
+      update auth.users set raw_user_meta_data = raw_user_meta_data - 'birthdate' - 'mobile_no' - 'activation_ticket'
+      where id = new.id;
+    exception when insufficient_privilege then
+      null;
+    end;
     return new;
   end if;
 
@@ -1231,6 +1278,22 @@ end $$;
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users
   for each row execute function public.handle_new_user();
+
+-- Supabase Auth saves the user metadata again from its own copy right after creating a login (when it
+-- confirms the email), which would put the birthdate, mobile number and activation ticket back.
+-- This keeps them out of employee logins on every write.
+create or replace function public.strip_activation_metadata() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  new.raw_user_meta_data := new.raw_user_meta_data - 'birthdate' - 'mobile_no' - 'activation_ticket';
+  return new;
+end $$;
+
+drop trigger if exists strip_activation_metadata on auth.users;
+create trigger strip_activation_metadata before update on auth.users
+  for each row when (new.raw_user_meta_data ->> 'account_type' = 'employee'
+                     and new.raw_user_meta_data ?| array['birthdate', 'mobile_no', 'activation_ticket'])
+  execute function public.strip_activation_metadata();
 
 -- -------------------------------------------------------------------------------------
 -- 8. Attach triggers
@@ -1428,6 +1491,63 @@ begin
     return 'already_active';
   end if;
   return 'ok';
+end $$;
+
+-- Employee app activation, step 1 (called by the activate-employee Edge Function with the service
+-- role; not callable from the app or the website). Limits wrong tries per employee number and per IP,
+-- logs every attempt, and on a match returns a one-time ticket valid for ten minutes. Step 2 is the
+-- function creating the login with auth.admin.createUser; handle_new_user then uses up the ticket.
+create or replace function public.begin_employee_activation(p_employee_no text, p_birthdate date, p_mobile text, p_ip text default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_no text := upper(trim(coalesce(p_employee_no, '')));
+  v_ip text := nullif(left(trim(coalesce(p_ip, '')), 64), '');
+  v_result text;
+  v_ticket text;
+begin
+  if not public.is_trusted() then
+    raise exception 'Not allowed' using errcode = '42501';
+  end if;
+  delete from public.activation_attempts where occurred_at < now() - interval '30 days';
+  if (select count(*) from public.activation_attempts a
+      where a.employee_no = v_no and a.result in ('no_match', 'rate_limited')
+        and a.occurred_at > now() - interval '30 minutes') >= 5
+     or (v_ip is not null and (select count(*) from public.activation_attempts a
+      where a.ip = v_ip and a.result in ('no_match', 'rate_limited')
+        and a.occurred_at > now() - interval '1 hour') >= 20) then
+    insert into public.activation_attempts (employee_no, ip, result) values (v_no, v_ip, 'rate_limited');
+    return jsonb_build_object('status', 'rate_limited');
+  end if;
+  v_result := public.check_employee_activation(v_no, p_birthdate, p_mobile);
+  insert into public.activation_attempts (employee_no, ip, result) values (v_no, v_ip, v_result);
+  if v_result <> 'ok' then
+    return jsonb_build_object('status', v_result);
+  end if;
+  v_ticket := encode(extensions.gen_random_bytes(32), 'hex');
+  delete from public.activation_tickets t
+  where t.used_at is null and t.employee_id = (select e.id from public.employees e where e.employee_no = v_no);
+  insert into public.activation_tickets (employee_id, token_hash, ip)
+  select e.id, encode(extensions.digest(v_ticket, 'sha256'), 'hex'), v_ip
+  from public.employees e where e.employee_no = v_no;
+  return jsonb_build_object('status', 'ok', 'ticket', v_ticket);
+end $$;
+
+-- The app registers this phone for push. A phone that passes to another guard moves to them, so a
+-- signed-out guard's notifications stop reaching it.
+create or replace function public.register_device_token(p_token text, p_platform text, p_app_version text default null)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in first' using errcode = '42501';
+  end if;
+  if coalesce(trim(p_token), '') = '' or length(p_token) > 4096 then
+    raise exception 'No device token' using errcode = '22023';
+  end if;
+  insert into public.device_tokens (token, user_id, platform, app_version, last_seen_at)
+  values (p_token, auth.uid(), p_platform, left(p_app_version, 40), now())
+  on conflict (token) do update
+    set user_id = excluded.user_id, platform = excluded.platform, app_version = excluded.app_version,
+        last_seen_at = excluded.last_seen_at;
 end $$;
 
 -- First administrator. Run once in the SQL editor:
@@ -2208,7 +2328,8 @@ begin
       'user_roles', 'staff_invitations', 'site_supervisors', 'document_types', 'employee_documents', 'payroll_periods',
       'payslips', 'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates',
       'profile_change_requests', 'payroll_concerns', 'announcements', 'announcement_receipts', 'notifications',
-      'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log'])
+      'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log',
+      'activation_tickets', 'activation_attempts'])
   loop
     execute format('drop policy if exists %I on %I.%I', r.policyname, r.schemaname, r.tablename);
   end loop;
@@ -2217,7 +2338,8 @@ begin
       'user_roles', 'staff_invitations', 'site_supervisors', 'document_types', 'employee_documents', 'payroll_periods',
       'payslips', 'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates',
       'profile_change_requests', 'payroll_concerns', 'announcements', 'announcement_receipts', 'notifications',
-      'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log'])
+      'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log',
+      'activation_tickets', 'activation_attempts'])
   loop
     execute format('alter table public.%I enable row level security', r.tablename);
   end loop;
@@ -2405,6 +2527,10 @@ begin
   end loop;
 end $$;
 
+-- activation tickets and attempts: the service role only (no policies, no API access)
+revoke all on public.activation_tickets, public.activation_attempts from public, anon, authenticated;
+grant select, insert, update, delete on public.activation_tickets, public.activation_attempts to service_role;
+
 -- writes that must go through functions only
 revoke insert, update, delete on public.employee_government_ids, public.user_roles, public.certificates,
   public.audit_log, public.announcement_receipts from authenticated;
@@ -2453,9 +2579,24 @@ grant execute on function
 to authenticated;
 
 grant execute on function
-  public.verify_certificate(text), public.check_staff_invitation(text, text),
-  public.check_employee_activation(text, date, text)
+  public.verify_certificate(text), public.check_staff_invitation(text, text)
 to anon, authenticated;
+
+-- Employee activation runs only in the activate-employee Edge Function (service role), which limits
+-- and logs tries. check_employee_activation was open to anon before; without this, anyone could keep
+-- guessing birthdates through it with no limit.
+revoke execute on function
+  public.check_employee_activation(text, date, text),
+  public.begin_employee_activation(text, date, text, text)
+from public, anon, authenticated;
+grant execute on function
+  public.check_employee_activation(text, date, text),
+  public.begin_employee_activation(text, date, text, text)
+to service_role;
+
+-- the app registers its push token through this function (see its comment)
+revoke execute on function public.register_device_token(text, text, text) from public, anon;
+grant execute on function public.register_device_token(text, text, text) to authenticated;
 
 -- -------------------------------------------------------------------------------------
 -- 13. File storage (all buckets private; files are read through short-lived signed links)
