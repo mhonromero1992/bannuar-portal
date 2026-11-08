@@ -1,9 +1,24 @@
 import { createClient } from '@supabase/supabase-js';
 
-const url = (import.meta.env.VITE_SUPABASE_URL ?? '').replace(/\/$/, '');
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY ?? '';
+/**
+ * Bannuar's Supabase project, the same one the website uses. Both values are public by design: the
+ * browser holds them, and row level security in the database decides what each signed-in person may
+ * see and do. Environment variables override them for another project: VITE_SUPABASE_URL and
+ * VITE_SUPABASE_PUBLISHABLE_KEY, or the NEXT_PUBLIC_ names. Never put the secret key in this app.
+ */
+const DEFAULT_URL = 'https://bcynizcgdgqznlxuzwjx.supabase.co';
+const DEFAULT_KEY = 'sb_publishable_rwAYUkMVmJxXiT9SnrqlxA_VsMFHK25';
+const env = import.meta.env;
 
-/** False until .env names the Supabase project; the portal then shows the set-up steps. */
+const url = (env.VITE_SUPABASE_URL || env.NEXT_PUBLIC_SUPABASE_URL || DEFAULT_URL).replace(/\/$/, '');
+const key =
+  env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+  env.VITE_SUPABASE_ANON_KEY ||
+  env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+  env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  DEFAULT_KEY;
+
+/** True with the built-in project; false only if a build is given empty values on purpose. */
 export const configured = Boolean(url && key);
 
 export const supabase = createClient(configured ? url : 'https://not-configured.invalid', configured ? key : 'not-configured', {

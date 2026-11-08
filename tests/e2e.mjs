@@ -189,6 +189,10 @@ async function api(route) {
 // ------------------------------------------------------------------ run
 const browser = await chromium.launch();
 const context = await browser.newContext({ viewport: { width: 1280, height: 860 }, acceptDownloads: true });
+// the built-in project is Bannuar's live one: cut and record anything that tries to reach it
+const realHits = [];
+const blockReal = (ctx) => ctx.route(/^https:\/\/[a-z0-9-]+\.supabase\.co\//, (route) => { realHits.push(route.request().url()); return route.abort('blockedbyclient'); });
+await blockReal(context);
 await context.route(`${MOCK}/**`, api);
 const page = await context.newPage();
 const consoleErrors = [];
@@ -359,6 +363,7 @@ check('deploy: floating guard sent to the post', JSON.stringify(rpcCalls('deploy
 
 console.log('Sign-up, phone width, sign-out');
 const p2 = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();
+await blockReal(p2.context());
 await p2.context().route(`${MOCK}/**`, api);
 await p2.goto(`${BASE}/setup`);
 await p2.getByLabel('Email').fill('hector@bannuar.test');
@@ -385,6 +390,7 @@ await p2.waitForURL(/sign-in/);
 check('sign out: back to sign-in', p2.url().includes('/sign-in'));
 
 check('no console errors', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));
+check('the test build talked only to the mock, never to the live project', realHits.length === 0 && requests.length > 50, realHits.slice(0, 2).join(', '));
 
 // ------------------------------------------------------------------ every request against the real schema
 console.log('\nRequests against the schema');

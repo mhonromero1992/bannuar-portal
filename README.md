@@ -15,33 +15,55 @@ Supabase project, the same database the public website
 
 ```bash
 npm install
-cp .env.example .env      # fill in the Supabase URL and anon key
 npm run dev               # http://localhost:5173
 npm run build             # static files in dist/
 ```
 
-Deploy `dist/` to Vercel or Netlify. `vercel.json` and `public/_redirects` send every path to
-`index.html` so links like `/employees/…` open directly; `vercel.json` also adds security headers.
-Add the portal's address to Supabase → Authentication → URL Configuration (Site URL and
-`/reset-password` redirect) as SETUP.md says.
+The portal is connected to Bannuar's Supabase project, the same one the website uses:
+`https://bcynizcgdgqznlxuzwjx.supabase.co` with its publishable key, both set in
+`src/lib/supabase.ts`. They are public by design: the browser holds them, and row level security in
+the database decides what each signed-in person may see and do. Never put the secret (service role)
+key anywhere in this project.
+
+To point a build at another project (a staging copy, for example), set these in `.env` or in the
+host's environment variables and rebuild:
 
 | Variable | Value |
 |---|---|
-| `VITE_SUPABASE_URL` | Project Settings → API → Project URL |
-| `VITE_SUPABASE_ANON_KEY` | the `anon` public key (or the publishable key); never the service role key |
-| `VITE_WEBSITE_URL` | the public website, printed on certificates as the place to check them |
+| `VITE_SUPABASE_URL` (or `NEXT_PUBLIC_SUPABASE_URL`) | Project Settings → API → Project URL |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` (or `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`) | the publishable key (a legacy `anon` key works too) |
+| `VITE_WEBSITE_URL` | the public website, printed on certificates as the place to check them (default `https://bannuar-website.vercel.app`) |
 
-Without the first two the portal opens on a page with these steps instead of a broken sign-in.
+Deploy `dist/` to Vercel or Netlify. `vercel.json` and `public/_redirects` send every path to
+`index.html` so links like `/employees/…` open directly; `vercel.json` also adds security headers.
 
 ## First sign-in
 
-1. Run `schema.sql`, then in the SQL Editor:
-   `select public.bootstrap_super_admin('you@company.ph', 'Your Name');` It answers with a code.
-2. Open the portal → **Set up your account** → your email, the code, a password.
-3. Invite everyone else from **Users and roles**. Each invitation shows a code to pass on in person;
-   nobody can sign up without one.
-4. Optional: `supabase/seed-demo.sql` fills a new project with clearly marked demo records to try
-   every screen; `supabase/remove-demo.sql` takes them out.
+The project's sign-in settings, as read on 8 November 2026: email sign-in on, sign-ups allowed
+(the database itself refuses anyone without an invitation code), **"Confirm email" on**.
+
+1. In Supabase → Authentication → URL Configuration, set **Site URL** to the portal's address and
+   add `<portal address>/sign-in` and `<portal address>/reset-password` to **Redirect URLs** (and
+   the `http://localhost:5173/...` versions for local work). Confirmation and password-reset links
+   open those pages.
+2. In the SQL Editor: `select public.bootstrap_super_admin('you@company.ph', 'Your Name');` It
+   answers with a code.
+3. Open the portal → **Set up your account** → that email, the code, a password. Because "Confirm
+   email" is on, Supabase then emails a confirmation link; open it, then sign in.
+   Supabase's built-in mailer only reaches the project's own team members and a few messages an
+   hour. Until Bannuar's SMTP is set (Authentication → Emails → SMTP Settings), either use an email
+   that is a member of the Supabase project, or confirm the account in the SQL Editor:
+   `update auth.users set email_confirmed_at = now() where email = 'you@company.ph';`
+4. Invite everyone else from **Users and roles**. Each invitation shows a code to pass on in person;
+   nobody can sign up without one. The same confirmation step applies to them.
+5. Optional: `supabase/seed-demo.sql` fills an empty project with clearly marked demo records to
+   try every screen; `supabase/remove-demo.sql` takes them out.
+
+**Checked against the live project on 8 November 2026** (read-only): the schema is installed (open
+posts, the certificate and invitation checks answer; the employees table refuses public reads; all
+four storage buckets exist); the portal build signs in against the project (a made-up account is
+refused as "The email or password is wrong") and checks invitation codes before any account is
+made. No account or record was created.
 
 ## What each screen does
 
@@ -100,11 +122,13 @@ and a bad row, publishing a cutoff, publishing an announcement to a post, hiring
 inviting staff, deploying a floating guard, setting up an account with an invitation code, the
 phone menu and sign-out. Every one of the database requests the portal made is then checked
 against the real schema exported from Postgres (`tests/schema-snapshot.json`): tables, views,
-columns, embedded relations, filters, functions and arguments. **71 passed, 0 console errors.**
+columns, embedded relations, filters, functions and arguments. The test build is pointed at the
+mock and every real Supabase host is cut, so the tests never touch the live project. **72 passed,
+0 console errors.**
 
-**Not tested here:** a live Supabase project (sign-in emails, storage, realtime): connect one and
-click through once before rollout. Running PostgREST locally for a fully live test was not possible
-on the build machine.
+**Not tested here:** signed-in work against the live project (storage uploads, realtime, emails):
+after the first admin signs in, click through each screen once before rollout. Running PostgREST
+locally for a fully live test was not possible on the build machine.
 
 ## Next phase: the employee app
 
