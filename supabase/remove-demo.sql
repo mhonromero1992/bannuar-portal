@@ -12,6 +12,7 @@ using public.employees e
 where e.user_id = u.id and e.employee_no like 'DEMO-%'
   and not exists (select 1 from public.user_roles r where r.user_id = u.id and r.role <> 'employee');
 delete from public.employees where employee_no like 'DEMO-%';
-delete from public.sites where id in ('d0000000-0000-4000-8000-000000000201', 'd0000000-0000-4000-8000-000000000202');
+delete from public.employee_assignments where site_id in ('d0000000-0000-4000-8000-000000000201', 'd0000000-0000-4000-8000-000000000202', 'd0000000-0000-4000-8000-000000000203');
+delete from public.sites where id in ('d0000000-0000-4000-8000-000000000201', 'd0000000-0000-4000-8000-000000000202', 'd0000000-0000-4000-8000-000000000203');
 delete from public.clients where id = 'd0000000-0000-4000-8000-000000000101';
 delete from public.areas where id = 'd0000000-0000-4000-8000-000000000001';

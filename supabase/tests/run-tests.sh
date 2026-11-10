@@ -197,6 +197,47 @@ as_user "$OPS" "select public.deploy_employees(array['$NEW_EMP']::uuid[], null)"
 check "back to floating starts the clock" "$(pg "select status || ':' || (floating_since = current_date) from public.employees where id = '$NEW_EMP'")" "floating:true"
 r=$(as_user "$BEA" "select public.deploy_employees(array['$BEA_EMP']::uuid[], '$SITE2')"); check_has "a guard cannot deploy" "$r" "Operations or HR only"
 
+echo "== Pay rules, rates and assignment history"
+PAYCODE=$(as_user "$ADMIN" "select public.invite_staff('pay@bannuar.test', 'Paz Payroll', '{payroll}')")
+PAY=$(signup 'pay@bannuar.test' "{\"invite_code\":\"$PAYCODE\"}")
+check "the Standard rule is the agency default" "$(as_user "$PAY" "select name || ':' || is_default from public.pay_rules where client_id is null")" "Standard:true"
+CLIENT=$(as_user "$OPS" "insert into public.clients (name) values ('Acme Corp') returning id")
+as_user "$PAY" "insert into public.pay_rules (client_id, name, is_default, formulas) values ('$CLIENT', 'Acme', true, '[{\"code\":\"basic\",\"label\":\"Basic pay\",\"formula\":\"rate * regular_hours\",\"thirteenth\":true}]')" >/dev/null
+check "payroll adds a client rule" "$(pg "select count(*) from public.pay_rules where client_id = '$CLIENT' and is_default")" "1"
+r=$(as_user "$PAY" "insert into public.pay_rules (client_id, name, formulas) values ('$CLIENT', 'Bad', '[{\"code\":\"Bad Code\",\"label\":\"x\",\"formula\":\"1\"}]')"); check_has "a formula line needs a proper code" "$r" "small letters"
+r=$(as_user "$PAY" "insert into public.pay_rules (client_id, name, formulas) values ('$CLIENT', 'Twice', '[{\"code\":\"a\",\"label\":\"A\",\"formula\":\"1\"},{\"code\":\"a\",\"label\":\"B\",\"formula\":\"2\"}]')"); check_has "codes are unique within a rule" "$r" "Two formula lines"
+as_user "$PAY" "insert into public.pay_rules (client_id, name, is_default) values ('$CLIENT', 'Acme night posts', true)" >/dev/null
+check "a new default rule replaces the old one" "$(pg "select string_agg(name, ',') from public.pay_rules where client_id = '$CLIENT' and is_default")" "Acme night posts"
+r=$(as_user "$OPS" "insert into public.pay_rules (name) values ('Ops rule')"); check_has "operations cannot add pay rules" "$r" "row-level security"
+as_user "$OPS" "update public.sites set client_id = '$CLIENT', duty_hours = 12, first_shift_start = '06:00' where id = '$SITE2'" >/dev/null
+as_user "$PAY" "insert into public.pay_rates (site_id, effective_from, hourly_rate) values ('$SITE2', '2026-01-01', 90), ('$SITE2', '2026-07-01', 95)" >/dev/null
+as_user "$PAY" "insert into public.pay_rates (client_id, effective_from, hourly_rate) values ('$CLIENT', '2026-01-01', 80)" >/dev/null
+check "payroll sets post and client rates" "$(pg "select count(*) from public.pay_rates")" "3"
+r=$(as_user "$PAY" "insert into public.pay_rates (site_id, client_id, effective_from, hourly_rate) values ('$SITE2', '$CLIENT', '2026-02-01', 1)"); check_has "a rate belongs to a post or a client, not both" "$r" "check constraint"
+r=$(as_user "$PAY" "insert into public.pay_rates (site_id, effective_from, hourly_rate) values ('$SITE2', '2026-01-01', 70)"); check_has "one rate per post per date" "$r" "duplicate key"
+NIGHT=$(pg "select id from public.pay_rules where name = 'Acme night posts'")
+as_user "$PAY" "select public.set_site_pay_rule('$SITE2', '$NIGHT')" >/dev/null
+check "payroll picks a post's pay rule" "$(pg "select (pay_rule_id = '$NIGHT')::text from public.sites where id = '$SITE2'")" "true"
+r=$(as_user "$PAY" "select public.set_site_pay_rule('$SITE1', '$NIGHT')"); check_has "a rule of another client is refused" "$r" "another client"
+r=$(as_user "$OPS" "select public.set_site_pay_rule('$SITE2', null)"); check_has "only payroll picks pay rules" "$r" "Payroll only"
+check "HR reads rates, operations does not" "$(as_user "$HR" "select count(*) from public.pay_rates"):$(as_user "$OPS" "select count(*) from public.pay_rates")" "3:0"
+check "guards read no rates or rules" "$(as_user "$EDU" "select count(*) from public.pay_rates"):$(as_user "$EDU" "select count(*) from public.pay_rules")" "0:0"
+check "every employee at a post has an assignment from hiring" "$(pg "select string_agg(e.employee_no || '@' || a.start_date, ',' order by e.employee_no) from public.employee_assignments a join public.employees e on e.id = a.employee_id where e.employee_no in ('G-001', 'G-002', 'G-004')")" "G-001@2018-01-01,G-002@2023-01-10,G-004@2022-06-01"
+EDU_EMP=$(pg "select id from public.employees where employee_no = 'G-004'")
+r=$(as_user "$OPS" "select public.deploy_employees(array['$EDU_EMP']::uuid[], '$SITE1', 10)"); check_has "a duty is 8, 12 or 24 hours" "$r" "8, 12 or 24"
+as_user "$OPS" "select public.deploy_employees(array['$EDU_EMP']::uuid[], '$SITE1', 8, '22:00')" >/dev/null
+check "deploying opens an assignment on the chosen shift" "$(pg "select s.name || ' ' || a.duty_hours || 'h ' || to_char(a.shift_start, 'HH24:MI') from public.employee_assignments a join public.sites s on s.id = a.site_id where a.employee_id = '$EDU_EMP' and a.end_date is null")" "Post A 8h 22:00"
+check "and ends the previous one yesterday" "$(pg "select (end_date = public.manila_today() - 1)::text from public.employee_assignments where employee_id = '$EDU_EMP' and start_date = '2022-06-01'")" "true"
+as_user "$OPS" "select public.deploy_employees(array['$EDU_EMP']::uuid[], '$SITE2')" >/dev/null
+check "a second move the same day replaces today's assignment" "$(pg "select count(*) || ' ' || string_agg(s.name || ' ' || a.duty_hours || 'h', ',' order by a.start_date) from public.employee_assignments a join public.sites s on s.id = a.site_id where a.employee_id = '$EDU_EMP'")" "2 Post B 12h,Post B 12h"
+r=$(as_user "$HR" "insert into public.employee_assignments (employee_id, site_id, start_date, end_date) values ('$EDU_EMP', '$SITE1', '2023-01-01', '2023-02-01')"); check_has "assignments of one employee cannot overlap" "$r" "overlap"
+as_user "$OPS" "update public.employee_assignments set end_date = '2022-12-31' where employee_id = '$EDU_EMP' and start_date = '2022-06-01'" >/dev/null
+r=$(as_user "$OPS" "insert into public.employee_assignments (employee_id, site_id, start_date, end_date, duty_hours, shift_start) values ('$EDU_EMP', '$SITE1', '2023-01-01', public.manila_today() - 1, 12, '18:00') returning duty_hours")
+check "operations corrects the history" "$r" "12"
+r=$(as_user "$PAY" "insert into public.employee_assignments (employee_id, site_id, start_date, end_date) values ('$EDU_EMP', '$SITE1', '2020-01-01', '2020-12-31')"); check_has "payroll reads but does not change assignments" "$r" "row-level security"
+check "a guard sees only their own assignments" "$(as_user "$EDU" "select count(*) from public.employee_assignments"):$(as_user "$BEA" "select count(*) from public.employee_assignments")" "3:1"
+check "a commander sees his post's assignments" "$(as_user "$DC" "select count(*) from public.employee_assignments")" "$(pg "select count(*) from public.employee_assignments where site_id = '$SITE1' or employee_id = '$DC_EMP'")"
+
 echo "== Profile changes, payroll concerns, documents"
 PC=$(as_user "$BEA" "insert into public.profile_change_requests (employee_id, changes) values ('$BEA_EMP', '{\"mobile_no\":\"09179998888\"}') returning id")
 r=$(as_user "$BEA" "insert into public.profile_change_requests (employee_id, changes) values ('$BEA_EMP', '{\"position\":\"Boss\"}')"); check_has "only contact details can be requested" "$r" "Ask HR to change position"
@@ -234,7 +275,7 @@ check "an employee keeps the employee role" "$(pg "select string_agg(role::text,
 as_user "$HR" "select public.admin_reset_password('$BEA', 'Temp-Pass-2026')" >/dev/null
 check "HR resets a guard's password" "$(pg "select (encrypted_password = extensions.crypt('Temp-Pass-2026', encrypted_password)) || ':' || p.must_change_password from auth.users u join public.profiles p on p.id = u.id where u.id = '$BEA'")" "true:true"
 r=$(as_user "$HR" "select public.admin_reset_password('$OPS', 'Temp-Pass-2026')"); check_has "HR cannot reset a staff password" "$r" "Only a super admin"
-check "list_users shows staff only" "$(as_user "$ADMIN" "select count(*) from public.list_users()")" "5"
+check "list_users shows staff only" "$(as_user "$ADMIN" "select count(*) from public.list_users()")" "6"
 check "list_users is empty for non-admins" "$(as_user "$HR" "select count(*) from public.list_users()")" "0"
 check "dashboard for staff" "$(as_user "$MGMT" "select (public.portal_dashboard() ->> 'sites_active')")" "2"
 r=$(as_user "$BEA" "select public.portal_dashboard()"); check_has "no dashboard for guards" "$r" "Staff only"

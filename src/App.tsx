@@ -14,6 +14,7 @@ import Requests from './pages/Requests';
 import Announcements from './pages/Announcements';
 import Payroll from './pages/Payroll';
 import PayrollPeriod from './pages/PayrollPeriod';
+import ThirteenthMonth from './pages/ThirteenthMonth';
 import Recruitment from './pages/Recruitment';
 import Inquiries from './pages/Inquiries';
 import Compliance from './pages/Compliance';
@@ -56,6 +57,7 @@ const router = createBrowserRouter([
       { path: 'requests', element: <Requests /> },
       { path: 'announcements', element: <Announcements /> },
       { path: 'payroll', element: <Payroll /> },
+      { path: 'payroll/13th-month', element: <ThirteenthMonth /> },
       { path: 'payroll/:id', element: <PayrollPeriod /> },
       { path: 'recruitment', element: <Recruitment /> },
       { path: 'inquiries', element: <Inquiries /> },

@@ -8,6 +8,7 @@ import { COLUMNS, parsePayrollFile, templateCsv, type Parsed } from '../lib/payr
 import { safeSearch } from '../lib/refs';
 import { Dialog, Empty, ErrorState, Loading, Search, StatusBadge, useDebounced, useToast } from '../ui/kit';
 import { PayslipView } from './EmployeeDetail';
+import ComputePay from './ComputePay';
 
 interface ImportResult { inserted: number; updated: number; errors: { row: number; employee_no?: string; message: string }[]; warnings: { row: number; employee_no?: string; message: string }[] }
 const CHUNK = 500;
@@ -19,6 +20,7 @@ export default function PayrollPeriod() {
   const [text, setText] = useState('');
   const s = useDebounced(text);
   const [importing, setImporting] = useState(false);
+  const [computing, setComputing] = useState(false);
   const [open, setOpen] = useState<Record<string, unknown> | null>(null);
   const period = useQuery({
     queryKey: ['period', id],
@@ -76,6 +78,7 @@ export default function PayrollPeriod() {
           <p className="row" style={{ marginTop: 8 }}><StatusBadge map={PERIOD_STATUS} value={p.status} /> · Pay date {fmtDate(p.pay_date)}{p.published_at && ` · published ${fmtDateTime(p.published_at)}`}</p>
         </div>
         <div className="page-actions">
+          {draft && <button className="btn btn-line" type="button" onClick={() => setComputing(true)}>Work out pay</button>}
           {draft && <button className="btn btn-line" type="button" onClick={() => setImporting(true)}>Import the payroll file</button>}
           {draft ? <button className="btn" type="button" disabled={!totals.data?.n} onClick={() => publish(true)}>Publish to employees</button> : <button className="btn btn-line" type="button" onClick={() => publish(false)}>Unpublish</button>}
         </div>
@@ -88,7 +91,7 @@ export default function PayrollPeriod() {
       <div className="panel">
         <div className="toolbar"><Search value={text} onChange={setText} label="Search by name or employee number" /></div>
         {slips.isLoading ? <Loading /> : slips.error ? <ErrorState error={errorText(slips.error)} retry={() => slips.refetch()} /> : !slips.data?.rows.length ? (
-          <Empty title={s ? 'No payslip matches' : 'No payslips in this cutoff yet'}>{!s && draft ? 'Import the payroll file to add them.' : null}</Empty>
+          <Empty title={s ? 'No payslip matches' : 'No payslips in this cutoff yet'}>{!s && draft ? 'Work out the pay from the assignments, or import the payroll file.' : null}</Empty>
         ) : (
           <div className="table-wrap">
             <table className="table">
@@ -110,6 +113,9 @@ export default function PayrollPeriod() {
       </div>
       <Dialog open={importing} title={`Import the payroll file · ${p.label}`} onClose={() => setImporting(false)} wide>
         {importing && <Importer periodId={id} onDone={() => { refresh(); }} onClose={() => setImporting(false)} />}
+      </Dialog>
+      <Dialog open={computing} title={`Work out pay · ${p.label}`} onClose={() => setComputing(false)} wide>
+        {computing && <ComputePay period={p} onSaved={refresh} onClose={() => setComputing(false)} />}
       </Dialog>
       <Dialog open={Boolean(open)} title={`Payslip · ${p.label}`} onClose={() => setOpen(null)}>
         {open && <PayslipView p={open} />}

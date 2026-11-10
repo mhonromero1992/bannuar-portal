@@ -7,7 +7,7 @@ import { errorText, fmtDate } from '../lib/format';
 import { useAreas } from '../lib/refs';
 import { Badge, Dialog, Empty, ErrorState, Loading, PageHead, SelectField, Tabs, TextArea, TextField, useToast } from '../ui/kit';
 
-export interface Site { id: string; name: string; code: string | null; client_id: string | null; area_id: string | null; address: string | null; city: string | null; province: string | null; region: string | null; guards_required: number; is_active: boolean; notes: string | null; latitude: number | null; longitude: number | null; geofence_radius_m: number }
+export interface Site { id: string; name: string; code: string | null; client_id: string | null; area_id: string | null; address: string | null; city: string | null; province: string | null; region: string | null; guards_required: number; is_active: boolean; notes: string | null; latitude: number | null; longitude: number | null; geofence_radius_m: number; pay_rule_id: string | null; duty_hours: number; first_shift_start: string }
 
 export function useClients() {
   return useQuery({
@@ -87,6 +87,7 @@ export function SiteForm({ site, onDone }: { site?: Site; onDone: () => void }) 
       name: f.name.trim(), code: f.code.trim() || null, client_id: f.client_id || null, area_id: f.area_id || null, address: f.address.trim() || null,
       city: f.city.trim() || null, province: f.province.trim() || null, region: f.region.trim() || null, guards_required: Number(f.guards_required || 0),
       latitude: f.latitude ? Number(f.latitude) : null, longitude: f.longitude ? Number(f.longitude) : null, is_active: f.is_active === 'yes', notes: f.notes.trim() || null,
+      duty_hours: Number(f.duty_hours || 12), first_shift_start: f.first_shift_start || '06:00',
     };
     setBusy(true);
     const res = site ? await supabase.from('sites').update(row).eq('id', site.id) : await supabase.from('sites').insert(row);
@@ -107,6 +108,10 @@ export function SiteForm({ site, onDone }: { site?: Site; onDone: () => void }) 
         <SelectField label="Client" name="client_id" optional defaultValue={site?.client_id ?? ''} placeholder="None" options={(clients.data ?? []).map((c) => ({ value: c.id, label: c.name }))} />
         <SelectField label="Area" name="area_id" optional defaultValue={site?.area_id ?? ''} placeholder="None" options={(areas.data ?? []).map((a) => ({ value: a.id, label: a.name }))} />
         <SelectField label="Status" name="is_active" defaultValue={site?.is_active === false ? 'no' : 'yes'} options={[{ value: 'yes', label: 'Active' }, { value: 'no', label: 'Inactive' }]} />
+      </div>
+      <div className="form-row">
+        <SelectField label="Duty" name="duty_hours" defaultValue={String(site?.duty_hours ?? 12)} options={[{ value: '8', label: '8-hour shifts (three a day)' }, { value: '12', label: '12-hour shifts (two a day)' }, { value: '24', label: '24-hour duty' }]} />
+        <TextField label="First shift starts" name="first_shift_start" type="time" defaultValue={(site?.first_shift_start ?? '06:00').slice(0, 5)} hint="6:00 gives 6am to 6pm and 6pm to 6am for 12-hour shifts." />
       </div>
       <TextField label="Address" name="address" optional defaultValue={site?.address ?? ''} />
       <div className="form-row">

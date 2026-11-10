@@ -18,7 +18,7 @@ export function useSites() {
   return useQuery({
     queryKey: ['sites-list'],
     queryFn: async () => {
-      const { data, error } = await supabase.from('sites').select('id,name,code,city,area_id,is_active').order('name');
+      const { data, error } = await supabase.from('sites').select('id,name,code,city,area_id,client_id,pay_rule_id,duty_hours,first_shift_start,is_active').order('name');
       if (error) throw error;
       return data;
     },

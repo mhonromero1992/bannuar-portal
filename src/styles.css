@@ -241,3 +241,7 @@ a.tile:hover { box-shadow: 0 1px 2px rgba(11, 22, 38, 0.06), 0 16px 34px -18px r
 .callout { padding: 14px 16px; border-radius: var(--r); background: var(--info-bg); color: var(--info); font-size: 13.5px; }
 .callout.warn { background: var(--warn-bg); color: var(--warn); }
 .preview-table { max-height: 320px; overflow: auto; border-radius: var(--r); box-shadow: inset 0 0 0 1px var(--line); }
+
+/* pay rules: formulas read better in a fixed-width face */
+.code-input { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 14px; }
+.formula-table td { vertical-align: top; }

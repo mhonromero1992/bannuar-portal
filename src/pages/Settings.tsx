@@ -5,8 +5,9 @@ import { useAuth } from '../lib/auth';
 import { errorText } from '../lib/format';
 import { useAreas, useDocTypes, useLeaveTypes } from '../lib/refs';
 import { Badge, Empty, ErrorState, Loading, PageHead, Tabs, TextField, useToast } from '../ui/kit';
+import { PaySettings } from './Pay';
 
-type Tab = 'areas' | 'documents' | 'leave';
+type Tab = 'areas' | 'documents' | 'leave' | 'pay';
 
 export default function Settings() {
   const { can } = useAuth();
@@ -14,6 +15,7 @@ export default function Settings() {
     { id: 'areas' as Tab, label: 'Areas', show: can.ops },
     { id: 'documents' as Tab, label: 'Document types', show: can.hr },
     { id: 'leave' as Tab, label: 'Leave types', show: can.hr },
+    { id: 'pay' as Tab, label: 'Pay rules and rates', show: can.payroll || can.hr },
   ].filter((t) => t.show);
   const [tab, setTab] = useState<Tab>(tabs[0]?.id ?? 'areas');
   return (
@@ -23,6 +25,7 @@ export default function Settings() {
       {tab === 'areas' && <Areas />}
       {tab === 'documents' && <DocTypes />}
       {tab === 'leave' && <LeaveTypes />}
+      {tab === 'pay' && <PaySettings />}
     </>
   );
 }
