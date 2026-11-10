@@ -10,8 +10,10 @@ import type { Certificate } from '../lib/coe';
 import { Badge, Dialog, Empty, ErrorState, Loading, SelectField, StatusBadge, Tabs, TextField, useToast } from '../ui/kit';
 import { EmployeeForm, type EmployeeRow } from './EmployeeForm';
 import { IssueCoeForm, downloadCertificate } from './coeShared';
+import { AttendanceTable, selfieLinks } from './attendanceShared';
+import { ATTENDANCE_SELECT, type AttendanceLog } from '../lib/attendance';
 
-type Tab = 'profile' | 'deployment' | 'ids' | 'pay' | 'documents' | 'leave' | 'payslips' | 'certificates' | 'account';
+type Tab = 'profile' | 'deployment' | 'attendance' | 'ids' | 'pay' | 'documents' | 'leave' | 'payslips' | 'certificates' | 'account';
 
 export default function EmployeeDetail() {
   const { id = '' } = useParams();
@@ -32,6 +34,7 @@ export default function EmployeeDetail() {
   const tabs: { id: Tab; label: string; show: boolean }[] = [
     { id: 'profile', label: 'Profile', show: true },
     { id: 'deployment', label: 'Deployment', show: true },
+    { id: 'attendance', label: 'Attendance', show: true },
     { id: 'documents', label: 'Licenses and documents', show: true },
     { id: 'ids', label: 'Government numbers', show: can.hr || can.payroll },
     { id: 'pay', label: 'Pay rate', show: can.payroll },
@@ -55,6 +58,7 @@ export default function EmployeeDetail() {
       <Tabs label="201 file" tabs={tabs.filter((t) => t.show)} value={tab} onChange={(t) => setParams({ tab: t }, { replace: true })} />
       {tab === 'profile' && <Profile e={e} />}
       {tab === 'deployment' && <Deployment e={e} />}
+      {tab === 'attendance' && <EmployeeAttendance employeeId={e.id} />}
       {tab === 'documents' && <Documents employeeId={e.id} />}
       {tab === 'ids' && <GovIds employeeId={e.id} />}
       {tab === 'pay' && <PayRate employeeId={e.id} />}
@@ -521,6 +525,27 @@ function Account({ e }: { e: EmployeeRow }) {
         </>
       )}
       <p className="muted small">Status: {label(EMPLOYEE_STATUS, e.status)}</p>
+    </div>
+  );
+}
+
+/** The last 60 time in and out logs, newest first. */
+function EmployeeAttendance({ employeeId }: { employeeId: string }) {
+  const q = useQuery({
+    queryKey: ['employee-attendance', employeeId],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('attendance_logs').select(ATTENDANCE_SELECT).eq('employee_id', employeeId).order('logged_at', { ascending: false }).limit(60);
+      if (error) throw error;
+      const rows = data as unknown as AttendanceLog[];
+      return { rows, photos: await selfieLinks(rows) };
+    },
+  });
+  return (
+    <div className="panel">
+      <div className="panel-head"><h2>Time in and out from the app</h2><span className="muted small">The last 60</span></div>
+      {q.isLoading ? <Loading /> : q.error ? <ErrorState error={errorText(q.error)} retry={() => q.refetch()} /> : !q.data?.rows.length ? (
+        <Empty title="No time in or out yet">They appear here once this employee uses the app at the post.</Empty>
+      ) : <AttendanceTable rows={q.data.rows} photos={q.data.photos} showEmployee={false} />}
     </div>
   );
 }

@@ -144,6 +144,16 @@ create table if not exists public.sites (
   updated_at timestamptz not null default now()
 );
 
+-- a post's location is both numbers or neither, on the map (checked on new writes only)
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'sites_location_check' and conrelid = 'public.sites'::regclass) then
+    alter table public.sites add constraint sites_location_check check (
+      (latitude is null) = (longitude is null)
+      and (latitude is null or (latitude between -90 and 90 and longitude between -180 and 180))) not valid;
+  end if;
+end $$;
+
 -- Employees: the 201 file (guards and office staff)
 create table if not exists public.employees (
   id uuid primary key default gen_random_uuid(),
@@ -554,6 +564,30 @@ create table if not exists public.device_tokens (
   created_at timestamptz not null default now(),
   last_seen_at timestamptz not null default now()
 );
+
+-- Attendance: each time in and time out from the app, with a selfie taken then and the phone's
+-- location. Only log_attendance writes here: the database sets the time and compares the location
+-- with the guard's post. GPS can be off indoors and can be faked, so a log away from the post is kept
+-- and marked for HR to look at, never refused.
+create table if not exists public.attendance_logs (
+  id uuid primary key default gen_random_uuid(),
+  employee_id uuid not null references public.employees (id) on delete cascade,
+  site_id uuid references public.sites (id) on delete set null,  -- the guard's post at the time
+  kind text not null check (kind in ('time_in', 'time_out')),
+  logged_at timestamptz not null default now(),                   -- the database's clock, not the phone's
+  photo_path text not null unique,                                -- attendance-photos/{employee_id}/...
+  latitude numeric(9, 6),
+  longitude numeric(9, 6),
+  accuracy_m integer,                                             -- the phone's own error estimate
+  distance_m integer,                                             -- from the post's location
+  radius_m integer,                                               -- the post's allowed distance then
+  location_check text not null
+    check (location_check in ('at_post', 'unsure', 'away', 'no_location', 'post_not_set', 'no_post')),
+  mock_location boolean                                           -- Android: a mock location app was on
+);
+create index if not exists attendance_logs_employee_idx on public.attendance_logs (employee_id, logged_at desc);
+create index if not exists attendance_logs_site_idx on public.attendance_logs (site_id, logged_at desc);
+create index if not exists attendance_logs_logged_idx on public.attendance_logs (logged_at desc);
 
 -- Recruitment (the website's careers page)
 create table if not exists public.job_openings (
@@ -1552,6 +1586,109 @@ begin
         last_seen_at = excluded.last_seen_at;
 end $$;
 
+-- Metres between two points on the earth (haversine; within a few metres at post distances)
+create or replace function public.geo_distance_m(p_lat1 double precision, p_lon1 double precision,
+                                                 p_lat2 double precision, p_lon2 double precision)
+returns double precision language sql immutable set search_path = '' as $$
+  select 2 * 6371008.8 * asin(least(1, sqrt(
+    power(sin(radians(p_lat2 - p_lat1) / 2), 2)
+    + cos(radians(p_lat1)) * cos(radians(p_lat2)) * power(sin(radians(p_lon2 - p_lon1) / 2), 2))))
+$$;
+
+-- Time in and time out from the app. The app first uploads the selfie to
+-- attendance-photos/{the guard's employee id}/..., then calls this with its path and the location the
+-- phone read. The time is the database's. The location is checked against the guard's post:
+--   at_post       within the post's allowed distance, with GPS precise enough to tell
+--   unsure        the GPS was too rough to tell (its error reaches across the edge of the area)
+--   away          outside the allowed distance even after allowing for the GPS error
+--   no_location   the phone gave no location (location off or not allowed)
+--   post_not_set  the post has no location yet (portal: Posts, edit the post)
+--   no_post       the guard has no post (floating)
+-- A log is never refused for its location: HR sees each one with its check and photo. Sending the same
+-- photo again returns the first log, so a retry after a lost answer does not log twice.
+create or replace function public.log_attendance(
+  p_kind text, p_photo_path text,
+  p_latitude double precision default null, p_longitude double precision default null,
+  p_accuracy_m double precision default null, p_mock_location boolean default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  me public.employees;
+  s public.sites;
+  v_log public.attendance_logs;
+  v_has_location boolean := p_latitude is not null and p_longitude is not null;
+  v_check text;
+  v_distance integer;
+  v_radius integer;
+begin
+  select * into me from public.employees where user_id = auth.uid();
+  if not found then
+    raise exception 'Only employees log attendance' using errcode = '42501';
+  end if;
+  if p_kind is null or p_kind not in ('time_in', 'time_out') then
+    raise exception 'Choose time in or time out' using errcode = '22023';
+  end if;
+
+  select * into v_log from public.attendance_logs where photo_path = p_photo_path;
+  if found then
+    if v_log.employee_id <> me.id then
+      raise exception 'That photo is not yours' using errcode = '42501';
+    end if;
+  else
+    if me.status in ('resigned', 'terminated', 'end_of_contract', 'retired') then
+      raise exception 'Your employment record is closed. Ask HR.' using errcode = 'P0001';
+    end if;
+    if coalesce(p_photo_path, '') = '' or (storage.foldername(p_photo_path))[1] is distinct from me.id::text then
+      raise exception 'Take your photo first' using errcode = '22023';
+    end if;
+    if not exists (select 1 from storage.objects o
+                   where o.bucket_id = 'attendance-photos' and o.name = p_photo_path
+                     and o.created_at > now() - interval '30 minutes') then
+      raise exception 'Your photo did not arrive. Take it again.' using errcode = 'P0001';
+    end if;
+    if v_has_location and (p_latitude not between -90 and 90 or p_longitude not between -180 and 180
+                           or p_accuracy_m is null or p_accuracy_m not between 0 and 1000000) then
+      raise exception 'That location is not valid' using errcode = '22023';
+    end if;
+
+    if not v_has_location then
+      v_check := 'no_location';
+    elsif me.site_id is null then
+      v_check := 'no_post';
+    else
+      select * into s from public.sites where id = me.site_id;
+      if s.latitude is null or s.longitude is null then
+        v_check := 'post_not_set';
+      else
+        v_radius := s.geofence_radius_m;
+        v_distance := round(public.geo_distance_m(p_latitude, p_longitude, s.latitude::float8, s.longitude::float8));
+        v_check := case
+          when v_distance <= v_radius and ceil(p_accuracy_m) <= v_radius then 'at_post'
+          when v_distance - ceil(p_accuracy_m) > v_radius then 'away'
+          else 'unsure'
+        end;
+      end if;
+    end if;
+
+    insert into public.attendance_logs (employee_id, site_id, kind, photo_path, latitude, longitude,
+                                        accuracy_m, distance_m, radius_m, location_check, mock_location)
+    values (me.id, me.site_id, p_kind, p_photo_path,
+            case when v_has_location then round(p_latitude::numeric, 6) end,
+            case when v_has_location then round(p_longitude::numeric, 6) end,
+            case when v_has_location then ceil(p_accuracy_m)::integer end,
+            v_distance, v_radius, v_check, p_mock_location)
+    on conflict (photo_path) do nothing
+    returning * into v_log;
+    if not found then
+      select * into v_log from public.attendance_logs where photo_path = p_photo_path;
+    end if;
+  end if;
+
+  return jsonb_build_object(
+    'id', v_log.id, 'kind', v_log.kind, 'logged_at', v_log.logged_at, 'location_check', v_log.location_check,
+    'distance_m', v_log.distance_m, 'accuracy_m', v_log.accuracy_m, 'radius_m', v_log.radius_m,
+    'site_name', (select st.name from public.sites st where st.id = v_log.site_id));
+end $$;
+
 -- First administrator. Run once in the SQL editor:
 --   select public.bootstrap_super_admin('you@company.ph', 'Your Name');
 create or replace function public.bootstrap_super_admin(p_email text, p_full_name text) returns text
@@ -2331,7 +2468,7 @@ begin
       'payslips', 'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates',
       'profile_change_requests', 'payroll_concerns', 'announcements', 'announcement_receipts', 'notifications',
       'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log',
-      'activation_tickets', 'activation_attempts'])
+      'activation_tickets', 'activation_attempts', 'attendance_logs'])
   loop
     execute format('drop policy if exists %I on %I.%I', r.policyname, r.schemaname, r.tablename);
   end loop;
@@ -2341,7 +2478,7 @@ begin
       'payslips', 'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates',
       'profile_change_requests', 'payroll_concerns', 'announcements', 'announcement_receipts', 'notifications',
       'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log',
-      'activation_tickets', 'activation_attempts'])
+      'activation_tickets', 'activation_attempts', 'attendance_logs'])
   loop
     execute format('alter table public.%I enable row level security', r.tablename);
   end loop;
@@ -2482,6 +2619,12 @@ create policy "clear own notifications" on public.notifications for delete to au
 create policy "own devices" on public.device_tokens for all to authenticated
   using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
 
+-- Attendance: the guard's own logs, staff all, commanders the logs at their posts (written by
+-- log_attendance only)
+create policy "read attendance" on public.attendance_logs for select to authenticated
+  using ((select public.is_staff()) or employee_id = (select public.current_employee_id())
+         or site_id = any ((select public.my_supervised_site_ids())::uuid[]));
+
 -- Website: open job openings are public; applications and proposal requests can be sent by anyone
 create policy "public reads open jobs" on public.job_openings for select to anon, authenticated
   using (status = 'open' and (closes_on is null or closes_on >= current_date));
@@ -2521,7 +2664,7 @@ begin
     'user_roles', 'staff_invitations', 'site_supervisors', 'document_types', 'employee_documents', 'payroll_periods',
     'payslips', 'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates',
     'profile_change_requests', 'payroll_concerns', 'announcements', 'announcement_receipts', 'notifications',
-    'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log',
+    'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log', 'attendance_logs',
     'document_alerts', 'compliance_gaps', 'site_staffing', 'leave_balances'
   ] loop
     execute format('revoke all on public.%I from anon', t);
@@ -2535,7 +2678,7 @@ grant select, insert, update, delete on public.activation_tickets, public.activa
 
 -- writes that must go through functions only
 revoke insert, update, delete on public.employee_government_ids, public.user_roles, public.certificates,
-  public.audit_log, public.announcement_receipts from authenticated;
+  public.audit_log, public.announcement_receipts, public.attendance_logs from authenticated;
 revoke insert, delete on public.notifications from authenticated;
 revoke update, delete on public.coe_requests, public.leave_requests, public.profile_change_requests from authenticated;
 
@@ -2600,6 +2743,14 @@ to service_role;
 revoke execute on function public.register_device_token(text, text, text) from public, anon;
 grant execute on function public.register_device_token(text, text, text) to authenticated;
 
+-- time in and time out (log_attendance); the distance helper is internal
+revoke execute on function public.geo_distance_m(double precision, double precision, double precision, double precision)
+  from public, anon, authenticated;
+revoke execute on function public.log_attendance(text, text, double precision, double precision, double precision, boolean)
+  from public, anon;
+grant execute on function public.log_attendance(text, text, double precision, double precision, double precision, boolean)
+  to authenticated;
+
 -- -------------------------------------------------------------------------------------
 -- 13. File storage (all buckets private; files are read through short-lived signed links)
 -- -------------------------------------------------------------------------------------
@@ -2608,7 +2759,8 @@ insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_typ
     array['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic']),
   ('certificates', 'certificates', false, 5242880, array['application/pdf']),
   ('applications', 'applications', false, 5242880, array['application/pdf', 'image/jpeg', 'image/png']),
-  ('announcement-media', 'announcement-media', false, 5242880, array['image/jpeg', 'image/png', 'image/webp'])
+  ('announcement-media', 'announcement-media', false, 5242880, array['image/jpeg', 'image/png', 'image/webp']),
+  ('attendance-photos', 'attendance-photos', false, 3145728, array['image/jpeg', 'image/png', 'image/webp', 'image/heic'])
 on conflict (id) do update
   set public = excluded.public, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
 
@@ -2657,6 +2809,19 @@ create policy "bannuar add announcement media" on storage.objects for insert to 
   with check (bucket_id = 'announcement-media' and (select public.can_publish()));
 create policy "bannuar remove announcement media" on storage.objects for delete to authenticated
   using (bucket_id = 'announcement-media' and (select public.can_publish()));
+
+-- attendance-photos/{employee_id}/{random}.jpg : the selfie of a time in or out. Guards add their
+-- own and cannot change them; staff, and commanders for the logs at their posts, open them.
+create policy "bannuar read attendance photos" on storage.objects for select to authenticated
+  using (bucket_id = 'attendance-photos' and ((select public.is_staff())
+         or (storage.foldername(name))[1] = (select public.current_employee_id())::text
+         or exists (select 1 from public.attendance_logs a
+                    where a.photo_path = name and a.site_id = any ((select public.my_supervised_site_ids())::uuid[]))));
+create policy "bannuar add attendance photos" on storage.objects for insert to authenticated
+  with check (bucket_id = 'attendance-photos'
+              and (storage.foldername(name))[1] = (select public.current_employee_id())::text);
+create policy "bannuar remove attendance photos" on storage.objects for delete to authenticated
+  using (bucket_id = 'attendance-photos' and (select public.has_any_role(array['super_admin', 'hr_admin']::public.app_role[])));
 
 -- -------------------------------------------------------------------------------------
 -- 14. Reference data (edit freely in the portal; re-running this file never overwrites it)

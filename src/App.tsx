@@ -11,6 +11,7 @@ import EmployeeDetail from './pages/EmployeeDetail';
 import Posts from './pages/Posts';
 import PostDetail from './pages/PostDetail';
 import Requests from './pages/Requests';
+import Attendance from './pages/Attendance';
 import Announcements from './pages/Announcements';
 import Payroll from './pages/Payroll';
 import PayrollPeriod from './pages/PayrollPeriod';
@@ -54,6 +55,7 @@ const router = createBrowserRouter([
       { path: 'posts', element: <Posts /> },
       { path: 'posts/:id', element: <PostDetail /> },
       { path: 'requests', element: <Requests /> },
+      { path: 'attendance', element: <Attendance /> },
       { path: 'announcements', element: <Announcements /> },
       { path: 'payroll', element: <Payroll /> },
       { path: 'payroll/:id', element: <PayrollPeriod /> },

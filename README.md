@@ -113,11 +113,13 @@ which shows whether it is genuine or withdrawn. A withdrawn certificate says so 
 ## Tests
 
 **Database** (`supabase/tests/run-tests.sh`, against Postgres 16 with stand-ins for Supabase's
-`auth` and `storage` schemas, connecting the way the Supabase API does): 143 checks of sign-up,
+`auth` and `storage` schemas, connecting the way the Supabase API does): 190 checks of sign-up,
 employee activation (one-time tickets, rate limits, nothing personal left in the login), row level
 security for every role, payroll import and publishing, the leave and COE flows, certificate
-verification, announcements, website forms, storage folders, admin tools and push devices, plus
-running `schema.sql` again over existing data. **143 passed.**
+verification, announcements, website forms, storage folders, admin tools, push devices and
+attendance (each location check, the database's time, photos from the guard's own fresh upload
+only), plus running `schema.sql` again over existing data and the demo scripts on an empty
+database. **190 passed.**
 
 **Edge Functions** (`deno task test` in `supabase/functions`): `activate-employee` and `send-push`
 against a mocked admin client and a mocked Google API: every answer of the activation check, Auth's
@@ -126,18 +128,20 @@ the FCM message (an RS256 sign-in checked with its key), push text without amoun
 drops. **22 passed.**
 
 **Portal** (`npm run test:e2e`): builds the portal, serves it, and drives it in Chromium against a
-mocked Supabase API: sign-in (wrong and right password, return to the page asked for), all 17
+mocked Supabase API: sign-in (wrong and right password, return to the page asked for), all 18
 screens with no sideways scroll, adding an employee (validation, the row sent), government numbers
 through the logged function, verifying a document, issuing a walk-in COE (a real PDF is made,
 stored and its path recorded) and a requested COE with compensation, approving leave, applying a
 detail change, answering a payroll concern, importing a payroll CSV with differently named columns
 and a bad row, publishing a cutoff, publishing an announcement to a post, hiring an applicant,
-inviting staff, deploying a floating guard, setting up an account with an invitation code, the
-phone menu and sign-out. Every one of the database requests the portal made is then checked
+inviting staff, deploying a floating guard, setting a post's location from pasted Google Maps
+numbers (swapped numbers caught), the Attendance page (photos signed in one request, the "Needs a
+look" filter, a log's photo and place), an employee's attendance, setting up an account with an
+invitation code, the phone menu and sign-out. Every one of the database requests the portal made is then checked
 against the real schema exported from Postgres (`tests/schema-snapshot.json`): tables, views,
 columns, embedded relations (each must resolve to exactly one link, as PostgREST requires), filters,
 functions and arguments. The test build is pointed at the
-mock and every real Supabase host is cut, so the tests never touch the live project. **72 passed,
+mock and every real Supabase host is cut, so the tests never touch the live project. **85 passed,
 0 console errors.**
 
 **Not tested here:** signed-in work against the live project (storage uploads, realtime, emails):
@@ -149,7 +153,9 @@ locally for a fully live test was not possible on the build machine.
 [bannuar-app](https://github.com/mhonromero1992/bannuar-app) (React Native) reads and writes this
 database for the guards: activation and sign-in with the employee number, payslips, leave,
 certificates of employment, announcements with acknowledgment, the 201 file and document renewals,
-detail changes, payroll concerns, notifications and push, and the commander's leave endorsements.
+detail changes, payroll concerns, notifications and push, the commander's leave endorsements, and
+time in and out with a photo and a location check against the post (reviewed here under
+Attendance).
 Its two Edge Functions live here in [`supabase/functions`](supabase/functions/README.md); set-up
 steps in [`supabase/SETUP.md`](supabase/SETUP.md), step 8.
 

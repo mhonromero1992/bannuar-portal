@@ -304,12 +304,94 @@ r=$(as_anon "select public.register_device_token('x', 'android', null)"); check_
 r=$(as_user "$BEA" "select public.register_device_token('fcm-token-2', 'symbian', null)"); check_has "an unknown platform is refused" "$r" "device_tokens_platform_check"
 check "sign-out removes the phone" "$(as_user "$CARLO" "delete from public.device_tokens where token = 'fcm-token-1' returning token")" "fcm-token-1"
 
+echo "== Attendance: time in and out with a selfie and the post's location"
+# Post A gets a location (a point in Makati) and the default allowed distance; Post B has none yet
+as_user "$OPS" "update public.sites set latitude = 14.554700, longitude = 121.024400 where id = '$SITE1'" >/dev/null
+check "a post's allowed distance starts at 150 m" "$(pg "select geofence_radius_m from public.sites where id = '$SITE1'")" "150"
+r=$(as_user "$OPS" "update public.sites set latitude = 14.5 where id = '$SITE2'"); check_has "a post's location needs both numbers" "$r" "sites_location_check"
+r=$(as_user "$OPS" "update public.sites set latitude = 121.0244, longitude = 214.5547 where id = '$SITE2'"); check_has "and a point on the map" "$r" "sites_location_check"
+r=$(as_user "$OPS" "update public.sites set geofence_radius_m = 5 where id = '$SITE2'"); check_has "the allowed distance is at least 20 m" "$r" "geofence_radius_m"
+selfie() { # uid employee_id name -> the uploaded photo's path
+  as_user "$1" "insert into storage.objects (bucket_id, name) values ('attendance-photos', '$2/$3.jpg')" >/dev/null; echo "$2/$3.jpg"; }
+logat() { as_user "$1" "select public.log_attendance('$2', '$3', $4, $5, $6, ${7:-null})"; } # uid kind path lat lon accuracy [mock]
+P1=$(selfie "$BEA" "$BEA_EMP" in-1)
+check "a guard uploads her selfie to her own folder" "$(pg "select count(*) from storage.objects where bucket_id = 'attendance-photos' and name = '$P1'")" "1"
+r=$(as_user "$BEA" "insert into storage.objects (bucket_id, name) values ('attendance-photos', '$CARLO_EMP/x.jpg')"); check_has "not into another guard's folder" "$r" "row-level security"
+R1=$(logat "$BEA" time_in "$P1" 14.5552 121.0244 12)
+check "56 m from the post with good GPS: at the post" "$(echo "$R1" | jget location_check):$(echo "$R1" | jget distance_m)" "at_post:56"
+check "the time is the database's own" "$(pg "select abs(extract(epoch from now() - logged_at)) < 60 from public.attendance_logs where photo_path = '$P1'")" "t"
+check "the post, its allowed distance and the GPS error are kept with the log" "$(pg "select (site_id = '$SITE1') || ':' || radius_m || ':' || accuracy_m || ':' || latitude from public.attendance_logs where photo_path = '$P1'")" "true:150:12:14.555200"
+check "the answer names the post" "$(echo "$R1" | jget site_name)" "Post A"
+R=$(logat "$BEA" time_in "$P1" 1 1 5)
+check "sending the same photo again returns the first log" "$(echo "$R" | jget id)" "$(echo "$R1" | jget id)"
+check "and logs once" "$(pg "select count(*) || ':' || max(location_check) from public.attendance_logs where photo_path = '$P1'")" "1:at_post"
+R=$(logat "$BEA" time_out "$(selfie "$BEA" "$BEA_EMP" out-1)" 14.5647 121.0244 20)
+check "a kilometre away: away from the post, and still logged" "$(echo "$R" | jget location_check):$(echo "$R" | jget distance_m)" "away:1112"
+R=$(logat "$BEA" time_in "$(selfie "$BEA" "$BEA_EMP" in-2)" 14.5552 121.0244 300)
+check "near the post with rough GPS (300 m): cannot tell" "$(echo "$R" | jget location_check)" "unsure"
+R=$(logat "$BEA" time_in "$(selfie "$BEA" "$BEA_EMP" in-3)" 14.5565 121.0244 80)
+check "200 m away with an 80 m error: cannot tell" "$(echo "$R" | jget location_check):$(echo "$R" | jget distance_m)" "unsure:200"
+R=$(logat "$BEA" time_out "$(selfie "$BEA" "$BEA_EMP" out-2)" null null null)
+check "no location from the phone: logged as such" "$(echo "$R" | jget location_check)" "no_location"
+logat "$BEA" time_in "$(selfie "$BEA" "$BEA_EMP" in-4)" 14.5547 121.0244 5 true >/dev/null
+check "a mock location app is noted" "$(pg "select mock_location from public.attendance_logs where photo_path = '$BEA_EMP/in-4.jpg'")" "t"
+R=$(logat "$EDU" time_in "$(selfie "$EDU" "$(pg "select id from public.employees where user_id = '$EDU'")" in-1)" 14.5547 121.0244 5)
+check "a post without a location yet: noted for HR" "$(echo "$R" | jget location_check)" "post_not_set"
+pg "update public.employees set site_id = null where id = '$CARLO_EMP'" >/dev/null
+R=$(logat "$CARLO" time_in "$(selfie "$CARLO" "$CARLO_EMP" in-1)" 14.5547 121.0244 5)
+check "a guard with no post: noted for HR" "$(echo "$R" | jget location_check)" "no_post"
+pg "update public.employees set site_id = '$SITE1' where id = '$CARLO_EMP'" >/dev/null
+R=$(logat "$CARLO" time_in "$(selfie "$CARLO" "$CARLO_EMP" in-2)" 14.5547 121.0244 5)
+check "back at a post: at the post" "$(echo "$R" | jget location_check)" "at_post"
+r=$(logat "$BEA" lunch "$(selfie "$BEA" "$BEA_EMP" in-5)" 14.5547 121.0244 5); check_has "only time in or time out" "$r" "Choose time in or time out"
+r=$(logat "$BEA" time_in "$CARLO_EMP/in-2.jpg" 14.5547 121.0244 5); check_has "another guard's logged photo is refused" "$r" "not yours"
+selfie "$CARLO" "$CARLO_EMP" spare >/dev/null
+r=$(logat "$BEA" time_in "$CARLO_EMP/spare.jpg" 14.5547 121.0244 5); check_has "and so is one of their uploads" "$r" "Take your photo first"
+r=$(logat "$BEA" time_in "$BEA_EMP/never-uploaded.jpg" 14.5547 121.0244 5); check_has "a photo that never arrived is refused" "$r" "did not arrive"
+P6=$(selfie "$BEA" "$BEA_EMP" in-6)
+pg "update storage.objects set created_at = now() - interval '2 hours' where name = '$P6'" >/dev/null
+r=$(logat "$BEA" time_in "$P6" 14.5547 121.0244 5); check_has "an old upload is refused (the photo is taken at the log)" "$r" "did not arrive"
+r=$(logat "$BEA" time_in "$(selfie "$BEA" "$BEA_EMP" in-7)" 95 121.0244 5); check_has "a latitude off the map is refused" "$r" "not valid"
+r=$(logat "$BEA" time_in "$(selfie "$BEA" "$BEA_EMP" in-8)" 14.5547 121.0244 null); check_has "a location without its GPS error is refused" "$r" "not valid"
+r=$(logat "$HR" time_in "$BEA_EMP/in-5.jpg" 14.5547 121.0244 5); check_has "staff without a 201 file do not log" "$r" "Only employees"
+r=$(as_anon "select public.log_attendance('time_in', 'x/y.jpg', null, null, null, null)"); check_has "anon cannot log" "$r" "permission denied"
+pg "update public.employees set status = 'resigned' where user_id = '$EDU'" >/dev/null
+r=$(logat "$EDU" time_in "$(selfie "$EDU" "$(pg "select id from public.employees where user_id = '$EDU'")" in-2)" 14.5547 121.0244 5); check_has "a separated employee cannot log" "$r" "record is closed"
+pg "update public.employees set status = 'active' where user_id = '$EDU'" >/dev/null
+r=$(as_user "$BEA" "insert into public.attendance_logs (employee_id, kind, photo_path, location_check) values ('$BEA_EMP', 'time_in', '$BEA_EMP/in-5.jpg', 'at_post')"); check_has "a guard cannot write a log directly" "$r" "permission denied"
+r=$(as_user "$BEA" "update public.attendance_logs set location_check = 'at_post'"); check_has "or change one" "$r" "permission denied"
+r=$(as_user "$BEA" "delete from public.attendance_logs"); check_has "or delete one" "$r" "permission denied"
+r=$(as_user "$BEA" "update storage.objects set name = '$BEA_EMP/swapped.jpg' where name = '$P1' returning name"); check "or swap her photo" "$r" ""
+r=$(as_user "$BEA" "select public.geo_distance_m(0, 0, 1, 1)"); check_has "the distance helper is internal" "$r" "permission denied"
+check "a guard sees only her own logs" "$(as_user "$BEA" "select count(*) || ':' || count(*) filter (where employee_id <> '$BEA_EMP') from public.attendance_logs")" "6:0"
+check "the commander sees the logs at his post, not other posts" "$(as_user "$DC" "select count(*) || ':' || count(*) filter (where site_id <> '$SITE1' or site_id is null) from public.attendance_logs")" "7:0"
+check "HR sees every log" "$(as_user "$HR" "select count(*) from public.attendance_logs")" "9"
+check "management sees every log" "$(as_user "$MGMT" "select count(*) from public.attendance_logs")" "9"
+check "the commander opens selfies from his post" "$(as_user "$DC" "select count(*) from storage.objects where name = '$P1'")" "1"
+check "a guard at another post does not" "$(as_user "$EDU" "select count(*) from storage.objects where name = '$P1'")" "0"
+check "HR opens them" "$(as_user "$HR" "select count(*) from storage.objects where name = '$P1'")" "1"
+check "the guard opens her own" "$(as_user "$BEA" "select count(*) from storage.objects where name = '$P1'")" "1"
+
 echo "== schema.sql runs again over existing data"
 before=$(pg "select (select count(*) from public.employees) || '/' || (select count(*) from public.notifications) || '/' || (select count(*) from public.activation_attempts) || '/' || (select count(*) from public.leave_types)")
 r=$(psql $H -U postgres -v ON_ERROR_STOP=1 -q -f "$(dirname "$0")/../schema.sql" 2>&1 | grep -iv '^NOTICE' || true)
 check "re-running schema.sql succeeds" "$r" ""
 check "and keeps every record" "$(pg "select (select count(*) from public.employees) || '/' || (select count(*) from public.notifications) || '/' || (select count(*) from public.activation_attempts) || '/' || (select count(*) from public.leave_types)")" "$before"
+check "attendance logs are kept, and still closed to direct writes" "$(pg "select count(*) from public.attendance_logs"):$(as_user "$BEA" "delete from public.attendance_logs" | grep -c 'permission denied')" "9:1"
 check "activation stays closed to anon after a re-run" "$(as_anon "select public.check_employee_activation('G-002', '1992-02-02', '09171110002')" | grep -c 'permission denied')" "1"
+
+echo "== Demo scripts still match the schema (on a second, empty database)"
+D="$(dirname "$0")/.."
+DEMO_DB="${PGDATABASE:-bannuar_test}_demo"
+DH="-h ${PGHOST:-localhost} -p ${PGPORT:-5432} -d $DEMO_DB"
+psql -h "${PGHOST:-localhost}" -p "${PGPORT:-5432}" -U postgres -d postgres -q -c "drop database if exists $DEMO_DB" -c "create database $DEMO_DB" 2>&1 | grep -v NOTICE
+pgd() { psql $DH -U postgres -tA -v ON_ERROR_STOP=1 -q -c "$1" 2>&1; }
+r=$(for f in tests/supabase-stubs.sql schema.sql seed-demo.sql demo-employee-logins.sql demo-employee-logins.sql; do psql $DH -U postgres -v ON_ERROR_STOP=1 -q -f "$D/$f" 2>&1 | grep -v 'NOTICE' || true; done)
+check "seed-demo.sql, then the demo employee logins twice" "$r" ""
+check "both demo logins link through the sign-up trigger, metadata scrubbed" "$(pgd "select string_agg(e.employee_no || '=' || (u.raw_user_meta_data ?| array['birthdate', 'mobile_no', 'activation_ticket'])::text, ',' order by e.employee_no) from public.employees e join auth.users u on u.id = e.user_id where e.employee_no like 'DEMO-%'")" "DEMO-0001=false,DEMO-0002=false"
+r=$(psql $DH -U postgres -v ON_ERROR_STOP=1 -q -f "$D/remove-demo.sql" 2>&1 | grep -v 'NOTICE' || true)
+check "remove-demo.sql clears them" "$r:$(pgd "select count(*) from public.employees where employee_no like 'DEMO-%'")" ":0"
+psql -h "${PGHOST:-localhost}" -p "${PGPORT:-5432}" -U postgres -d postgres -q -c "drop database if exists $DEMO_DB" 2>&1 | grep -v NOTICE
 
 echo
 echo "PASSED $PASS · FAILED $FAIL"
