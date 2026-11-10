@@ -105,6 +105,10 @@ sign-in is off, and guards have no company email.
   metadata directly and claim the record. Make `handle_new_user` accept an employee activation
   only with a one-time ticket that the Edge Function writes to a service-role-only table. Also
   rate-limit and log attempts per employee number and per IP.
+- **Demo logins already exist:** `supabase/demo-employee-logins.sql` makes app logins for DEMO-0001
+  (detachment commander) and DEMO-0002 (guard), password `password`, with login emails in the
+  format above. Keep the app's format and that script's `v_domain` the same. If you add the
+  activation ticket, make that script write one too, so the demo keeps working.
 - **Sign-in:** the guard enters employee number and password. The app turns the number into the
   login email and calls `signInWithPassword`, then `rpc('my_access')`. That returns `roles`,
   `must_change_password` and `employee {id, employee_no, full_name, position, status, site_id}`. If
@@ -181,8 +185,11 @@ Every list and detail screen comes from the schema. RLS already limits an employ
      Read `decide_leave_request` and `supervises()` first.
 10. **Account:** change password, the privacy notice (website `/privacy`), app version, sign out.
 
-PostgREST needs the foreign key name wherever a table has two links to `employees`, e.g.
-`employees!leave_requests_employee_id_fkey`.
+PostgREST refuses an embed when two tables are linked more than one way, so name the foreign key:
+`sites!employees_site_id_fkey(...)` from `employees` (`site_supervisors` links them too),
+`employees!leave_requests_employee_id_fkey`, `certificates!coe_requests_certificate_fk`. The
+portal's `tests/e2e.mjs` counts the links the way PostgREST does; run the same check on the app's
+requests.
 
 ## Database changes
 

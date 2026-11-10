@@ -58,6 +58,12 @@ The project's sign-in settings, as read on 8 November 2026: email sign-in on, si
    nobody can sign up without one. The same confirmation step applies to them.
 5. Optional: `supabase/seed-demo.sql` fills an empty project with clearly marked demo records to
    try every screen; `supabase/remove-demo.sql` takes them out.
+   For showing the portal, `supabase/demo-login.sql` makes a demo super admin
+   (`bannuar@ibits.digital`, password `password`, already confirmed). Delete it before real records
+   go in: `delete from auth.users where email = 'bannuar@ibits.digital';`
+   For the employee app, `supabase/demo-employee-logins.sql` (after the demo data) gives two demo
+   employees an app login, password `password`: DEMO-0001, a detachment commander, and DEMO-0002, a
+   guard. `remove-demo.sql` deletes them with the demo data.
 
 **Checked against the live project on 8 November 2026** (read-only): the schema is installed (open
 posts, the certificate and invitation checks answer; the employees table refuses public reads; all
@@ -129,7 +135,7 @@ and a bad row, publishing a cutoff, publishing an announcement to a post, hiring
 inviting staff, deploying a floating guard, setting up an account with an invitation code, the
 phone menu and sign-out. Every one of the database requests the portal made is then checked
 against the real schema exported from Postgres (`tests/schema-snapshot.json`): tables, views,
-columns, embedded relations (an embed PostgREST would find ambiguous fails the check), filters,
+columns, embedded relations (each must resolve to exactly one link, as PostgREST requires), filters,
 functions and arguments. The test build is pointed at the
 mock and every real Supabase host is cut, so the tests never touch the live project. **72 passed,
 0 console errors.**
