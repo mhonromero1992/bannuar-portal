@@ -1,17 +1,28 @@
 import { Fragment, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
 import { errorText, fmtDate, fmtMoney, todayManila } from '../lib/format';
 import { roundTo, thirteenthMonth, toCsv, type ThirteenthRow } from '../lib/pay';
 import { downloadFile, loadPayInputs, savePayslips } from '../lib/payData';
-import { Dialog, Empty, ErrorState, Loading, PageHead, Search, SelectField, TextField, useDebounced, useToast } from '../ui/kit';
+import { Dialog, Empty, ErrorState, Loading, PageHead, Search, SelectField, Tabs, TextField, useDebounced, useToast } from '../ui/kit';
+import { ThirteenthTimeline } from './thirteenthTimeline';
 
 const SHOW = 200;
+type View = 'timeline' | 'list';
 
 /** 13th month pay for a year: pro-rated for each stretch at a post and rate, then added up. */
 export default function ThirteenthMonth() {
   const thisYear = Number(todayManila().slice(0, 4));
+  const [params, setParams] = useSearchParams();
+  // the timeline first; the list is its table twin (?view=list keeps it on reload and in a shared link)
+  const view: View = params.get('view') === 'list' ? 'list' : 'timeline';
+  const setView = (v: View) => {
+    const next = new URLSearchParams(params);
+    if (v === 'list') next.set('view', 'list');
+    else next.delete('view');
+    setParams(next, { replace: true });
+  };
   const [year, setYear] = useState(thisYear);
   const [text, setText] = useState('');
   const s = useDebounced(text).trim().toLowerCase();
@@ -23,7 +34,10 @@ export default function ThirteenthMonth() {
       const d = await loadPayInputs(`${year}-01-01`, `${year}-12-31`);
       return thirteenthMonth(year, d.people, d.assignments, d.posts, d.rules, d.rates).sort((a, b) => a.person.name.localeCompare(b.person.name));
     },
+    // another year keeps the last one on screen, dimmed, until it arrives
+    placeholderData: (prev) => prev,
   });
+  const toggle = (id: string) => setOpen(open === id ? null : id);
   const rows = useMemo(() => (q.data ?? []).filter((r) => !s || r.person.name.toLowerCase().includes(s) || r.person.employee_no.toLowerCase().includes(s)), [q.data, s]);
   const ready = (q.data ?? []).filter((r) => !r.problems.length && r.amount > 0);
   const blocked = (q.data ?? []).filter((r) => r.problems.length);
@@ -53,15 +67,26 @@ export default function ThirteenthMonth() {
           <ul>{blocked.slice(0, 8).map((r) => <li key={r.person.id}><Link to={`/employees/${r.person.id}`}>{r.person.name}</Link>: {r.problems[0]}</li>)}</ul>
         </div>
       )}
+      <Tabs label="View" tabs={[{ id: 'timeline', label: 'Timeline' }, { id: 'list', label: 'List' }]} value={view} onChange={setView} />
       <div className="panel">
         <div className="toolbar">
           <Search value={text} onChange={setText} label="Search by name or employee number" />
           <SelectField label="Year" value={String(year)} onChange={(e) => setYear(Number(e.target.value))} options={[thisYear, thisYear - 1, thisYear - 2].map((y) => ({ value: String(y), label: String(y) }))} />
         </div>
         {q.isLoading ? <Loading what="Working out the 13th month" /> : q.error ? <ErrorState error={errorText(q.error)} retry={() => q.refetch()} /> : !rows.length ? (
-          <Empty title={s ? 'Nobody matches' : `No assignments in ${year}`}>{!s && 'The 13th month follows the assignment history on each employee\'s Deployment tab.'}</Empty>
+          <Empty title={s ? 'Nobody matches' : `No assignments in ${year}`}>{s ? 'Check the spelling, or search by employee number.' : 'The 13th month follows the assignment history on each employee\'s Deployment tab.'}</Empty>
+        ) : view === 'timeline' ? (
+          <ThirteenthTimeline
+            year={year}
+            rows={rows.slice(0, SHOW)}
+            allRows={q.data ?? []}
+            open={open}
+            onToggle={toggle}
+            renderBreakdown={(r) => <Breakdown r={r} />}
+            stale={q.isPlaceholderData}
+          />
         ) : (
-          <div className="table-wrap">
+          <div className={`table-wrap${q.isPlaceholderData ? ' is-stale' : ''}`}>
             <table className="table">
               <thead><tr><th>Employee</th><th>Posts in {year}</th><th className="num">Basic pay</th><th className="num">13th month</th><th /></tr></thead>
               <tbody>{rows.slice(0, SHOW).map((r) => (
@@ -71,7 +96,7 @@ export default function ThirteenthMonth() {
                     <td>{[...new Set(r.pieces.map((p) => p.post))].join(', ')}</td>
                     <td className="num">{fmtMoney(r.basic)}</td>
                     <td className="num"><b>{r.problems.length ? <span className="muted">Not yet</span> : fmtMoney(r.amount)}</b></td>
-                    <td><button className="link-btn" type="button" aria-expanded={open === r.person.id} onClick={() => setOpen(open === r.person.id ? null : r.person.id)}>{open === r.person.id ? 'Hide' : 'How'}</button></td>
+                    <td><button className="link-btn" type="button" aria-expanded={open === r.person.id} onClick={() => toggle(r.person.id)}>{open === r.person.id ? 'Hide' : 'How'}</button></td>
                   </tr>
                   {open === r.person.id && (
                     <tr><td colSpan={5}><Breakdown r={r} /></td></tr>

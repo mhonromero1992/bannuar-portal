@@ -407,6 +407,31 @@ await history.getByText('Post C · Lobby').waitFor();
 check('assignment history: each stretch at a post is listed', (await history.locator('tbody tr').count()) === 3 && (await history.getByText('Now').count()) === 1);
 
 await page.goto(`${BASE}/payroll/13th-month`);
+const danteBars = page.getByRole('button', { name: /^Dante Cruz, / });
+await danteBars.first().waitFor();
+check('13th month: the timeline opens first', (await page.getByRole('tab', { name: 'Timeline' }).getAttribute('aria-selected')) === 'true');
+const barNames = await danteBars.evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')));
+check('13th month timeline: a bar for each stretch, named with its post, dates, rate and share', barNames.length === 3
+  && /^Dante Cruz, Post A · Main Gate, Jan 1, 2026 to Mar 31, 2026, ₱100\.00 an hour, 13th month ₱5,200\.00$/.test(barNames[0])
+  && /Post B · Warehouse, Apr 1, 2026 to Oct 31, 2026, ₱90\.00 an hour, 13th month ₱10,920\.00$/.test(barNames[1])
+  && /Post C · Lobby, Nov 1, 2026 to Dec 31, 2026, ₱150\.00 an hour, 13th month ₱5,200\.00$/.test(barNames[2]), barNames.join(' | '));
+const barGeometry = await page.evaluate(() => {
+  const bars = [...document.querySelectorAll('.tl-bar')].filter((b) => b.getAttribute('aria-label').startsWith('Dante Cruz'));
+  const t = bars[0].parentElement.getBoundingClientRect();
+  return bars.map((b) => { const r = b.getBoundingClientRect(); return [(r.left - t.left) / t.width, (r.right - t.left) / t.width]; });
+});
+check('13th month timeline: each bar sits on the year by its dates (April 1 to October 31)', Math.abs(barGeometry[1][0] - 90 / 365) < 0.01 && Math.abs(barGeometry[1][1] - 304 / 365) < 0.01, JSON.stringify(barGeometry));
+await danteBars.nth(1).hover();
+const tipText = await page.locator('.tl-tip').innerText();
+check('13th month timeline: pointing at a bar shows its share and its working', /₱10,920\.00/.test(tipText) && /Post B · Warehouse/.test(tipText) && /₱90\.00 an hour/.test(tipText), tipText.replace(/\s+/g, ' '));
+await page.getByRole('group', { name: 'Posts' }).getByRole('button', { name: 'Post C · Lobby' }).click();
+check('13th month timeline: the legend picks out one post', (await page.locator('.tl-bar.is-picked').count()) === 1 && (await page.locator('.tl-bar.is-dim').count()) === 3);
+await page.locator('.tl-row', { hasText: 'Dante Cruz' }).getByRole('button', { name: 'How' }).click();
+check('13th month timeline: "How" opens the working under the row', /₱21,320\.00/.test(await page.locator('.tl-more').innerText()));
+await page.locator('.tl-row', { hasText: 'Dante Cruz' }).getByRole('button', { name: 'Hide' }).click();
+check('13th month timeline: "Hide" closes it', (await page.locator('.tl-more').count()) === 0);
+await page.getByRole('tab', { name: 'List' }).click();
+check('13th month: the list view is a tab away, and stays on reload', page.url().includes('view=list'));
 const dante = page.getByRole('row', { name: /Dante Cruz/ });
 await dante.waitFor();
 check('13th month: pro-rated at each post and added up (the DEMO-0001 example)', /₱21,320\.00/.test(await dante.innerText()), (await dante.innerText()).replace(/\s+/g, ' '));
