@@ -96,7 +96,7 @@ export function SiteForm({ site, onDone }: { site?: Site; onDone: () => void }) 
     const row = {
       name: f.name.trim(), code: f.code.trim() || null, client_id: f.client_id || null, area_id: f.area_id || null, address: f.address.trim() || null,
       city: f.city.trim() || null, province: f.province.trim() || null, region: f.region.trim() || null, guards_required: Number(f.guards_required || 0),
-      latitude: f.latitude ? Number(f.latitude) : null, longitude: f.longitude ? Number(f.longitude) : null, is_active: f.is_active === 'yes', notes: f.notes.trim() || null,
+      latitude: point?.lat ?? null, longitude: point?.lng ?? null, geofence_radius_m: radius, is_active: f.is_active === 'yes', notes: f.notes.trim() || null,
       duty_hours: Number(f.duty_hours || 12), first_shift_start: f.first_shift_start || '06:00',
     };
     setBusy(true);

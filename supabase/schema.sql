@@ -179,6 +179,16 @@ alter table public.sites
   add column if not exists duty_hours integer not null default 12 check (duty_hours in (8, 12, 24)),
   add column if not exists first_shift_start time not null default '06:00';
 
+-- A post's location for time in and out: both numbers or neither, and a real point on the map
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'sites_location_check' and conrelid = 'public.sites'::regclass) then
+    alter table public.sites add constraint sites_location_check check (
+      (latitude is null) = (longitude is null)
+      and (latitude is null or (latitude between -90 and 90 and longitude between -180 and 180))) not valid;
+  end if;
+end $$;
+
 -- Hourly rates: a post's own rate, or its client's rate for posts without one. Each rate applies from
 -- its date until the next one, so a change mid-year keeps the old rate for the months before it.
 create table if not exists public.pay_rates (
@@ -2657,7 +2667,7 @@ begin
       'payslips', 'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates',
       'profile_change_requests', 'payroll_concerns', 'announcements', 'announcement_receipts', 'notifications',
       'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log', 'pay_rules', 'pay_rates',
-      'employee_assignments'])
+      'employee_assignments', 'activation_tickets', 'activation_attempts', 'attendance_logs'])
   loop
     execute format('drop policy if exists %I on %I.%I', r.policyname, r.schemaname, r.tablename);
   end loop;
@@ -2667,7 +2677,7 @@ begin
       'payslips', 'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates',
       'profile_change_requests', 'payroll_concerns', 'announcements', 'announcement_receipts', 'notifications',
       'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log', 'pay_rules', 'pay_rates',
-      'employee_assignments'])
+      'employee_assignments', 'activation_tickets', 'activation_attempts', 'attendance_logs'])
   loop
     execute format('alter table public.%I enable row level security', r.tablename);
   end loop;
@@ -2872,7 +2882,7 @@ begin
     'payslips', 'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates',
     'profile_change_requests', 'payroll_concerns', 'announcements', 'announcement_receipts', 'notifications',
     'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log', 'pay_rules', 'pay_rates',
-    'employee_assignments', 'document_alerts', 'compliance_gaps', 'site_staffing', 'leave_balances'
+    'employee_assignments', 'attendance_logs', 'document_alerts', 'compliance_gaps', 'site_staffing', 'leave_balances'
   ] loop
     execute format('revoke all on public.%I from anon', t);
     execute format('grant select, insert, update, delete on public.%I to authenticated', t);
