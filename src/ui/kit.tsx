@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode, type SelectHTMLAttributes, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type SelectHTMLAttributes, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react';
 import { label as labelOf, tone as toneOf, type Tone } from '../lib/labels';
 
 /* ---------------------------------------------------------------- states (R-27: empty, loading, error) */
@@ -122,15 +122,38 @@ export function Dialog({ open, title, onClose, wide, children }: { open: boolean
   );
 }
 
-/* ---------------------------------------------------------------- tabs */
+/* ---------------------------------------------------------------- tabs (the underline slides to the chosen tab) */
 export function Tabs<T extends string>({ tabs, value, onChange, label }: { tabs: { id: T; label: ReactNode }[]; value: T; onChange: (t: T) => void; label: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [ink, setInk] = useState<{ x: number; w: number } | null>(null);
+  useLayoutEffect(() => {
+    const list = ref.current;
+    if (!list) return;
+    const measure = () => {
+      const on = list.querySelector<HTMLElement>('[aria-selected="true"]');
+      setInk(on ? { x: on.offsetLeft + 10, w: Math.max(on.offsetWidth - 20, 0) } : null);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(list);
+    return () => ro.disconnect();
+  }, [value, tabs.length]);
+  // arrow keys move between tabs, as people expect of a tab list
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    const i = tabs.findIndex((t) => t.id === value);
+    const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+    onChange(next.id);
+    requestAnimationFrame(() => ref.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus());
+  };
   return (
-    <div className="tabs" role="tablist" aria-label={label}>
+    <div ref={ref} className={`tabs${ink ? ' has-ink' : ''}`} role="tablist" aria-label={label} onKeyDown={onKey}>
       {tabs.map((t) => (
-        <button key={t.id} className="tab" role="tab" type="button" aria-selected={value === t.id} onClick={() => onChange(t.id)}>
+        <button key={t.id} className="tab" role="tab" type="button" aria-selected={value === t.id} tabIndex={value === t.id ? 0 : -1} onClick={() => onChange(t.id)}>
           {t.label}
         </button>
       ))}
+      {ink && <span className="tabs-ink" aria-hidden="true" style={{ '--ink-x': `${ink.x}px`, '--ink-w': `${ink.w}px` } as CSSProperties} />}
     </div>
   );
 }

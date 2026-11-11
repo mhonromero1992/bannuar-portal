@@ -5,7 +5,10 @@ import '@fontsource-variable/archivo/standard.css';
 import './styles.css';
 import { AuthProvider } from './lib/auth';
 import { ToastProvider } from './ui/kit';
+import { installPointerLight } from './ui/pointerLight';
 import App from './App';
+
+installPointerLight();
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1, refetchOnWindowFocus: true } },

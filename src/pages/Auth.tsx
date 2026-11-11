@@ -4,16 +4,18 @@ import { useAuth } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 import { errorText } from '../lib/format';
 import { TextField, useToast } from '../ui/kit';
+import { DutyClock } from '../ui/DutyClock';
 
 function AuthLayout({ children }: { children: ReactNode }) {
   return (
     <div className="auth">
       <div className="auth__art on-night">
-        <div className="brand" style={{ padding: 0 }}>
-          <img src="/badge-128.png" alt="" width={44} height={44} />
-          <span><b>Bannuar</b><small>Security Agency, Inc.</small></span>
-        </div>
-        <p className="auth__title">The HR portal of Bannuar Security Agency</p>
+        <header>
+          <p className="auth__eyebrow">Bannuar Security Agency, Inc. · San Juan, La Union</p>
+          <p className="auth__title">Posts, people and pay, on <em>one desk</em>.</p>
+          <p className="auth__lede">The HR portal for Bannuar's HR, payroll and operations staff: who is posted where, whose papers run out, what each cutoff pays.</p>
+        </header>
+        <DutyClock />
       </div>
       <main className="auth__panel">
         <div className="auth__box">{children}</div>

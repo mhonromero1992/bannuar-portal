@@ -40,19 +40,42 @@ export function postColours(rows: ThirteenthRow[]): { posts: { id: string; name:
 /** "Demo Post · Main Gate" → "Main Gate", for a bar too short for the whole name. */
 const shortName = (post: string) => post.split(' · ').pop() ?? post;
 
-let measureCtx: CanvasRenderingContext2D | null = null;
-function textWidth(text: string): number {
-  if (!measureCtx) {
-    measureCtx = document.createElement('canvas').getContext('2d');
-    if (measureCtx) measureCtx.font = `620 12px ${getComputedStyle(document.body).fontFamily || 'system-ui'}`;
+const measurers: Record<number, CanvasRenderingContext2D | null> = {};
+function textWidth(text: string, weight: number): number {
+  if (!(weight in measurers)) {
+    const ctx = document.createElement('canvas').getContext('2d');
+    if (ctx) ctx.font = `${weight} 12px ${getComputedStyle(document.body).fontFamily || 'system-ui'}`;
+    measurers[weight] = ctx;
   }
-  return measureCtx ? measureCtx.measureText(text).width : text.length * 7;
+  const ctx = measurers[weight];
+  return ctx ? ctx.measureText(text).width : text.length * 7;
 }
 
-/** The longest label that fits inside the bar with 8px either side, or none (the tooltip and the list carry it). */
-function labelFor(post: string, px: number): string {
-  for (const t of [post, shortName(post)]) if (textWidth(t) + 16 <= px) return t;
-  return '';
+/** "₱5.2K", "₱11K": the share again when the whole figure does not fit the bar. */
+const compactMoney = (v: number) => (v >= 1000 ? `₱${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}K` : `₱${Math.round(v)}`);
+
+/**
+ * What fits on the bar, 8px in from each end: the stretch's pro-rated 13th month first, then its
+ * post (whole, then short), then the share alone, then a compact share; nothing when even that does
+ * not fit (the tooltip and the list still have it).
+ */
+function labelFor(p: ThirteenthPiece, px: number): { amount: string; post: string; tight: boolean } {
+  const room = px - 16;
+  const amounts = p.problem ? ['Not yet'] : [fmtMoney(p.share)];
+  for (const amount of amounts) {
+    const a = textWidth(amount, 700);
+    if (a > room) continue;
+    for (const post of [p.post, shortName(p.post)]) {
+      if (a + 6 + textWidth(`· ${post}`, 520) <= room) return { amount, post, tight: false };
+    }
+    return { amount, post: '', tight: false };
+  }
+  // a short stretch: the compact share, 4px in from each end
+  if (!p.problem) {
+    const compact = compactMoney(p.share);
+    if (textWidth(compact, 700) + 8 <= px) return { amount: compact, post: '', tight: true };
+  }
+  return { amount: '', post: '', tight: false };
 }
 
 function describe(r: ThirteenthRow, p: ThirteenthPiece): string {
@@ -141,7 +164,7 @@ export function ThirteenthTimeline({ year, rows, allRows, open, onToggle, render
       <figcaption className="tl-head">
         <div>
           <h2 id="tl-title">Where each employee worked in {year}</h2>
-          <p className="muted small">Each bar is a stretch at one post and one hourly rate. Point at a bar for its 13th month share; open "How" for the working. The list view has every figure.</p>
+          <p className="muted small">Each bar is a stretch at one post and one hourly rate, marked with its pro-rated 13th month; the total for the year is at the right. Point at a bar for its dates and rate, or open "How" for the working.</p>
         </div>
         <div className="tl-legend" role="group" aria-label={shared ? 'Pick out a post' : 'Posts'}>
           {posts.map((p) => (
@@ -171,7 +194,7 @@ export function ThirteenthTimeline({ year, rows, allRows, open, onToggle, render
               ))}
               {todayPct !== null && <span className="tl-today" style={{ left: `${todayPct}%` }} />}
             </div>
-            <span className="label tl-amount">13th month</span>
+            <span className="label tl-amount">Total</span>
             <span />
           </div>
           <ul className="tl-rows">
@@ -191,7 +214,7 @@ export function ThirteenthTimeline({ year, rows, allRows, open, onToggle, render
                         const width = Math.max(pct(p.to) + (100 / days) - left, 0);
                         const px = (width / 100) * trackPx - 2;
                         const dim = picked !== null && p.site_id !== picked;
-                        const text = dim ? '' : labelFor(p.post, px - (p.problem ? 18 : 0));
+                        const label = dim ? { amount: '', post: '', tight: false } : labelFor(p, px - (p.problem ? 20 : 0));
                         return (
                           <button
                             key={`${p.from}-${i}`}
@@ -206,9 +229,10 @@ export function ThirteenthTimeline({ year, rows, allRows, open, onToggle, render
                             onFocus={(e) => show(e.currentTarget, r, p, slot)}
                             onBlur={() => setTip(null)}
                           >
-                            <span className="tl-mark">
+                            <span className={`tl-mark${label.tight ? ' is-tight' : ''}`}>
                               {p.problem && <span className="tl-flag" aria-hidden="true">!</span>}
-                              {text}
+                              {label.amount && <b className="tl-amt">{label.amount}</b>}
+                              {label.post && <span className="tl-post">· {label.post}</span>}
                             </span>
                           </button>
                         );
