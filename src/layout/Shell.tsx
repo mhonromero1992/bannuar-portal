@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
+import { JumpTo } from './JumpTo';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../lib/auth';
 import { supabase } from '../lib/supabase';
@@ -141,6 +142,47 @@ function Bell() {
   );
 }
 
+type NavGroup = { title: string; items: { to: string; label: string; show: boolean; count?: number }[] };
+
+/** The menu, with the lamp: one marker that slides to the page you open. */
+function Nav({ groups }: { groups: NavGroup[] }) {
+  const ref = useRef<HTMLElement>(null);
+  const location = useLocation();
+  const [lamp, setLamp] = useState<{ y: number; h: number } | null>(null);
+  useLayoutEffect(() => {
+    const nav = ref.current;
+    if (!nav) return;
+    const measure = () => {
+      const on = nav.querySelector<HTMLElement>('.nav-link.active');
+      setLamp(on ? { y: on.offsetTop, h: on.offsetHeight } : null);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(nav);
+    return () => ro.disconnect();
+  }, [location.pathname, groups.map((g) => g.items.filter((i) => i.show).length).join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <nav ref={ref} className={`nav${lamp ? ' has-lamp' : ''}`} aria-label="Sections">
+      {lamp && <span className="nav-lamp" aria-hidden="true" style={{ '--lamp-y': `${lamp.y}px`, height: lamp.h } as CSSProperties} />}
+      {groups.map((g) => {
+        const items = g.items.filter((i) => i.show);
+        if (!items.length) return null;
+        return (
+          <div className="nav-group" key={g.title}>
+            <p>{g.title}</p>
+            {items.map((i) => (
+              <NavLink key={i.to} to={i.to} end={i.to === '/'} viewTransition className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+                <span>{i.label}</span>
+                {i.count ? <span className="nav-count" aria-label={`${i.count} waiting`}>{i.count}</span> : null}
+              </NavLink>
+            ))}
+          </div>
+        );
+      })}
+    </nav>
+  );
+}
+
 export default function Shell() {
   const { access, can, signOut } = useAuth();
   const dash = useDashboard();
@@ -148,6 +190,13 @@ export default function Shell() {
   const [menu, setMenu] = useState(false);
   const location = useLocation();
   useEffect(() => setMenu(false), [location.pathname, location.search]);
+  // Escape closes the menu on a phone, like any drawer
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [menu]);
   const requestsCount = d ? (can.hr ? d.leave_pending_hr + d.coe_pending + d.profile_changes_pending : 0) + (can.payroll ? d.payroll_concerns_open : 0) : 0;
 
   const groups: { title: string; items: { to: string; label: string; show: boolean; count?: number }[] }[] = [
@@ -181,43 +230,30 @@ export default function Shell() {
     },
   ];
 
+  const pages = groups.flatMap((g) => g.items.filter((i) => i.show).map((i) => ({ to: i.to, label: i.label })));
   return (
     <div className="shell">
       <a className="skip-link" href="#content">Skip to content</a>
       <aside className={`side on-night${menu ? ' open' : ''}`} aria-label="Portal">
-        <Link className="brand" to="/">
-          <img src="/badge-128.png" alt="" width={38} height={38} />
+        <Link className="brand" to="/" viewTransition>
+          <img src="/badge-128.png" alt="" width={40} height={40} />
           <span><b>Bannuar</b><small>HR portal</small></span>
         </Link>
-        <nav aria-label="Sections">
-          {groups.map((g) => {
-            const items = g.items.filter((i) => i.show);
-            if (!items.length) return null;
-            return (
-              <div className="nav-group" key={g.title}>
-                <p>{g.title}</p>
-                {items.map((i) => (
-                  <NavLink key={i.to} to={i.to} end={i.to === '/'} className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-                    <span>{i.label}</span>
-                    {i.count ? <span className="nav-count" aria-label={`${i.count} waiting`}>{i.count}</span> : null}
-                  </NavLink>
-                ))}
-              </div>
-            );
-          })}
-        </nav>
+        <Nav groups={groups} />
         <div className="side-foot">
           <b>{access?.full_name || access?.email}</b>
           <span>{access?.roles.filter((r) => r !== 'employee').map((r) => ROLE_LABEL[r]).join(', ')}</span>
           <div className="row" style={{ marginTop: 10 }}>
-            <Link className="btn btn-night btn-sm" to="/account">Password</Link>
+            <Link className="btn btn-night btn-sm" to="/account" viewTransition>Password</Link>
             <button className="btn btn-night btn-sm" type="button" onClick={signOut}>Sign out</button>
           </div>
         </div>
       </aside>
+      <button className={`scrim${menu ? ' open' : ''}`} type="button" tabIndex={-1} aria-hidden="true" onClick={() => setMenu(false)} />
       <div className="main">
         <header className="topbar">
           <button className="btn btn-line btn-sm topbar__menu" type="button" aria-expanded={menu} onClick={() => setMenu((m) => !m)}>Menu</button>
+          <JumpTo pages={pages} />
           <span className="topbar__spacer" />
           <Bell />
         </header>

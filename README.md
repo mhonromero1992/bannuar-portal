@@ -75,13 +75,13 @@ made. No account or record was created.
 
 | Screen | For | What it does |
 |---|---|---|
-| Dashboard | all staff | Headcount, post coverage, floating guards near the six-month limit, expired documents, everything waiting for a decision |
+| Dashboard | all staff | What waits for a decision first (leave, certificates, detail changes, payroll concerns, applications, proposal requests), then the roll, today's time in and out (and how many need a look), floating guards near the six-month limit, expired documents, each post's guards against the number needed, and the roll by status. Jump to (Ctrl K, in the top bar on every screen) finds an employee, a post or a page |
 | Employees | all staff (HR edits) | Search 4,000 records by name or number, filter by status and post, add employees. The 201 file: profile, deployment, licenses and documents (upload, verify what employees send from the app), government numbers (each view logged), pay rate, payslips, leave balances and history, certificates, app account (temporary passwords), assignment history (post, duty and shift, from when to when) |
 | Posts and clients | all staff (operations edits) | Posts with guards needed against assigned, commanders, the duty pattern (8, 12 or 24 hours), deploying guards on a shift and setting them to floating; the post's pay rule and hourly rates (payroll); client records |
 | Licenses and documents | all staff | Expired and expiring documents; field employees missing a document required for deployment |
 | Requests | HR, payroll, operations | Leave (commander endorses with a reliever, HR approves), certificates of employment (three-day due date, overdue flag, issue as PDF), contact detail changes (apply or decline), payroll concerns (answer) |
 | Announcements | publishers | Write for everyone, chosen areas or chosen posts; ask for acknowledgment; see how many read and acknowledged |
-| Payroll | payroll | Cutoffs; work out pay from the assignments, rates and client pay rules (attendance sheet to download, edit and upload) or import the payroll file (CSV, common column names recognised, `earning:` and `deduction:` lines kept); check totals; publish to employees, who are notified without the amount; the 13th month, pro-rated by post and rate, and its payout cutoff |
+| Payroll | payroll | Cutoffs; work out pay from the assignments, rates and client pay rules (attendance sheet to download, edit and upload) or import the payroll file (CSV, common column names recognised, `earning:` and `deduction:` lines kept); check totals; publish to employees, who are notified without the amount; the 13th month, pro-rated by post and rate (a timeline of each employee's year, each stretch marked with its share and the total at the right, or the list), and its payout cutoff |
 | Recruitment | HR | Applications from the website (open the attached resume, notes, status, hire into an employee record); the open posts listed on the website |
 | Proposal requests | all staff | Companies asking for guards through the website: call, email, status, notes |
 | Users and roles | super admin | Staff accounts and roles, invitations with codes, temporary passwords |
@@ -181,14 +181,25 @@ and a bad row, publishing a cutoff, publishing an announcement to a post, hiring
 inviting staff, deploying a floating guard, setting up an account with an invitation code, the
 phone menu and sign-out; and the pay features: editing a client's pay rule (the example's night
 differential, a typo caught and refused, a line added), a post's rate and rule, the assignment
-history, the 13th month (₱21,320 for the example, its breakdown, the payout cutoff) and working out
-a cutoff's pay (the attendance sheet from the assignments, an edited sheet uploaded, night
-differential for the last shift). Every one of the database requests the portal made is then checked
+history, the 13th month (the timeline first: a bar for each stretch at its dates with its
+pro-rated share, the total at the right, the tooltip, the legend, How and Hide; then the list:
+₱21,320 for the example, its breakdown, the payout cutoff) and working out a cutoff's pay (the
+attendance sheet from the assignments, an edited sheet uploaded, night differential for the last
+shift). Then the overhaul's parts: the dashboard (today's time in and out counted by the database,
+each post's guards against the number needed, the roll by status), Jump to (Ctrl K) finding an
+employee by name, the skip link and focus rings by keyboard, the menu's lamp following the page,
+eight screens at 1440, 1024, 768 and 390 wide with no sideways scroll (screenshots in
+`tests/shots/<width>/`), the sign-in duty clock (the time and duty in Manila, the lean towards the
+pointer) on a laptop and a phone, and reduced motion (figures at once, the dial flat). Every one
+of the database requests the portal made is then checked
 against the real schema exported from Postgres (`tests/schema-snapshot.json`): tables, views,
 columns, embedded relations (each must resolve to exactly one link, as PostgREST requires), filters,
 functions and arguments. The test build is pointed at the
-mock and every real Supabase host is cut, so the tests never touch the live project. **90 passed,
+mock and every real Supabase host is cut, so the tests never touch the live project. **158 passed,
 0 console errors, and every request matches the schema.**
+
+The look and its reasons (the watch room, the duty clock, where glass and glow are allowed, motion
+and charts) are in [DESIGN.md](DESIGN.md).
 
 **Not tested here:** signed-in work against the live project (storage uploads, realtime, emails):
 after the first admin signs in, click through each screen once before rollout. Running PostgREST

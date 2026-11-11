@@ -174,7 +174,8 @@ async function api(route) {
   const method = req.method();
   const body = req.postData() ? (() => { try { return JSON.parse(req.postData()); } catch { return req.postData(); } })() : null;
   requests.push({ method, path, url: url.toString(), body, headers: req.headers() });
-  const json = (status, data, headers = {}) => route.fulfill({ status, contentType: 'application/json', headers, body: data === undefined ? '' : JSON.stringify(data) });
+  // like Supabase, let the page read the row count (Content-Range) across origins
+  const json = (status, data, headers = {}) => route.fulfill({ status, contentType: 'application/json', headers: { 'access-control-expose-headers': 'Content-Range', ...headers }, body: data === undefined ? '' : JSON.stringify(data) });
 
   if (path === '/auth/v1/token') {
     if (url.searchParams.get('grant_type') === 'password' && body?.password !== 'right-password') return json(400, { error: 'invalid_grant', error_description: 'Invalid login credentials', code: 'invalid_credentials', msg: 'Invalid login credentials' });
@@ -276,6 +277,13 @@ for (const [path, heading] of screens) {
 await page.goto(`${BASE}/`);
 await page.waitForLoadState('networkidle');
 check('dashboard: overdue COE flagged', (await page.getByText('1 past the three-day limit').count()) === 1);
+await page.getByText(/need a look: away from the post/).waitFor();
+const todayTile = await page.locator('.tile', { hasText: 'Time in and out today' }).innerText();
+const todayReqs = requests.filter((r) => r.method === 'HEAD' && r.path === '/rest/v1/attendance_logs');
+check('dashboard: today\'s time in and out is counted by the database, with those needing a look', /\b2\b/.test(todayTile) && todayReqs.length >= 2 && todayReqs.every((r) => /logged_at=gte\./.test(r.url) && /logged_at=lt\./.test(r.url)) && todayReqs.some((r) => /or=/.test(r.url)), todayTile.replace(/\s+/g, ' '));
+const meterRow = await page.locator('.meters li').first().innerText();
+check('dashboard: each post shows its guards against the number needed, short posts first', /Post A · Main Gate/.test(meterRow) && /2 of 3/.test(meterRow) && /1 short/.test(meterRow), meterRow.replace(/\s+/g, ' '));
+check('dashboard: the roll by status adds up to the employees on the roll', /Active\s*2/.test(await page.locator('.legend').innerText()) && /Floating\s*1/.test(await page.locator('.legend').innerText()));
 check('sidebar: waiting counts shown', (await page.locator('.nav-count').count()) >= 3);
 
 console.log('Employees');
@@ -283,6 +291,7 @@ await page.goto(`${BASE}/employees`);
 await page.getByRole('button', { name: 'Add an employee' }).click();
 await page.getByRole('button', { name: 'Add employee' }).click();
 check('add employee: empty form is refused', (await page.locator('.dialog .field-error').count()) >= 3);
+await page.screenshot({ path: `${ROOT}tests/shots/dialog.png` });
 const dialog = page.locator('dialog[open]');
 await dialog.getByLabel('Employee number').fill('G-010');
 await dialog.getByLabel('First name').fill('Nora');
@@ -407,6 +416,34 @@ await history.getByText('Post C · Lobby').waitFor();
 check('assignment history: each stretch at a post is listed', (await history.locator('tbody tr').count()) === 3 && (await history.getByText('Now').count()) === 1);
 
 await page.goto(`${BASE}/payroll/13th-month`);
+const danteBars = page.getByRole('button', { name: /^Dante Cruz, / });
+await danteBars.first().waitFor();
+check('13th month: the timeline opens first', (await page.getByRole('tab', { name: 'Timeline' }).getAttribute('aria-selected')) === 'true');
+const barNames = await danteBars.evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')));
+check('13th month timeline: a bar for each stretch, named with its post, dates, rate and share', barNames.length === 3
+  && /^Dante Cruz, Post A · Main Gate, Jan 1, 2026 to Mar 31, 2026, ₱100\.00 an hour, 13th month ₱5,200\.00$/.test(barNames[0])
+  && /Post B · Warehouse, Apr 1, 2026 to Oct 31, 2026, ₱90\.00 an hour, 13th month ₱10,920\.00$/.test(barNames[1])
+  && /Post C · Lobby, Nov 1, 2026 to Dec 31, 2026, ₱150\.00 an hour, 13th month ₱5,200\.00$/.test(barNames[2]), barNames.join(' | '));
+const barText = await danteBars.evaluateAll((els) => els.map((e) => e.innerText.replace(/\s+/g, ' ').trim()));
+const danteTotal = await page.locator('.tl-row', { hasText: 'Dante Cruz' }).locator('.tl-line > .tl-amount').innerText();
+check('13th month timeline: each bar shows its pro-rated 13th month, the total at the right', barText[0].startsWith('₱5,200.00') && barText[1].startsWith('₱10,920.00') && /₱(5,200\.00|5\.2K)/.test(barText[2]) && /₱21,320\.00/.test(danteTotal), `${barText.join(' | ')} = ${danteTotal}`);
+const barGeometry = await page.evaluate(() => {
+  const bars = [...document.querySelectorAll('.tl-bar')].filter((b) => b.getAttribute('aria-label').startsWith('Dante Cruz'));
+  const t = bars[0].parentElement.getBoundingClientRect();
+  return bars.map((b) => { const r = b.getBoundingClientRect(); return [(r.left - t.left) / t.width, (r.right - t.left) / t.width]; });
+});
+check('13th month timeline: each bar sits on the year by its dates (April 1 to October 31)', Math.abs(barGeometry[1][0] - 90 / 365) < 0.01 && Math.abs(barGeometry[1][1] - 304 / 365) < 0.01, JSON.stringify(barGeometry));
+await danteBars.nth(1).hover();
+const tipText = await page.locator('.tl-tip').innerText();
+check('13th month timeline: pointing at a bar shows its share and its working', /₱10,920\.00/.test(tipText) && /Post B · Warehouse/.test(tipText) && /₱90\.00 an hour/.test(tipText), tipText.replace(/\s+/g, ' '));
+await page.getByRole('group', { name: 'Posts' }).getByRole('button', { name: 'Post C · Lobby' }).click();
+check('13th month timeline: the legend picks out one post', (await page.locator('.tl-bar.is-picked').count()) === 1 && (await page.locator('.tl-bar.is-dim').count()) === 3);
+await page.locator('.tl-row', { hasText: 'Dante Cruz' }).getByRole('button', { name: 'How' }).click();
+check('13th month timeline: "How" opens the working under the row', /₱21,320\.00/.test(await page.locator('.tl-more').innerText()));
+await page.locator('.tl-row', { hasText: 'Dante Cruz' }).getByRole('button', { name: 'Hide' }).click();
+check('13th month timeline: "Hide" closes it', (await page.locator('.tl-more').count()) === 0);
+await page.getByRole('tab', { name: 'List' }).click();
+check('13th month: the list view is a tab away, and stays on reload', page.url().includes('view=list'));
 const dante = page.getByRole('row', { name: /Dante Cruz/ });
 await dante.waitFor();
 check('13th month: pro-rated at each post and added up (the DEMO-0001 example)', /₱21,320\.00/.test(await dante.innerText()), (await dante.innerText()).replace(/\s+/g, ' '));
@@ -517,6 +554,85 @@ await page.getByText('Time in and out from the app').waitFor();
 const empAtt = requests.filter((r) => r.path === '/rest/v1/attendance_logs').at(-1);
 check('employee page: their own logs', /employee_id=eq\.e2/.test(empAtt?.url ?? ''), empAtt?.url);
 
+console.log('Jump to, keyboard, every width, reduced motion');
+await page.goto(`${BASE}/`);
+await page.getByRole('heading', { name: /^Good/ }).waitFor();
+await page.keyboard.press('Control+k');
+const palette = page.getByRole('dialog', { name: 'Jump to' });
+await palette.getByRole('combobox').fill('Lim');
+await palette.getByRole('option', { name: /Bea Lim/ }).waitFor();
+check('jump to: Ctrl K finds an employee by name', (await palette.getByRole('option', { name: /Bea Lim/ }).count()) === 1);
+await page.screenshot({ path: `${ROOT}tests/shots/jump-to.png` });
+await palette.getByRole('option', { name: /Bea Lim/ }).click();
+await page.waitForURL(`${BASE}/employees/e2`);
+check('jump to: choosing a result opens it', page.url().endsWith('/employees/e2'));
+const jumpReq = requests.filter((r) => r.path === '/rest/v1/employees' && /or=/.test(r.url)).at(-1);
+check('jump to: the search goes through the database by name and number', decodeURIComponent(jumpReq?.url ?? '').includes('last_name.ilike.%Lim%'), jumpReq?.url);
+await page.goto(`${BASE}/`);
+await page.getByRole('heading', { name: /^Good/ }).waitFor();
+await page.keyboard.press('Tab');
+await page.waitForTimeout(350);
+const skip = await page.evaluate(() => ({ cls: document.activeElement?.className ?? '', top: document.activeElement?.getBoundingClientRect().top ?? -1 }));
+check('keyboard: Tab reaches the skip link first, and it shows', skip.cls.includes('skip-link') && skip.top >= 0, JSON.stringify(skip));
+await page.keyboard.press('Tab');
+check('keyboard: every focused control shows a ring', await page.evaluate(() => getComputedStyle(document.activeElement).boxShadow !== 'none'));
+await page.getByRole('link', { name: 'Requests' }).first().click();
+await page.waitForURL(/\/requests/);
+await page.waitForTimeout(450);
+const lamp = await page.evaluate(() => {
+  const l = document.querySelector('.nav-lamp')?.getBoundingClientRect();
+  const a = document.querySelector('.nav-link.active')?.getBoundingClientRect();
+  return l && a ? Math.abs(l.top - a.top) : null;
+});
+check('menu: the lamp moves to the page opened', lamp !== null && lamp < 1.5, String(lamp));
+
+const sweep = ['/', '/employees', '/employees/e2', '/posts/s1', '/requests', '/attendance', '/payroll', '/payroll/13th-month'];
+for (const [w, h] of [[1440, 900], [1024, 768], [768, 1024], [390, 844]]) {
+  await page.setViewportSize({ width: w, height: h });
+  for (const path of sweep) {
+    await page.goto(BASE + path);
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(250);
+    const wide = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
+    check(`${w}px ${path}: no sideways scroll`, !wide);
+    mkdirSync(`${ROOT}tests/shots/${w}`, { recursive: true });
+    await page.screenshot({ path: `${ROOT}tests/shots/${w}/${path.replace(/\//g, '_') || 'home'}.png` });
+  }
+}
+await page.setViewportSize({ width: 1280, height: 860 });
+
+const out = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+await blockReal(out);
+await out.route(`${MOCK}/**`, api);
+const p3 = await out.newPage();
+p3.on('pageerror', (e) => consoleErrors.push(e.message));
+await p3.goto(`${BASE}/sign-in`);
+await p3.locator('.clock__lamp').waitFor();
+const clockLabel = await p3.getByRole('img', { name: /24-hour dial/ }).getAttribute('aria-label');
+check('sign-in: the duty clock says the time in Manila and the duty', /in Manila, (day|night) duty, .* to the (6 AM|6 PM) change of shift/.test(clockLabel ?? ''), clockLabel);
+await p3.mouse.move(200, 200);
+await p3.waitForTimeout(800);
+check('sign-in: the dial leans towards the pointer', await p3.evaluate(() => getComputedStyle(document.querySelector('.clock__stage')).transform !== 'none'));
+await p3.screenshot({ path: `${ROOT}tests/shots/sign-in-1440.png` });
+await p3.setViewportSize({ width: 390, height: 844 });
+check('sign-in, phone: no sideways scroll', !(await p3.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)));
+await p3.screenshot({ path: `${ROOT}tests/shots/sign-in-390.png` });
+await out.close();
+
+const calm = await browser.newContext({ viewport: { width: 1280, height: 860 }, reducedMotion: 'reduce' });
+await blockReal(calm);
+await calm.route(`${MOCK}/**`, api);
+const p4 = await calm.newPage();
+await p4.goto(`${BASE}/sign-in`);
+await p4.getByLabel('Email').fill('ana@bannuar.test');
+await p4.getByLabel('Password').fill('right-password');
+await p4.getByRole('button', { name: 'Sign in' }).click();
+await p4.getByRole('heading', { name: /^Good/ }).waitFor();
+check('reduced motion: figures show at once, no count-up', /^3$/.test((await p4.locator('.tile.night .big').innerText()).trim()));
+await p4.goto(`${BASE}/sign-in?next=/`);
+check('reduced motion: the duty clock stays flat', await p4.evaluate(() => { const s = document.querySelector('.clock__stage'); return !s || getComputedStyle(s).transform === 'none'; }));
+await calm.close();
+
 console.log('Sign-up, phone width, sign-out');
 const p2 = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();
 await blockReal(p2.context());
@@ -541,6 +657,8 @@ check('setup: signs up with the code in the metadata', su?.body.data.invite_code
 check('phone: no sideways scroll on the dashboard', !(await p2.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)));
 await p2.getByRole('button', { name: 'Menu' }).click();
 check('phone: the menu opens the sections', await p2.locator('.side.open').isVisible());
+await p2.waitForTimeout(400);
+await p2.screenshot({ path: `${ROOT}tests/shots/390-menu.png` });
 await p2.getByRole('button', { name: 'Sign out' }).click();
 await p2.waitForURL(/sign-in/);
 check('sign out: back to sign-in', p2.url().includes('/sign-in'));
