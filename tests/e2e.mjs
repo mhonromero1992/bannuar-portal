@@ -56,7 +56,34 @@ const E = {
 const empMini = (e) => ({ id: e.id, employee_no: e.employee_no, first_name: e.first_name, middle_name: null, last_name: e.last_name, suffix: null, site_id: e.site_id });
 const T = {
   areas: [{ id: 'a1', name: 'La Union', region: 'Region I', office_address: null, is_active: true }],
-  sites: [{ id: 's1', name: 'Post A · Main Gate', code: 'PA', city: 'San Fernando', area_id: 'a1', is_active: true, client_id: 'c1', address: null, province: 'La Union', region: 'Region I', guards_required: 3, notes: null, latitude: null, longitude: null, geofence_radius_m: 150, client: { name: 'Acme Mart' }, area: { name: 'La Union' } }],
+  sites: [
+    { id: 's1', name: 'Post A · Main Gate', code: 'PA', city: 'San Fernando', area_id: 'a1', is_active: true, client_id: 'c1', address: null, province: 'La Union', region: 'Region I', guards_required: 3, notes: null, latitude: null, longitude: null, geofence_radius_m: 150, pay_rule_id: null, duty_hours: 12, first_shift_start: '06:00:00', client: { name: 'Acme Mart' }, area: { name: 'La Union' } },
+    { id: 's2', name: 'Post B · Warehouse', code: 'PB', city: 'San Juan', area_id: 'a1', is_active: true, client_id: 'c1', address: null, province: 'La Union', region: 'Region I', guards_required: 2, notes: null, latitude: null, longitude: null, geofence_radius_m: 150, pay_rule_id: null, duty_hours: 12, first_shift_start: '06:00:00', client: { name: 'Acme Mart' }, area: { name: 'La Union' } },
+    { id: 's3', name: 'Post C · Lobby', code: 'PC', city: 'San Juan', area_id: 'a1', is_active: true, client_id: 'c1', address: null, province: 'La Union', region: 'Region I', guards_required: 2, notes: null, latitude: null, longitude: null, geofence_radius_m: 150, pay_rule_id: null, duty_hours: 12, first_shift_start: '06:00:00', client: { name: 'Acme Mart' }, area: { name: 'La Union' } },
+  ],
+  pay_rules: [
+    { id: 'pr-std', client_id: null, name: 'Standard', is_default: true, regular_hours: 8, night_diff: 'last_shift', night_diff_hours: 8, days_per_month: 26, notes: null, is_active: true, formulas: [
+      { code: 'basic', label: 'Basic pay', formula: 'rate * regular_hours', kind: 'earning', thirteenth: true },
+      { code: 'overtime', label: 'Overtime pay', formula: 'rate * 125% * overtime_hours', kind: 'earning', thirteenth: false },
+      { code: 'night_diff', label: 'Night differential', formula: 'rate * 10% * night_hours', kind: 'earning', thirteenth: false }] },
+    { id: 'pr-acme', client_id: 'c1', name: 'Acme Mart standard', is_default: true, regular_hours: 8, night_diff: 'last_shift', night_diff_hours: 8, days_per_month: 26, notes: null, is_active: true, formulas: [
+      { code: 'basic', label: 'Basic pay', formula: 'rate * regular_hours', kind: 'earning', thirteenth: true },
+      { code: 'overtime', label: 'Overtime pay', formula: 'rate * 125% * overtime_hours', kind: 'earning', thirteenth: false },
+      { code: 'night_diff', label: 'Night differential', formula: 'rate * 10% * night_hours', kind: 'earning', thirteenth: false },
+      { code: 'allowances', label: 'Allowance', formula: 'days * 25', kind: 'earning', thirteenth: false }] },
+  ],
+  pay_rates: [
+    { id: 'rt1', site_id: 's1', client_id: null, effective_from: '2026-01-01', hourly_rate: 100, note: null },
+    { id: 'rt2', site_id: 's2', client_id: null, effective_from: '2026-01-01', hourly_rate: 90, note: null },
+    { id: 'rt3', site_id: 's3', client_id: null, effective_from: '2026-01-01', hourly_rate: 150, note: null },
+    { id: 'rt4', site_id: null, client_id: 'c1', effective_from: '2026-01-01', hourly_rate: 80, note: '2026 contract' },
+  ],
+  employee_assignments: [
+    { id: 'as1', employee_id: 'e1', site_id: 's1', start_date: '2026-01-01', end_date: '2026-03-31', duty_hours: 12, shift_start: '06:00:00', note: null, site: { name: 'Post A · Main Gate' } },
+    { id: 'as2', employee_id: 'e1', site_id: 's2', start_date: '2026-04-01', end_date: '2026-10-31', duty_hours: 12, shift_start: '06:00:00', note: null, site: { name: 'Post B · Warehouse' } },
+    { id: 'as3', employee_id: 'e1', site_id: 's3', start_date: '2026-11-01', end_date: null, duty_hours: 12, shift_start: '06:00:00', note: null, site: { name: 'Post C · Lobby' } },
+    { id: 'as4', employee_id: 'e2', site_id: 's1', start_date: '2023-01-10', end_date: null, duty_hours: 12, shift_start: '18:00:00', note: null, site: { name: 'Post A · Main Gate' } },
+  ],
   site_staffing: [{ id: 's1', name: 'Post A · Main Gate', code: 'PA', client_id: 'c1', client_name: 'Acme Mart', area_id: 'a1', area_name: 'La Union', city: 'San Fernando', province: 'La Union', guards_required: 3, is_active: true, guards_assigned: 2, supervisors: 1 }],
   site_supervisors: [{ employee_id: 'e1', role: 'detachment_commander' }],
   clients: [{ id: 'c1', name: 'Acme Mart', industry: 'Retail', contact_person: 'Lorna', contact_phone: '0917 555 0101', contact_email: null, address: null, contract_start: '2026-01-01', contract_end: null, status: 'active', notes: null }],
@@ -120,6 +147,7 @@ const RPC = {
   hire_applicant: () => 'e3',
   mark_password_changed: () => null,
   revoke_certificate: () => null,
+  set_site_pay_rule: () => null,
 };
 
 // ------------------------------------------------------------------ the mock API
@@ -135,6 +163,7 @@ function filterRows(rows, url) {
     else if (op === 'neq') out = out.filter((r) => r[k] !== null && r[k] !== undefined && String(r[k]) !== val); // SQL: null <> x is not true
     else if (op === 'in') { const set = val.replace(/^\(|\)$/g, '').split(',').map((s) => s.replace(/^"|"$/g, '')); out = out.filter((r) => set.includes(String(r[k]))); }
     else if (op === 'is' && val === 'null') out = out.filter((r) => r[k] === null || r[k] === undefined);
+    else if (op === 'not' && val === 'is.null') out = out.filter((r) => r[k] !== null && r[k] !== undefined);
   }
   return out;
 }
@@ -232,6 +261,7 @@ const screens = [
   ['/requests', 'Requests'], ['/attendance', 'Attendance'], ['/announcements', 'Announcements'], ['/payroll', 'Payroll'], ['/payroll/p1', 'Nov 1 to 15, 2026'],
   ['/recruitment', 'Recruitment'], ['/inquiries', 'Proposal requests'], ['/compliance', 'Licenses and documents'], ['/users', 'Users and roles'],
   ['/audit', 'Audit log'], ['/settings', 'Settings'], ['/account', 'Change your password'], ['/nowhere', 'This page is not on the roster'],
+  ['/payroll/13th-month', '13th month pay'],
 ];
 for (const [path, heading] of screens) {
   await page.goto(BASE + path);
@@ -332,6 +362,85 @@ await page.getByRole('button', { name: 'Publish to employees' }).click();
 await page.waitForTimeout(300);
 check('payroll: publish goes through the database', rpcCalls('publish_payroll_period')[0]?.body.p_period_id === 'p1');
 
+console.log('Pay rules, rates, assignments, worked-out pay and the 13th month');
+await page.goto(`${BASE}/settings`);
+await page.getByRole('tab', { name: 'Pay rules and rates' }).click();
+await page.getByText('Agency default', { exact: true }).waitFor();
+check('pay rules: the agency and client rules are listed', (await page.getByText('Acme Mart standard').count()) === 1);
+await page.getByRole('row', { name: /Acme Mart standard/ }).getByRole('button', { name: 'Edit' }).click();
+const ruleDialog = page.locator('dialog[open]');
+await ruleDialog.getByText('Example: ₱100.00 an hour').waitFor();
+await page.screenshot({ path: `${ROOT}tests/shots/pay-rule.png`, fullPage: true });
+check('pay rules: the example pays the last shift night differential', /Night differential\s*₱1,040\.00/.test(await ruleDialog.innerText()), (await ruleDialog.locator('.callout').innerText()).replace(/\s+/g, ' '));
+await ruleDialog.getByLabel('Line 1 formula').fill('rate * regular_hourz');
+check('pay rules: a typo is caught while typing', /Unknown name "regular_hourz"/.test(await ruleDialog.innerText()));
+await ruleDialog.getByRole('button', { name: 'Save the rule' }).click();
+check('pay rules: a rule with a mistake is not saved', /Fix the lines/.test(await ruleDialog.innerText()) && !requests.some((r) => r.method === 'PATCH' && r.path === '/rest/v1/pay_rules'));
+await ruleDialog.getByLabel('Line 1 formula').fill('rate * regular_hours');
+await ruleDialog.getByRole('button', { name: 'Add a line' }).click();
+await ruleDialog.getByLabel('Line 5 code').fill('cola');
+await ruleDialog.getByLabel('Line 5 name').fill('COLA');
+await ruleDialog.getByLabel('Line 5 formula').fill('days * 25');
+await ruleDialog.getByRole('button', { name: 'Save the rule' }).click();
+await page.waitForTimeout(300);
+const ruleSaved = requests.find((r) => r.method === 'PATCH' && r.path === '/rest/v1/pay_rules');
+check('pay rules: saved with the new line', ruleSaved?.body.formulas.length === 5 && ruleSaved?.body.formulas[4].code === 'cola' && ruleSaved?.body.formulas[0].formula === 'rate * regular_hours' && ruleSaved?.body.night_diff === 'last_shift', JSON.stringify(ruleSaved?.body).slice(0, 160));
+
+await page.goto(`${BASE}/posts/s1`);
+const payPanel = page.locator('.panel', { hasText: 'Pay at this post' });
+await payPanel.getByText('₱100.00').first().waitFor();
+await payPanel.screenshot({ path: `${ROOT}tests/shots/post-pay.png` });
+check('post pay: the rule, shifts and rate are shown', /Acme Mart standard|client's default/i.test(await payPanel.innerText()) && /6:00 PM to 6:00 AM \(night differential\)/.test(await payPanel.innerText()), (await payPanel.innerText()).slice(0, 200));
+await payPanel.getByLabel('New rate from').fill('2027-01-01');
+await payPanel.getByLabel('Hourly rate (₱)').fill('110');
+await payPanel.getByRole('button', { name: 'Add the rate' }).click();
+await page.waitForTimeout(300);
+const rateAdded = requests.find((r) => r.method === 'POST' && r.path === '/rest/v1/pay_rates');
+check('post pay: a new rate from its first day', rateAdded?.body.site_id === 's1' && rateAdded?.body.hourly_rate === 110 && rateAdded?.body.effective_from === '2027-01-01', JSON.stringify(rateAdded?.body));
+await payPanel.getByLabel('Pay rule').selectOption({ label: 'Standard' });
+await page.waitForTimeout(300);
+check('post pay: payroll picks the post\'s rule', rpcCalls('set_site_pay_rule')[0]?.body.p_site_id === 's1' && rpcCalls('set_site_pay_rule')[0]?.body.p_pay_rule_id === 'pr-std');
+
+await page.goto(`${BASE}/employees/e1?tab=deployment`);
+const history = page.locator('.panel', { hasText: 'Assignment history' });
+await history.getByText('Post C · Lobby').waitFor();
+check('assignment history: each stretch at a post is listed', (await history.locator('tbody tr').count()) === 3 && (await history.getByText('Now').count()) === 1);
+
+await page.goto(`${BASE}/payroll/13th-month`);
+const dante = page.getByRole('row', { name: /Dante Cruz/ });
+await dante.waitFor();
+check('13th month: pro-rated at each post and added up (the DEMO-0001 example)', /₱21,320\.00/.test(await dante.innerText()), (await dante.innerText()).replace(/\s+/g, ' '));
+await dante.getByRole('button', { name: 'How' }).click();
+const how = await page.locator('td[colspan="5"]').innerText();
+check('13th month: the breakdown shows each post, rate and share', /₱5,200\.00/.test(how) && /₱10,920\.00/.test(how) && /₱150\.00/.test(how) && /₱62,400\.00/.test(how), how.replace(/\s+/g, ' ').slice(0, 300));
+await page.getByRole('button', { name: 'Create the payout cutoff' }).click();
+await page.getByRole('button', { name: 'Create the payout', exact: true }).click();
+await page.waitForURL(/\/payroll\/new-/);
+const payout = rpcCalls('import_payslips').at(-1)?.body;
+check('13th month: the payout cutoff gets a 13th month line for each employee', payout?.p_rows.some((r) => r.employee_no === 'G-001' && r['earning: 13th month pay'] === 21320) && payout?.p_rows.some((r) => r.employee_no === 'G-002'), JSON.stringify(payout?.p_rows?.[0]));
+const payoutPeriod = requests.find((r) => r.method === 'POST' && r.path === '/rest/v1/payroll_periods' && r.body.label === '13th month pay 2026');
+check('13th month: the payout is due by 24 December', payoutPeriod?.body.pay_date === '2026-12-24' && payoutPeriod?.body.period_start === '2026-01-01');
+
+await page.goto(`${BASE}/payroll/p1`);
+await page.getByRole('button', { name: 'Work out pay' }).click();
+const work = page.locator('dialog[open]');
+await work.getByText('Payslips ready').waitFor();
+await page.screenshot({ path: `${ROOT}tests/shots/work-out-pay.png` });
+check('work out pay: everyone on duty in the cutoff', /Payslips ready\s*2\b/i.test(await work.innerText()), (await work.locator('.tiles').innerText()).replace(/\s+/g, ' '));
+const sheetDownload = page.waitForEvent('download');
+await work.getByRole('button', { name: 'Download the attendance sheet' }).click();
+const sheetCsv = readFileSync(await (await sheetDownload).path(), 'utf8');
+check('work out pay: the attendance sheet comes from the assignments', sheetCsv.includes('G-002,Bea Lim,PA,Post A · Main Gate,2026-11-01,2026-11-15,13,12,18:00') && sheetCsv.includes('G-001,Dante Cruz,PC,Post C · Lobby,2026-11-01,2026-11-15,13,12,06:00'), sheetCsv.split('\n').slice(0, 3).join(' | '));
+const edited = `${RUN}attendance.csv`;
+writeFileSync(edited, 'Employee number,Name,Post code,Post,From,To,Days,Duty hours,Shift start\nG-002,Bea Lim,PA,Post A · Main Gate,2026-11-01,2026-11-15,10,12,18:00\n');
+await work.getByLabel('Upload the filled sheet (CSV)').setInputFiles(edited);
+await work.getByText('1 row read').waitFor();
+await work.getByRole('button', { name: 'Save 1 payslip' }).click();
+await work.getByText('payslips added').waitFor();
+const computed = rpcCalls('import_payslips').at(-1)?.body.p_rows;
+check('work out pay: the last shift earns night differential, at the post rate and the client rule', computed?.length === 1 && computed[0].employee_no === 'G-002' && computed[0].basic_pay === 8000 && computed[0].overtime_pay === 5000 && computed[0].night_diff_pay === 800 && computed[0].night_diff_hours === 80 && computed[0].allowances === 250, JSON.stringify(computed?.[0]));
+await work.getByRole('button', { name: 'Done' }).click();
+
 console.log('Announcements, recruitment, users, posts');
 await page.goto(`${BASE}/announcements`);
 await page.getByText('1 of 3 read').waitFor({ timeout: 5000 }).catch(() => null);
@@ -369,7 +478,7 @@ await page.getByRole('button', { name: 'Deploy guards here' }).click();
 await page.getByLabel('Pick Carlo Diaz').check();
 await page.getByRole('button', { name: 'Deploy 1 guard' }).click();
 await page.waitForTimeout(300);
-check('deploy: floating guard sent to the post', JSON.stringify(rpcCalls('deploy_employees')[0]?.body) === JSON.stringify({ p_employee_ids: ['e3'], p_site_id: 's1' }));
+check('deploy: floating guard sent to the post on its shift', JSON.stringify(rpcCalls('deploy_employees')[0]?.body) === JSON.stringify({ p_employee_ids: ['e3'], p_site_id: 's1', p_duty_hours: 12, p_shift_start: '06:00' }), JSON.stringify(rpcCalls('deploy_employees')[0]?.body));
 
 console.log('Attendance');
 await page.goto(`${BASE}/posts/s1`);
@@ -518,7 +627,7 @@ for (const r of requests.filter((x) => x.path.startsWith('/rest/v1/'))) {
     if (k === 'order') { for (const o of v.split(',')) if (!cols[table].includes(o.split('.')[0])) problems.add(`${where}: cannot order by ${o}`); continue; }
     if (k.endsWith('or')) {
       const target = k.includes('.') ? 'employees' : table;
-      for (const c of [...v.matchAll(/(\w+)\.(?:ilike|eq|is|neq|in)\./g)].map((x) => x[1])) if (!cols[target].includes(c)) problems.add(`${where}: or-filter on missing ${target}.${c}`);
+      for (const c of [...v.matchAll(/(\w+)\.(?:ilike|eq|is|neq|in|gte|lte|gt|lt)\./g)].map((x) => x[1])) if (!cols[target].includes(c)) problems.add(`${where}: or-filter on missing ${target}.${c}`);
       continue;
     }
     if (!cols[table].includes(k)) problems.add(`${where}: filter on missing ${table}.${k}`);

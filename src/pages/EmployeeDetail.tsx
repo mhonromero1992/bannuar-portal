@@ -8,6 +8,7 @@ import { COE_PURPOSE, DOC_STATUS, EMPLOYEE_STATUS, EMPLOYMENT_TYPE, LEAVE_STATUS
 import { useDocTypes, useSites } from '../lib/refs';
 import type { Certificate } from '../lib/coe';
 import { Badge, Dialog, Empty, ErrorState, Loading, SelectField, StatusBadge, Tabs, TextField, useToast } from '../ui/kit';
+import { AssignmentHistory, ShiftPicker, defaultShift } from './Pay';
 import { EmployeeForm, type EmployeeRow } from './EmployeeForm';
 import { IssueCoeForm, downloadCertificate } from './coeShared';
 import { AttendanceTable, selfieLinks } from './attendanceShared';
@@ -99,19 +100,23 @@ function Deployment({ e }: { e: EmployeeRow & { site: { id: string; name: string
   const qc = useQueryClient();
   const toast = useToast();
   const [site, setSite] = useState('');
+  const [shift, setShift] = useState({ duty: 12, start: '06:00' });
   const [busy, setBusy] = useState(false);
+  const chosenPost = (sites.data ?? []).find((x) => x.id === site);
   const floatingDays = e.status === 'floating' && e.floating_since ? daysBetween(e.floating_since, todayManila()) : null;
   const deploy = async (target: string | null) => {
     setBusy(true);
-    const { error } = await supabase.rpc('deploy_employees', { p_employee_ids: [e.id], p_site_id: target });
+    const { error } = await supabase.rpc('deploy_employees', target ? { p_employee_ids: [e.id], p_site_id: target, p_duty_hours: shift.duty, p_shift_start: shift.start } : { p_employee_ids: [e.id], p_site_id: null });
     setBusy(false);
     if (error) return toast(errorText(error), 'error');
     qc.invalidateQueries({ queryKey: ['employee', e.id] });
+    qc.invalidateQueries({ queryKey: ['assignments', e.id] });
     qc.invalidateQueries({ queryKey: ['dashboard'] });
     toast(target ? 'Deployed to the post.' : 'Set to floating.');
     setSite('');
   };
   return (
+    <>
     <div className="grid grid-2">
       <div className="panel panel-pad stack">
         <h2>Where this employee is</h2>
@@ -125,7 +130,8 @@ function Deployment({ e }: { e: EmployeeRow & { site: { id: string; name: string
       {(can.ops || can.hr) && ['active', 'floating', 'on_leave', 'suspended'].includes(e.status) && (
         <div className="panel panel-pad stack">
           <h2>Move</h2>
-          <SelectField label="Deploy to a post" value={site} onChange={(ev) => setSite(ev.target.value)} placeholder="Choose a post" options={(sites.data ?? []).filter((s) => s.is_active && s.id !== e.site_id).map((s) => ({ value: s.id, label: s.name }))} />
+          <SelectField label="Deploy to a post" value={site} onChange={(ev) => { setSite(ev.target.value); setShift(defaultShift((sites.data ?? []).find((x) => x.id === ev.target.value))); }} placeholder="Choose a post" options={(sites.data ?? []).filter((s) => s.is_active && s.id !== e.site_id).map((s) => ({ value: s.id, label: s.name }))} />
+          {chosenPost && <ShiftPicker firstStart={chosenPost.first_shift_start} value={shift} onChange={setShift} />}
           <div className="row">
             <button className="btn" type="button" disabled={!site} aria-busy={busy} onClick={() => deploy(site)}>Deploy</button>
             {e.status !== 'floating' && <button className="btn btn-line" type="button" aria-busy={busy} onClick={() => deploy(null)}>Set to floating</button>}
@@ -134,6 +140,8 @@ function Deployment({ e }: { e: EmployeeRow & { site: { id: string; name: string
         </div>
       )}
     </div>
+    <AssignmentHistory employeeId={e.id} />
+    </>
   );
 }
 

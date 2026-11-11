@@ -123,6 +123,34 @@ create table if not exists public.clients (
   updated_at timestamptz not null default now()
 );
 
+-- Pay rules: how a client's guards are paid. A post uses its own rule, else its client's default
+-- rule, else the agency-wide default ("Standard"). Each formula line is an earning or deduction the
+-- portal's pay engine (src/lib/pay.ts) works out from a guard's hours at the post:
+--   {"code": "night_diff", "label": "Night differential", "formula": "rate * 10% * night_hours",
+--    "kind": "earning", "thirteenth": false}
+-- Lines marked "thirteenth" are basic pay and count toward the 13th month.
+create table if not exists public.pay_rules (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references public.clients (id) on delete cascade,
+  name text not null check (length(trim(name)) between 1 and 80),
+  is_default boolean not null default false,
+  regular_hours numeric(4, 2) not null default 8 check (regular_hours > 0 and regular_hours <= 24),
+  -- who earns night differential: the shift covering the night (last_shift: 24-hour duties, the
+  -- 12-hour shift from 6pm, the 8-hour shift from 10pm, paid night_diff_hours a duty), every hour
+  -- worked from 10pm to 6am (night_hours, as the Labor Code counts it), or nobody (none)
+  night_diff text not null default 'last_shift' check (night_diff in ('last_shift', 'night_hours', 'none')),
+  night_diff_hours numeric(4, 2) not null default 8 check (night_diff_hours >= 0 and night_diff_hours <= 8),
+  -- paid duty days in a month: fills the attendance sheet and works out the 13th month
+  days_per_month numeric(5, 2) not null default 26 check (days_per_month > 0 and days_per_month <= 31),
+  formulas jsonb not null default '[]'::jsonb check (jsonb_typeof(formulas) = 'array' and jsonb_array_length(formulas) <= 20),
+  notes text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists pay_rules_one_default
+  on public.pay_rules (coalesce(client_id, '00000000-0000-0000-0000-000000000000'::uuid)) where is_default;
+
 -- Sites: posts / detachments at a client
 create table if not exists public.sites (
   id uuid primary key default gen_random_uuid(),
@@ -144,15 +172,28 @@ create table if not exists public.sites (
   updated_at timestamptz not null default now()
 );
 
--- a post's location is both numbers or neither, on the map (checked on new writes only)
-do $$
-begin
-  if not exists (select 1 from pg_constraint where conname = 'sites_location_check' and conrelid = 'public.sites'::regclass) then
-    alter table public.sites add constraint sites_location_check check (
-      (latitude is null) = (longitude is null)
-      and (latitude is null or (latitude between -90 and 90 and longitude between -180 and 180))) not valid;
-  end if;
-end $$;
+-- A post's pay rule and duty pattern: 8, 12 or 24-hour duties, the first shift starting at
+-- first_shift_start (06:00 gives 6am to 6pm and 6pm to 6am for 12-hour duties)
+alter table public.sites
+  add column if not exists pay_rule_id uuid references public.pay_rules (id) on delete set null,
+  add column if not exists duty_hours integer not null default 12 check (duty_hours in (8, 12, 24)),
+  add column if not exists first_shift_start time not null default '06:00';
+
+-- Hourly rates: a post's own rate, or its client's rate for posts without one. Each rate applies from
+-- its date until the next one, so a change mid-year keeps the old rate for the months before it.
+create table if not exists public.pay_rates (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references public.clients (id) on delete cascade,
+  site_id uuid references public.sites (id) on delete cascade,
+  effective_from date not null,
+  hourly_rate numeric(10, 2) not null check (hourly_rate > 0 and hourly_rate < 100000),
+  note text,
+  created_by uuid references auth.users (id) on delete set null default auth.uid(),
+  created_at timestamptz not null default now(),
+  check (num_nonnulls(client_id, site_id) = 1)
+);
+create unique index if not exists pay_rates_site_from on public.pay_rates (site_id, effective_from) where site_id is not null;
+create unique index if not exists pay_rates_client_from on public.pay_rates (client_id, effective_from) where client_id is not null;
 
 -- Employees: the 201 file (guards and office staff)
 create table if not exists public.employees (
@@ -197,6 +238,26 @@ create index if not exists employees_site_idx on public.employees (site_id);
 create index if not exists employees_area_idx on public.employees (area_id);
 create index if not exists employees_status_idx on public.employees (status);
 create index if not exists employees_last_name_idx on public.employees (lower(last_name));
+
+-- Assignment history: which post a guard held, from when to when, and on which duty. Deployments
+-- write it (trigger on employees); HR and operations can correct it. An open assignment has no
+-- end date. Pay for a cutoff and the 13th month are worked out from it.
+create table if not exists public.employee_assignments (
+  id uuid primary key default gen_random_uuid(),
+  employee_id uuid not null references public.employees (id) on delete cascade,
+  site_id uuid not null references public.sites (id) on delete restrict,
+  start_date date not null,
+  end_date date,
+  duty_hours integer not null default 12 check (duty_hours in (8, 12, 24)),
+  shift_start time not null default '06:00',
+  note text,
+  created_by uuid references auth.users (id) on delete set null default auth.uid(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (end_date is null or end_date >= start_date)
+);
+create index if not exists employee_assignments_employee_idx on public.employee_assignments (employee_id, start_date);
+create index if not exists employee_assignments_site_idx on public.employee_assignments (site_id);
 
 -- Pay rates (payroll and HR only, plus the employee)
 create table if not exists public.employee_compensation (
@@ -1243,6 +1304,85 @@ begin
   return null;
 end $$;
 
+-- Today in the Philippines (the database clock runs on UTC)
+create or replace function public.manila_today() returns date
+language sql stable set search_path = '' as $$
+  select (now() at time zone 'Asia/Manila')::date
+$$;
+
+-- Pay rules: check each formula line's shape (the portal checks the formula itself); one default
+create or replace function public.pay_rules_before_write() returns trigger
+language plpgsql set search_path = '' as $$
+declare
+  line jsonb;
+  c text;
+  codes text[] := '{}';
+begin
+  new.name := trim(new.name);
+  for line in select value from jsonb_array_elements(new.formulas) loop
+    c := line ->> 'code';
+    if jsonb_typeof(line) <> 'object' or c is null or c !~ '^[a-z][a-z0-9_]{0,31}$' then
+      raise exception 'Each formula line needs a code of small letters, digits and _ (for example night_diff)' using errcode = '22023';
+    end if;
+    if c = any (codes) then
+      raise exception 'Two formula lines use the code %', c using errcode = '22023';
+    end if;
+    codes := codes || c;
+    if length(trim(coalesce(line ->> 'label', ''))) not between 1 and 60 then
+      raise exception 'Give the line % a name of 1 to 60 characters', c using errcode = '22023';
+    end if;
+    if length(trim(coalesce(line ->> 'formula', ''))) not between 1 and 300 then
+      raise exception 'The formula of % must be 1 to 300 characters', c using errcode = '22023';
+    end if;
+    if coalesce(line ->> 'kind', 'earning') not in ('earning', 'deduction') then
+      raise exception 'The line % must be an earning or a deduction', c using errcode = '22023';
+    end if;
+  end loop;
+  if new.is_default then
+    update public.pay_rules set is_default = false
+    where id <> new.id and is_default and client_id is not distinct from new.client_id;
+  end if;
+  return new;
+end $$;
+
+-- Assignments of one employee never overlap
+create or replace function public.employee_assignments_before_write() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if exists (
+    select 1 from public.employee_assignments a
+    where a.employee_id = new.employee_id and a.id <> new.id
+      and daterange(a.start_date, a.end_date, '[]') && daterange(new.start_date, new.end_date, '[]')
+  ) then
+    raise exception 'These dates overlap another assignment of this employee. Change them so they do not overlap.' using errcode = 'P0001';
+  end if;
+  return new;
+end $$;
+
+-- A change of post closes the open assignment and opens one at the new post (from the hiring date
+-- for a new employee, from today otherwise), on the post's duty pattern. Assignments planned from
+-- that day on are replaced.
+create or replace function public.employees_record_assignment() returns trigger
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_from date := public.manila_today();
+begin
+  if tg_op = 'UPDATE' and new.site_id is not distinct from old.site_id then
+    return null;
+  end if;
+  if tg_op = 'INSERT' then
+    v_from := coalesce(new.date_hired, v_from);
+  end if;
+  delete from public.employee_assignments where employee_id = new.id and start_date >= v_from;
+  update public.employee_assignments set end_date = v_from - 1
+  where employee_id = new.id and start_date < v_from and (end_date is null or end_date >= v_from);
+  if new.site_id is not null then
+    insert into public.employee_assignments (employee_id, site_id, start_date, duty_hours, shift_start)
+    select new.id, s.id, v_from, s.duty_hours, s.first_shift_start from public.sites s where s.id = new.site_id;
+  end if;
+  return null;
+end $$;
+
 -- -------------------------------------------------------------------------------------
 -- 7. Sign-up: staff by invitation code, employees by matching their 201 file
 -- -------------------------------------------------------------------------------------
@@ -1341,7 +1481,8 @@ begin
   foreach t in array array[
     'areas', 'clients', 'sites', 'employees', 'employee_compensation', 'employee_government_ids', 'profiles',
     'employee_documents', 'payroll_periods', 'payslips', 'leave_requests', 'coe_requests', 'profile_change_requests',
-    'payroll_concerns', 'announcements', 'job_openings', 'job_applications', 'inquiries'
+    'payroll_concerns', 'announcements', 'job_openings', 'job_applications', 'inquiries', 'pay_rules',
+    'employee_assignments'
   ] loop
     execute format('drop trigger if exists set_updated_at on public.%I', t);
     execute format('create trigger set_updated_at before update on public.%I for each row execute function public.set_updated_at()', t);
@@ -1351,12 +1492,22 @@ begin
     'areas', 'clients', 'sites', 'employees', 'employee_compensation', 'employee_government_ids', 'user_roles',
     'staff_invitations', 'site_supervisors', 'document_types', 'employee_documents', 'payroll_periods',
     'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates', 'profile_change_requests',
-    'announcements', 'job_openings'
+    'announcements', 'job_openings', 'pay_rules', 'pay_rates', 'employee_assignments'
   ] loop
     execute format('drop trigger if exists audit on public.%I', t);
     execute format('create trigger audit after insert or update or delete on public.%I for each row execute function public.audit_row_change()', t);
   end loop;
 end $$;
+
+drop trigger if exists pay_rules_before_write on public.pay_rules;
+create trigger pay_rules_before_write before insert or update on public.pay_rules
+  for each row execute function public.pay_rules_before_write();
+drop trigger if exists employee_assignments_before_write on public.employee_assignments;
+create trigger employee_assignments_before_write before insert or update on public.employee_assignments
+  for each row execute function public.employee_assignments_before_write();
+drop trigger if exists employees_record_assignment on public.employees;
+create trigger employees_record_assignment after insert or update of site_id on public.employees
+  for each row execute function public.employees_record_assignment();
 
 -- Payslips are imported in thousands; only corrections and deletions go to the trail
 drop trigger if exists audit on public.payslips;
@@ -1836,7 +1987,11 @@ begin
 end $$;
 
 -- Deployment: move employees to a post, or to floating (reserve) status with p_site_id null
-create or replace function public.deploy_employees(p_employee_ids uuid[], p_site_id uuid) returns integer
+-- Deploy guards to a post (no post: floating). The employees trigger closes each guard's open
+-- assignment and opens one at the post; p_duty_hours and p_shift_start set its duty (else the post's).
+drop function if exists public.deploy_employees(uuid[], uuid);
+create or replace function public.deploy_employees(p_employee_ids uuid[], p_site_id uuid,
+  p_duty_hours integer default null, p_shift_start time default null) returns integer
 language plpgsql security definer set search_path = '' as $$
 declare
   n integer;
@@ -1844,6 +1999,9 @@ declare
 begin
   if not (public.is_ops() or public.is_hr()) then
     raise exception 'Operations or HR only' using errcode = '42501';
+  end if;
+  if p_duty_hours is not null and p_duty_hours not in (8, 12, 24) then
+    raise exception 'A duty is 8, 12 or 24 hours' using errcode = '22023';
   end if;
   if p_site_id is null then
     update public.employees set status = 'floating', site_id = null
@@ -1860,10 +2018,41 @@ begin
       status = case when status = 'floating' then 'active' else status end
   where id = any (p_employee_ids) and status in ('active', 'floating', 'on_leave', 'suspended');
   get diagnostics n = row_count;
+  if p_duty_hours is not null or p_shift_start is not null then
+    update public.employee_assignments a
+    set duty_hours = coalesce(p_duty_hours, a.duty_hours), shift_start = coalesce(p_shift_start, a.shift_start)
+    where a.employee_id = any (p_employee_ids) and a.site_id = s.id and a.end_date is null;
+  end if;
   insert into public.notifications (user_id, title, body, kind, link)
   select e.user_id, 'New post assignment', s.name || coalesce(' · ' || s.city, ''), 'deployment', jsonb_build_object('screen', 'Profile')
   from public.employees e where e.id = any (p_employee_ids) and e.user_id is not null and e.site_id = s.id;
   return n;
+end $$;
+
+-- Payroll picks a post's pay rule (null: the client's default); operations keeps the rest of the post
+create or replace function public.set_site_pay_rule(p_site_id uuid, p_pay_rule_id uuid) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  s public.sites;
+  r public.pay_rules;
+begin
+  if not public.is_payroll() then
+    raise exception 'Payroll only' using errcode = '42501';
+  end if;
+  select * into s from public.sites where id = p_site_id;
+  if not found then
+    raise exception 'Post not found' using errcode = 'P0002';
+  end if;
+  if p_pay_rule_id is not null then
+    select * into r from public.pay_rules where id = p_pay_rule_id;
+    if not found then
+      raise exception 'Pay rule not found' using errcode = 'P0002';
+    end if;
+    if r.client_id is not null and r.client_id is distinct from s.client_id then
+      raise exception 'That pay rule belongs to another client' using errcode = 'P0001';
+    end if;
+  end if;
+  update public.sites set pay_rule_id = p_pay_rule_id where id = p_site_id;
 end $$;
 
 -- Payroll import: rows from the payroll file, matched by employee number.
@@ -2467,8 +2656,8 @@ begin
       'user_roles', 'staff_invitations', 'site_supervisors', 'document_types', 'employee_documents', 'payroll_periods',
       'payslips', 'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates',
       'profile_change_requests', 'payroll_concerns', 'announcements', 'announcement_receipts', 'notifications',
-      'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log',
-      'activation_tickets', 'activation_attempts', 'attendance_logs'])
+      'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log', 'pay_rules', 'pay_rates',
+      'employee_assignments'])
   loop
     execute format('drop policy if exists %I on %I.%I', r.policyname, r.schemaname, r.tablename);
   end loop;
@@ -2477,8 +2666,8 @@ begin
       'user_roles', 'staff_invitations', 'site_supervisors', 'document_types', 'employee_documents', 'payroll_periods',
       'payslips', 'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates',
       'profile_change_requests', 'payroll_concerns', 'announcements', 'announcement_receipts', 'notifications',
-      'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log',
-      'activation_tickets', 'activation_attempts', 'attendance_logs'])
+      'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log', 'pay_rules', 'pay_rates',
+      'employee_assignments'])
   loop
     execute format('alter table public.%I enable row level security', r.tablename);
   end loop;
@@ -2496,6 +2685,24 @@ create policy "manage clients" on public.clients for all to authenticated
 create policy "read sites" on public.sites for select to authenticated using (true);
 create policy "manage sites" on public.sites for all to authenticated
   using ((select public.is_ops())) with check ((select public.is_ops()));
+
+-- Pay rules and rates: payroll keeps them, HR reads them
+create policy "read pay rules" on public.pay_rules for select to authenticated
+  using ((select public.is_payroll()) or (select public.is_hr()));
+create policy "payroll manages pay rules" on public.pay_rules for all to authenticated
+  using ((select public.is_payroll())) with check ((select public.is_payroll()));
+create policy "read pay rates" on public.pay_rates for select to authenticated
+  using ((select public.is_payroll()) or (select public.is_hr()));
+create policy "payroll manages pay rates" on public.pay_rates for all to authenticated
+  using ((select public.is_payroll())) with check ((select public.is_payroll()));
+
+-- Assignment history: staff read it, the employee reads their own, commanders their posts';
+-- HR and operations correct it
+create policy "read assignments" on public.employee_assignments for select to authenticated
+  using ((select public.is_staff()) or employee_id = (select public.current_employee_id())
+         or site_id = any ((select public.my_supervised_site_ids())::uuid[]));
+create policy "hr and operations manage assignments" on public.employee_assignments for all to authenticated
+  using ((select public.is_hr()) or (select public.is_ops())) with check ((select public.is_hr()) or (select public.is_ops()));
 
 create policy "read site supervisors" on public.site_supervisors for select to authenticated using (true);
 create policy "manage site supervisors" on public.site_supervisors for all to authenticated
@@ -2664,8 +2871,8 @@ begin
     'user_roles', 'staff_invitations', 'site_supervisors', 'document_types', 'employee_documents', 'payroll_periods',
     'payslips', 'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates',
     'profile_change_requests', 'payroll_concerns', 'announcements', 'announcement_receipts', 'notifications',
-    'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log', 'attendance_logs',
-    'document_alerts', 'compliance_gaps', 'site_staffing', 'leave_balances'
+    'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log', 'pay_rules', 'pay_rates',
+    'employee_assignments', 'document_alerts', 'compliance_gaps', 'site_staffing', 'leave_balances'
   ] loop
     execute format('revoke all on public.%I from anon', t);
     execute format('grant select, insert, update, delete on public.%I to authenticated', t);
@@ -2701,7 +2908,8 @@ revoke execute on function
   public.my_access(), public.mark_password_changed(), public.invite_staff(text, text, public.app_role[], uuid),
   public.set_user_roles(uuid, public.app_role[]), public.list_users(), public.admin_reset_password(uuid, text),
   public.get_government_ids(uuid), public.save_government_ids(uuid, text, text, text, text),
-  public.deploy_employees(uuid[], uuid), public.import_payslips(uuid, jsonb), public.publish_payroll_period(uuid),
+  public.deploy_employees(uuid[], uuid, integer, time), public.set_site_pay_rule(uuid, uuid),
+  public.import_payslips(uuid, jsonb), public.publish_payroll_period(uuid),
   public.unpublish_payroll_period(uuid), public.decide_leave_request(uuid, boolean, text, uuid),
   public.cancel_leave_request(uuid), public.issue_certificate(uuid, text, text, text),
   public.issue_certificate_for(uuid, text, boolean, text, text, text, text), public.attach_certificate_file(uuid, text),
@@ -2714,7 +2922,8 @@ grant execute on function
   public.my_access(), public.mark_password_changed(), public.invite_staff(text, text, public.app_role[], uuid),
   public.set_user_roles(uuid, public.app_role[]), public.list_users(), public.admin_reset_password(uuid, text),
   public.get_government_ids(uuid), public.save_government_ids(uuid, text, text, text, text),
-  public.deploy_employees(uuid[], uuid), public.import_payslips(uuid, jsonb), public.publish_payroll_period(uuid),
+  public.deploy_employees(uuid[], uuid, integer, time), public.set_site_pay_rule(uuid, uuid),
+  public.import_payslips(uuid, jsonb), public.publish_payroll_period(uuid),
   public.unpublish_payroll_period(uuid), public.decide_leave_request(uuid, boolean, text, uuid),
   public.cancel_leave_request(uuid), public.issue_certificate(uuid, text, text, text),
   public.issue_certificate_for(uuid, text, boolean, text, text, text, text), public.attach_certificate_file(uuid, text),
@@ -2852,6 +3061,21 @@ insert into public.document_types (code, name, category, has_expiry, required_fo
   ('EMPLOYMENT_CONTRACT', 'Employment contract', 'contract', false, false, 30, true, false, 130),
   ('BIR_2316', 'BIR Form 2316', 'payroll', false, false, 30, true, false, 140)
 on conflict (code) do nothing;
+
+-- The agency-wide pay rule: Labor Code overtime (125%) and night differential (10%)
+insert into public.pay_rules (id, client_id, name, is_default, regular_hours, night_diff, night_diff_hours, days_per_month, formulas, notes)
+values ('00000000-0000-4000-8000-0000000000a1', null, 'Standard', true, 8, 'last_shift', 8, 26, '[
+  {"code": "basic", "label": "Basic pay", "formula": "rate * regular_hours", "kind": "earning", "thirteenth": true},
+  {"code": "overtime", "label": "Overtime pay", "formula": "rate * 125% * overtime_hours", "kind": "earning", "thirteenth": false},
+  {"code": "night_diff", "label": "Night differential", "formula": "rate * 10% * night_hours", "kind": "earning", "thirteenth": false}
+]'::jsonb, 'Used by every post whose client has no rule of its own.')
+on conflict (id) do nothing;
+
+-- Employees already at a post before assignment history existed: one open assignment from hiring
+insert into public.employee_assignments (employee_id, site_id, start_date, duty_hours, shift_start)
+select e.id, s.id, coalesce(e.date_hired, public.manila_today()), s.duty_hours, s.first_shift_start
+from public.employees e join public.sites s on s.id = e.site_id
+where not exists (select 1 from public.employee_assignments a where a.employee_id = e.id);
 
 -- -------------------------------------------------------------------------------------
 -- 15. Live updates for the portal's bell and the app (Supabase Realtime)

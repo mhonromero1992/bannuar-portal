@@ -76,17 +76,17 @@ made. No account or record was created.
 | Screen | For | What it does |
 |---|---|---|
 | Dashboard | all staff | Headcount, post coverage, floating guards near the six-month limit, expired documents, everything waiting for a decision |
-| Employees | all staff (HR edits) | Search 4,000 records by name or number, filter by status and post, add employees. The 201 file: profile, deployment, licenses and documents (upload, verify what employees send from the app), government numbers (each view logged), pay rate, payslips, leave balances and history, certificates, app account (temporary passwords) |
-| Posts and clients | all staff (operations edits) | Posts with guards needed against assigned, commanders, deploying guards and setting them to floating; client records |
+| Employees | all staff (HR edits) | Search 4,000 records by name or number, filter by status and post, add employees. The 201 file: profile, deployment, licenses and documents (upload, verify what employees send from the app), government numbers (each view logged), pay rate, payslips, leave balances and history, certificates, app account (temporary passwords), assignment history (post, duty and shift, from when to when) |
+| Posts and clients | all staff (operations edits) | Posts with guards needed against assigned, commanders, the duty pattern (8, 12 or 24 hours), deploying guards on a shift and setting them to floating; the post's pay rule and hourly rates (payroll); client records |
 | Licenses and documents | all staff | Expired and expiring documents; field employees missing a document required for deployment |
 | Requests | HR, payroll, operations | Leave (commander endorses with a reliever, HR approves), certificates of employment (three-day due date, overdue flag, issue as PDF), contact detail changes (apply or decline), payroll concerns (answer) |
 | Announcements | publishers | Write for everyone, chosen areas or chosen posts; ask for acknowledgment; see how many read and acknowledged |
-| Payroll | payroll | Cutoffs; import the payroll file (CSV, common column names recognised, `earning:` and `deduction:` lines kept); check totals; publish to employees, who are notified without the amount |
+| Payroll | payroll | Cutoffs; work out pay from the assignments, rates and client pay rules (attendance sheet to download, edit and upload) or import the payroll file (CSV, common column names recognised, `earning:` and `deduction:` lines kept); check totals; publish to employees, who are notified without the amount; the 13th month, pro-rated by post and rate, and its payout cutoff |
 | Recruitment | HR | Applications from the website (open the attached resume, notes, status, hire into an employee record); the open posts listed on the website |
 | Proposal requests | all staff | Companies asking for guards through the website: call, email, status, notes |
 | Users and roles | super admin | Staff accounts and roles, invitations with codes, temporary passwords |
 | Audit log | HR admin, super admin | Who changed what, and who viewed whose government numbers |
-| Settings | HR, operations | Areas, document types (expiry, reminders, what employees may upload), leave types and credits |
+| Settings | HR, operations, payroll | Areas, document types (expiry, reminders, what employees may upload), leave types and credits; pay rules (formulas, night differential, duty days) and client rates (payroll edits) |
 
 Notifications (top right) update live: new leave, certificate and detail requests, applications,
 proposal requests.
@@ -98,6 +98,51 @@ database with a certificate number and a 12-character verification code, makes a
 badge, the signatory, the code and a QR code to the website's check page, stores the PDF for the
 employee's app, and downloads a copy. Anyone holding the paper can check the code on the website,
 which shows whether it is genuine or withdrawn. A withdrawn certificate says so there at once.
+
+### Pay rules, rates and the 13th month
+
+Each client pays its guards its own way, and each post has its own rate.
+
+- **Pay rules** (Settings → Pay rules and rates; payroll edits, HR reads). A client's default rule
+  covers all its posts; a post can pick another rule of its client; posts of clients without a rule
+  use the agency's **Standard** rule (overtime at 125%, night differential at 10%). A rule has the
+  regular hours a duty (8), the duty days a month (26), who earns night differential, and formula
+  lines.
+- **Formula lines** are worked out for a guard's duty at one post, top to bottom, to the centavo:
+  `rate * regular_hours`, `rate * 125% * overtime_hours`, `rate * 10% * night_hours`,
+  `days * 25`. Names: `rate`, `daily_rate`, `days`, `duty_length`, `duty_hours`, `regular_hours`,
+  `overtime_hours`, `night_hours`, and the codes of the lines above. Functions: `min`, `max`,
+  `round(x, 2)`, `floor`, `ceil`, `abs`, `if(condition, then, else)`. A typo is caught while
+  typing, and the editor shows an example (₱100 an hour, 13 duties of 12 hours from 6 PM). Lines
+  coded `basic`, `overtime`, `night_diff`, `holiday` and `allowances` fill those payslip columns;
+  others appear under their own name. Lines marked "13th month" are the basic pay it counts.
+- **Night differential.** *Last shift of the day* (the default, as Bannuar described it): every
+  24-hour duty, the 12-hour shift from 6 PM and the 8-hour shift from 10 PM (the shift that covers
+  most of 10 PM to 6 AM) earn the rule's hours, 8, a duty; day shifts earn none. *Every hour from
+  10 PM to 6 AM* counts the hours actually worked then, as the Labor Code (Art. 86) does. Use it
+  where shifts do not line up with 10 PM to 6 AM: a 3 PM to 11 PM guard is owed 1 hour by law.
+- **Rates** (the post's page; payroll edits): hourly rates from a date, so a new rate keeps the old
+  one for the months before it. A post without its own rate uses its client's rate (Settings).
+- **Assignment history** (the employee's Deployment tab): every deployment records the post, the
+  duty (8, 12 or 24 hours) and the shift. HR and operations can add or correct past stretches.
+- **Work out pay** (a draft cutoff → Work out pay): the attendance sheet is filled from the
+  assignments with each rule's duty days. Download it, change the days to the days worked, upload
+  it, check the result and save the payslips, or download them as a payroll file to add SSS,
+  PhilHealth, Pag-IBIG, tax and loans and import it.
+- **13th month** (Payroll → 13th month): for each stretch of the year a guard held a post at one
+  rate, basic pay is the rule's 13th month lines for the duty days (hourly rate × 8 hours × 26 days ×
+  months), and the 13th month is a twelfth of it; the stretches are added up. Bannuar's example,
+  in the demo data: DEMO-0001 at ₱100 an hour January to March (₱5,200), ₱90 April to October
+  (₱10,920) and ₱150 November to December (₱5,200) gets ₱21,320. *Create the payout cutoff*
+  makes a cutoff with a 13th month line for each employee, to check and publish.
+
+**Not covered yet:** holiday and rest-day premiums, which need a holiday calendar and day-by-day
+attendance (put them in the payroll file for now), and statutory deductions (from the payroll file).
+
+**Updating a project that already runs the portal:** paste `supabase/schema.sql` into the SQL
+Editor again. It only adds; existing records stay, and every employee already at a post gets an open
+assignment from their hiring date. Then give each post (or client) an hourly rate. On a demo
+project, run `supabase/seed-demo.sql` again to add the demo rule, rates and DEMO-0001's year.
 
 ## Security, in short
 
@@ -113,19 +158,18 @@ which shows whether it is genuine or withdrawn. A withdrawn certificate says so 
 ## Tests
 
 **Database** (`supabase/tests/run-tests.sh`, against Postgres 16 with stand-ins for Supabase's
-`auth` and `storage` schemas, connecting the way the Supabase API does): 190 checks of sign-up,
-employee activation (one-time tickets, rate limits, nothing personal left in the login), row level
-security for every role, payroll import and publishing, the leave and COE flows, certificate
-verification, announcements, website forms, storage folders, admin tools, push devices and
-attendance (each location check, the database's time, photos from the guard's own fresh upload
-only), plus running `schema.sql` again over existing data and the demo scripts on an empty
-database. **190 passed.**
+`auth` and `storage` schemas, connecting the way the Supabase API does): 136 checks of sign-up,
+row level security for every role, payroll import and publishing, the leave and COE flows,
+certificate verification, announcements, website forms, storage folders, admin tools, pay rules
+(formula line checks, one default a client, who may read and set rules and rates), assignment
+history (written by deployments, no overlaps, who sees whose) and running `schema.sql` twice and
+over existing data. **136 passed.** The upgrade was also rehearsed: the previous schema and demo
+data first, then the new `schema.sql` and `seed-demo.sql` on top, and `remove-demo.sql` after.
 
-**Edge Functions** (`deno task test` in `supabase/functions`): `activate-employee` and `send-push`
-against a mocked admin client and a mocked Google API: every answer of the activation check, Auth's
-errors, input checks, the IP used for the limits, logs without personal data; the webhook secret,
-the FCM message (an RS256 sign-in checked with its key), push text without amounts, tokens Google
-drops. **22 passed.**
+**Pay engine** (`npm run test:pay`): the formula language (precedence, percentages, functions,
+mistakes explained), the night differential for 8, 12 and 24-hour duties under both rules, rates
+by post and client, rate changes and separations, Bannuar's 13th month example (₱21,320), the
+attendance sheet and a cutoff's pay. **13 passed.**
 
 **Portal** (`npm run test:e2e`): builds the portal, serves it, and drives it in Chromium against a
 mocked Supabase API: sign-in (wrong and right password, return to the page asked for), all 18
@@ -134,15 +178,17 @@ through the logged function, verifying a document, issuing a walk-in COE (a real
 stored and its path recorded) and a requested COE with compensation, approving leave, applying a
 detail change, answering a payroll concern, importing a payroll CSV with differently named columns
 and a bad row, publishing a cutoff, publishing an announcement to a post, hiring an applicant,
-inviting staff, deploying a floating guard, setting a post's location from pasted Google Maps
-numbers (swapped numbers caught), the Attendance page (photos signed in one request, the "Needs a
-look" filter, a log's photo and place), an employee's attendance, setting up an account with an
-invitation code, the phone menu and sign-out. Every one of the database requests the portal made is then checked
+inviting staff, deploying a floating guard, setting up an account with an invitation code, the
+phone menu and sign-out; and the pay features: editing a client's pay rule (the example's night
+differential, a typo caught and refused, a line added), a post's rate and rule, the assignment
+history, the 13th month (₱21,320 for the example, its breakdown, the payout cutoff) and working out
+a cutoff's pay (the attendance sheet from the assignments, an edited sheet uploaded, night
+differential for the last shift). Every one of the database requests the portal made is then checked
 against the real schema exported from Postgres (`tests/schema-snapshot.json`): tables, views,
 columns, embedded relations (each must resolve to exactly one link, as PostgREST requires), filters,
 functions and arguments. The test build is pointed at the
-mock and every real Supabase host is cut, so the tests never touch the live project. **85 passed,
-0 console errors.**
+mock and every real Supabase host is cut, so the tests never touch the live project. **90 passed,
+0 console errors, and every request matches the schema.**
 
 **Not tested here:** signed-in work against the live project (storage uploads, realtime, emails):
 after the first admin signs in, click through each screen once before rollout. Running PostgREST

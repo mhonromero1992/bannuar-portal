@@ -9,6 +9,7 @@ import { safeSearch } from '../lib/refs';
 import { mapsLink } from '../lib/attendance';
 import { Badge, Dialog, Empty, ErrorState, Loading, Search, StatusBadge, useDebounced, useToast } from '../ui/kit';
 import { SiteForm, type Site } from './Posts';
+import { PostPay, ShiftPicker, defaultShift } from './Pay';
 
 export default function PostDetail() {
   const { id = '' } = useParams();
@@ -116,18 +117,21 @@ export default function PostDetail() {
           </table>
         )}
       </div>
+      {(can.payroll || can.hr) && <PostPay site={s} />}
       <Dialog open={editing} title="Edit the post" onClose={() => setEditing(false)} wide>
         <SiteForm site={s} onDone={() => { setEditing(false); qc.invalidateQueries({ queryKey: ['site', id] }); qc.invalidateQueries({ queryKey: ['site-staffing'] }); qc.invalidateQueries({ queryKey: ['sites-list'] }); }} />
       </Dialog>
       <Dialog open={deploying} title={`Deploy guards to ${s.name}`} onClose={() => setDeploying(false)} wide>
-        {deploying && <DeployPicker siteId={id} onDone={() => { setDeploying(false); refresh(); }} />}
+        {deploying && <DeployPicker site={s} onDone={() => { setDeploying(false); refresh(); }} />}
       </Dialog>
     </>
   );
 }
 
-function DeployPicker({ siteId, onDone }: { siteId: string; onDone: () => void }) {
+function DeployPicker({ site, onDone }: { site: Site; onDone: () => void }) {
+  const siteId = site.id;
   const toast = useToast();
+  const [shift, setShift] = useState(defaultShift(site));
   const [text, setText] = useState('');
   const q = useDebounced(text);
   const [picked, setPicked] = useState<string[]>([]);
@@ -150,7 +154,7 @@ function DeployPicker({ siteId, onDone }: { siteId: string; onDone: () => void }
   });
   const deploy = async () => {
     setBusy(true);
-    const { data, error } = await supabase.rpc('deploy_employees', { p_employee_ids: picked, p_site_id: siteId });
+    const { data, error } = await supabase.rpc('deploy_employees', { p_employee_ids: picked, p_site_id: siteId, p_duty_hours: shift.duty, p_shift_start: shift.start });
     setBusy(false);
     if (error) return toast(errorText(error), 'error');
     toast(`${data} deployed. They are told in the app.`);
@@ -173,6 +177,7 @@ function DeployPicker({ siteId, onDone }: { siteId: string; onDone: () => void }
           </table>
         </div>
       )}
+      <ShiftPicker firstStart={site.first_shift_start} value={shift} onChange={setShift} />
       <div className="form-foot"><button className="btn" type="button" disabled={!picked.length} aria-busy={busy} onClick={deploy}>Deploy {picked.length || ''} {picked.length === 1 ? 'guard' : 'guards'}</button></div>
     </div>
   );

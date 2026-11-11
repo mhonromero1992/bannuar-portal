@@ -118,3 +118,63 @@ begin
   values ('Demo Company Inc.', 'Demo Requester', 'Admin Officer', 'demo@example.com', '09170000098', 'commercial', 4, '24h',
     'Demo request for a proposal.', true, 'demo');
 end $$;
+
+-- =====================================================================================
+-- DEMO PAY: a pay rule for the demo client, hourly rates for three demo posts, a guard on the
+-- night shift, and DEMO-0001's year as in Bannuar's example: ₱100 an hour January to March, ₱90
+-- April to October, ₱150 November to December. Payroll → 13th month shows ₱21,320.00 for him.
+-- Safe to run again, and on a project where the demo data above is already loaded.
+-- =====================================================================================
+do $$
+declare
+  v_area constant uuid := 'd0000000-0000-4000-8000-000000000001';
+  v_client constant uuid := 'd0000000-0000-4000-8000-000000000101';
+  v_site1 constant uuid := 'd0000000-0000-4000-8000-000000000201';
+  v_site2 constant uuid := 'd0000000-0000-4000-8000-000000000202';
+  v_site3 constant uuid := 'd0000000-0000-4000-8000-000000000203';
+  v_rule constant uuid := 'd0000000-0000-4000-8000-000000000701';
+  v_juan constant uuid := 'd0000000-0000-4000-8000-000000000301';
+  v_maria constant uuid := 'd0000000-0000-4000-8000-000000000302';
+  y constant int := extract(year from public.manila_today())::int;
+begin
+  if not exists (select 1 from public.employees where id = v_juan) then
+    raise notice 'No demo employees: the demo pay records were skipped.';
+    return;
+  end if;
+
+  insert into public.sites (id, client_id, area_id, name, code, city, province, region, guards_required, duty_hours, first_shift_start)
+  values (v_site3, v_client, v_area, 'Demo Post · Lobby', 'DEMO-LB', 'San Juan', 'La Union', 'Region I', 2, 12, '06:00')
+  on conflict (id) do nothing;
+
+  insert into public.pay_rules (id, client_id, name, is_default, regular_hours, night_diff, night_diff_hours, days_per_month, formulas, notes)
+  values (v_rule, v_client, 'Demo Client Corporation', true, 8, 'last_shift', 8, 26, '[
+    {"code": "basic", "label": "Basic pay", "formula": "rate * regular_hours", "kind": "earning", "thirteenth": true},
+    {"code": "overtime", "label": "Overtime pay", "formula": "rate * 125% * overtime_hours", "kind": "earning", "thirteenth": false},
+    {"code": "night_diff", "label": "Night differential", "formula": "rate * 10% * night_hours", "kind": "earning", "thirteenth": false},
+    {"code": "allowances", "label": "Demo allowance", "formula": "days * 25", "kind": "earning", "thirteenth": false}
+  ]'::jsonb, 'Demo record')
+  on conflict (id) do nothing;
+
+  insert into public.pay_rates (site_id, effective_from, hourly_rate, note) values
+    (v_site1, make_date(y, 1, 1), 100, 'Demo rate'),
+    (v_site2, make_date(y, 1, 1), 90, 'Demo rate'),
+    (v_site3, make_date(y, 1, 1), 150, 'Demo rate')
+  on conflict do nothing;
+
+  -- DEMO-0001: the Main Gate until March, the Warehouse April to October, the Lobby from November
+  if not exists (select 1 from public.employee_assignments where employee_id = v_juan and site_id = v_site2) then
+    update public.employees set site_id = v_site3 where id = v_juan;
+    delete from public.employee_assignments where employee_id = v_juan;
+    insert into public.employee_assignments (employee_id, site_id, start_date, end_date, duty_hours, shift_start, note)
+    select v_juan, x.site, x.from_day, x.to_day, 12, '06:00', 'Demo record'
+    from (values
+      (v_site1, coalesce((select date_hired from public.employees where id = v_juan), make_date(y, 1, 1)), make_date(y, 3, 31)),
+      (v_site2, make_date(y, 4, 1), make_date(y, 10, 31)),
+      (v_site3, make_date(y, 11, 1), null::date)
+    ) as x(site, from_day, to_day);
+  end if;
+
+  -- DEMO-0002 takes the Main Gate's 6pm to 6am shift: the last guard of the day earns night differential
+  update public.employee_assignments set shift_start = '18:00'
+  where employee_id = v_maria and end_date is null and shift_start <> '18:00';
+end $$;

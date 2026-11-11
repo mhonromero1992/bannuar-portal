@@ -176,7 +176,7 @@ export default function Shell() {
       items: [
         { to: '/users', label: 'Users and roles', show: can.admin },
         { to: '/audit', label: 'Audit log', show: can.auditor },
-        { to: '/settings', label: 'Settings', show: can.hr || can.ops },
+        { to: '/settings', label: 'Settings', show: can.hr || can.ops || can.payroll },
       ],
     },
   ];

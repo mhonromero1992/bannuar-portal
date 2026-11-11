@@ -28,7 +28,7 @@ export default function Payroll() {
   });
   return (
     <>
-      <PageHead title="Payroll" intro="Each cutoff's payslips come from the payroll file. Employees see theirs in the app once the cutoff is published." actions={<button className="btn" type="button" onClick={() => setCreating(true)}>New cutoff</button>} />
+      <PageHead title="Payroll" intro="Each cutoff's payslips are worked out from the assignments, rates and pay rules, or imported from the payroll file. Employees see theirs in the app once the cutoff is published." actions={<><Link className="btn btn-line" to="/payroll/13th-month">13th month</Link><button className="btn" type="button" onClick={() => setCreating(true)}>New cutoff</button></>} />
       <div className="panel">
         {q.isLoading ? <Loading /> : q.error ? <ErrorState error={errorText(q.error)} retry={() => q.refetch()} /> : !q.data?.length ? (
           <Empty title="No cutoffs yet">Create the first cutoff, then import its payroll file.</Empty>
@@ -67,7 +67,7 @@ function NewPeriod({ onCancel }: { onCancel: () => void }) {
     const { data, error: err } = await supabase.from('payroll_periods').insert({ period_start: v.start, period_end: v.end, pay_date: v.pay, label: cutoffLabel(v.start, v.end) }).select('id').single();
     setBusy(false);
     if (err) return setError(err.code === '23505' ? 'A cutoff with these dates already exists.' : errorText(err));
-    toast('Cutoff created. Import its payroll file next.');
+    toast('Cutoff created. Work out its pay or import its payroll file next.');
     navigate(`/payroll/${data.id}`);
   };
   return (
