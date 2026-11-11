@@ -164,6 +164,7 @@ export default function Shell() {
       title: 'Work',
       items: [
         { to: '/requests', label: 'Requests', show: can.hr || can.payroll || can.ops || access?.roles.includes('management') === true, count: requestsCount },
+        { to: '/attendance', label: 'Attendance', show: true },
         { to: '/announcements', label: 'Announcements', show: true },
         { to: '/payroll', label: 'Payroll', show: can.payroll },
         { to: '/recruitment', label: 'Recruitment', show: can.hr, count: d?.applications_new },

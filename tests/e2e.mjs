@@ -114,6 +114,10 @@ const T = {
   profiles: [{ id: 'u-admin', full_name: 'Ana Admin', email: 'ana@bannuar.test' }],
   notifications: [{ id: 'n1', title: 'New COE request', body: 'Bea Lim · due Nov 11', kind: 'coe_request', read_at: null, created_at: now }],
   document_alerts: [{ id: 'd1', employee_id: 'e2', employee_no: 'G-002', first_name: 'Bea', last_name: 'Lim', site_id: 's1', site_name: 'Post A', type_code: 'SECURITY_LICENSE', type_name: 'Security guard license (LESP)', document_no: 'LIC-1', expires_on: '2026-11-28', days_left: 20, state: 'expiring' }],
+  attendance_logs: [
+    { id: 'at1', employee_id: 'e2', site_id: 's1', kind: 'time_in', logged_at: now, photo_path: 'e2/selfie-1.jpg', latitude: 14.5552, longitude: 121.0244, accuracy_m: 12, distance_m: 56, radius_m: 150, location_check: 'at_post', mock_location: false, employee: empMini(E.e2), site: { id: 's1', name: 'Post A · Main Gate' } },
+    { id: 'at2', employee_id: 'e1', site_id: 's1', kind: 'time_in', logged_at: now, photo_path: 'e1/selfie-2.jpg', latitude: 14.5647, longitude: 121.0244, accuracy_m: 20, distance_m: 1112, radius_m: 150, location_check: 'away', mock_location: true, employee: empMini(E.e1), site: { id: 's1', name: 'Post A · Main Gate' } },
+  ],
   compliance_gaps: [{ employee_id: 'e3', employee_no: 'G-003', first_name: 'Carlo', last_name: 'Diaz', status: 'floating', site_id: null, site_name: null, document_type_id: 'dt2', type_code: 'NBI_CLEARANCE', type_name: 'NBI clearance', last_expiry: null }],
 };
 const access = { user_id: 'u-admin', roles: ['super_admin'], full_name: 'Ana Admin', email: 'ana@bannuar.test', must_change_password: false, employee: null };
@@ -181,7 +185,13 @@ async function api(route) {
   if (path === '/auth/v1/logout') return route.fulfill({ status: 204 });
   if (path === '/auth/v1/recover') return json(200, {});
 
-  if (path.startsWith('/storage/v1/object/sign/')) return json(200, { signedURL: `/storage/v1/object/sign/${path.slice(24)}?token=t` });
+  if (path.startsWith('/storage/v1/object/sign/')) {
+    // a signed link being opened (the selfie thumbnails): a 1x1 picture
+    if (method === 'GET') return route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64') });
+    // createSignedUrls: one link for each path, relative to /storage/v1
+    if (Array.isArray(body?.paths)) return json(200, body.paths.map((p) => ({ path: p, signedURL: `/object/sign/${path.slice(24)}/${p}?token=t`, error: null })));
+    return json(200, { signedURL: `/storage/v1/object/sign/${path.slice(24)}?token=t` });
+  }
   if (path.startsWith('/storage/v1/object/')) {
     const key = decodeURIComponent(path.slice('/storage/v1/object/'.length));
     if (method === 'POST' || method === 'PUT') {
@@ -248,7 +258,7 @@ check('signed in: back to the page asked for', page.url() === `${BASE}/employees
 console.log('Screens');
 const screens = [
   ['/', 'Good'], ['/employees', 'Employees'], ['/employees/e2', 'Bea Lim'], ['/posts', 'Posts and clients'], ['/posts/s1', 'Post A'],
-  ['/requests', 'Requests'], ['/announcements', 'Announcements'], ['/payroll', 'Payroll'], ['/payroll/p1', 'Nov 1 to 15, 2026'],
+  ['/requests', 'Requests'], ['/attendance', 'Attendance'], ['/announcements', 'Announcements'], ['/payroll', 'Payroll'], ['/payroll/p1', 'Nov 1 to 15, 2026'],
   ['/recruitment', 'Recruitment'], ['/inquiries', 'Proposal requests'], ['/compliance', 'Licenses and documents'], ['/users', 'Users and roles'],
   ['/audit', 'Audit log'], ['/settings', 'Settings'], ['/account', 'Change your password'], ['/nowhere', 'This page is not on the roster'],
   ['/payroll/13th-month', '13th month pay'],
@@ -469,6 +479,43 @@ await page.getByLabel('Pick Carlo Diaz').check();
 await page.getByRole('button', { name: 'Deploy 1 guard' }).click();
 await page.waitForTimeout(300);
 check('deploy: floating guard sent to the post on its shift', JSON.stringify(rpcCalls('deploy_employees')[0]?.body) === JSON.stringify({ p_employee_ids: ['e3'], p_site_id: 's1', p_duty_hours: 12, p_shift_start: '06:00' }), JSON.stringify(rpcCalls('deploy_employees')[0]?.body));
+
+console.log('Attendance');
+await page.goto(`${BASE}/posts/s1`);
+await page.getByRole('button', { name: 'Set the location' }).waitFor();
+check('post: a missing location is pointed out', (await page.getByText('Post location not set').count()) === 1);
+await page.getByRole('button', { name: 'Set the location' }).click();
+let postDialog = page.locator('dialog[open]');
+await postDialog.getByLabel('Location for time in and out').fill('121.024445, 14.554729');
+await postDialog.getByRole('button', { name: 'Save the post' }).click();
+check('post location: swapped numbers are caught', /look swapped/.test(await postDialog.locator('.field-error').first().innerText()));
+await postDialog.getByLabel('Location for time in and out').fill('14.554729, 121.024445');
+await postDialog.getByLabel('Allowed distance (metres)').fill('200');
+await postDialog.getByRole('button', { name: 'Save the post' }).click();
+await page.waitForTimeout(300);
+const sitePatch = requests.filter((r) => r.path === '/rest/v1/sites' && r.method === 'PATCH').at(-1);
+check('post location: pasted from Google Maps, saved with the allowed distance', sitePatch?.body.latitude === 14.554729 && sitePatch?.body.longitude === 121.024445 && sitePatch?.body.geofence_radius_m === 200, JSON.stringify(sitePatch?.body));
+await page.goto(`${BASE}/attendance`);
+await page.locator('.thumb img').first().waitFor();
+check('attendance: the day\'s logs with their photos', (await page.locator('.thumb img').count()) === 2);
+const attReq = requests.filter((r) => r.path === '/rest/v1/attendance_logs').at(-1);
+check('attendance: one day in Manila, newest first', /logged_at=gte\./.test(attReq?.url) && /logged_at=lt\./.test(attReq?.url) && /order=logged_at\.desc/.test(attReq?.url), attReq?.url);
+const signReq = requests.filter((r) => r.path === '/storage/v1/object/sign/attendance-photos' && r.method === 'POST').at(-1);
+check('attendance: the photos are signed in one request, for ten minutes', signReq?.body.paths.length === 2 && signReq?.body.expiresIn === 600, JSON.stringify(signReq?.body));
+check('attendance: a mock location app is flagged', (await page.getByText('Mock location app').count()) === 1);
+check('attendance: away shows how far', (await page.getByText('1.1 km from the post, GPS accurate to 20 m').count()) === 1);
+await page.getByLabel('Which logs').selectOption('look');
+await page.waitForTimeout(400);
+const lookReq = requests.filter((r) => r.path === '/rest/v1/attendance_logs').at(-1);
+check('attendance: "Needs a look" asks for away, unclear, no location or a mock app', decodeURIComponent(lookReq?.url ?? '').includes('or=(location_check.in.(away,unsure,no_location),mock_location.is.true)'), lookReq?.url);
+await page.locator('.thumb').nth(1).click();
+const attDialog = page.locator('dialog[open]');
+check('attendance: the photo opens with the place and a caution', await attDialog.locator('img.photo-large').isVisible() && /Open in Google Maps/.test(await attDialog.innerText()) && /mock location app on/.test(await attDialog.innerText()));
+await attDialog.getByRole('button', { name: 'Close' }).click();
+await page.goto(`${BASE}/employees/e2?tab=attendance`);
+await page.getByText('Time in and out from the app').waitFor();
+const empAtt = requests.filter((r) => r.path === '/rest/v1/attendance_logs').at(-1);
+check('employee page: their own logs', /employee_id=eq\.e2/.test(empAtt?.url ?? ''), empAtt?.url);
 
 console.log('Sign-up, phone width, sign-out');
 const p2 = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();

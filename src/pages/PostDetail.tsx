@@ -6,6 +6,7 @@ import { useAuth } from '../lib/auth';
 import { errorText, fullName } from '../lib/format';
 import { EMPLOYEE_STATUS } from '../lib/labels';
 import { safeSearch } from '../lib/refs';
+import { mapsLink } from '../lib/attendance';
 import { Badge, Dialog, Empty, ErrorState, Loading, Search, StatusBadge, useDebounced, useToast } from '../ui/kit';
 import { SiteForm, type Site } from './Posts';
 import { PostPay, ShiftPicker, defaultShift } from './Pay';
@@ -76,6 +77,25 @@ export default function PostDetail() {
         <div className="tile"><span className="label">Guards assigned</span><span className="big">{assigned} of {s.guards_required}</span>{assigned < s.guards_required && <span className="muted small">{s.guards_required - assigned} short</span>}</div>
         <div className="tile"><span className="label">Area</span><span style={{ fontSize: 20, fontWeight: 700 }}>{s.area?.name ?? 'None'}</span></div>
         <div className="tile"><span className="label">Commanders</span><span className="big">{supIds.size}</span></div>
+      </div>
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <div className="panel-head">
+          <h2>Location for time in and out</h2>
+          <Link className="btn btn-line btn-sm" to={`/attendance?site=${s.id}`}>Attendance at this post</Link>
+        </div>
+        <div className="panel-pad">
+          {s.latitude != null && s.longitude != null ? (
+            <p>
+              Guards count as at the post within <b>{s.geofence_radius_m} m</b> of <span className="tabular">{s.latitude}, {s.longitude}</span>.{' '}
+              <a href={mapsLink(s.latitude, s.longitude)} target="_blank" rel="noreferrer">Check it in Google Maps</a>
+            </p>
+          ) : (
+            <p className="callout warn">
+              Not set yet, so time in and out at this post are marked "Post location not set".{' '}
+              {can.ops && <button className="link-btn" type="button" onClick={() => setEditing(true)}>Set the location</button>}
+            </p>
+          )}
+        </div>
       </div>
       <div className="panel">
         <div className="panel-head"><h2>Guards at this post</h2></div>

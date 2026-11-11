@@ -24,7 +24,22 @@ create table auth.users (
   created_at timestamptz default now(),
   updated_at timestamptz default now(),
   last_sign_in_at timestamptz,
-  phone text
+  phone text,
+  confirmation_token text,
+  recovery_token text,
+  email_change_token_new text,
+  email_change text
+);
+create table auth.identities (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  provider_id text not null,
+  provider text not null,
+  identity_data jsonb not null,
+  last_sign_in_at timestamptz,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  unique (provider_id, provider)
 );
 create table auth.sessions (id uuid primary key default gen_random_uuid(), user_id uuid references auth.users (id) on delete cascade);
 

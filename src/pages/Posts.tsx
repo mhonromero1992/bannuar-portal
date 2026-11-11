@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { errorText, fmtDate } from '../lib/format';
+import { parseLocation } from '../lib/attendance';
 import { useAreas } from '../lib/refs';
 import { Badge, Dialog, Empty, ErrorState, Loading, PageHead, SelectField, Tabs, TextArea, TextField, useToast } from '../ui/kit';
 
@@ -78,11 +79,20 @@ export function SiteForm({ site, onDone }: { site?: Site; onDone: () => void }) 
   const areas = useAreas();
   const clients = useClients();
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.currentTarget)) as Record<string, string>;
     if (!f.name.trim()) return setError('Enter the post name.');
+    const place = parseLocation(f.location);
+    const radius = Number(f.geofence_radius_m || 150);
+    const problems: Record<string, string> = {};
+    if (place && 'error' in place) problems.location = place.error;
+    if (!Number.isInteger(radius) || radius < 20 || radius > 5000) problems.geofence_radius_m = 'Use a whole number from 20 to 5000 metres.';
+    setFieldErrors(problems);
+    if (Object.keys(problems).length) return setError('');
+    const point = place && !('error' in place) ? place : null;
     const row = {
       name: f.name.trim(), code: f.code.trim() || null, client_id: f.client_id || null, area_id: f.area_id || null, address: f.address.trim() || null,
       city: f.city.trim() || null, province: f.province.trim() || null, region: f.region.trim() || null, guards_required: Number(f.guards_required || 0),
@@ -120,8 +130,17 @@ export function SiteForm({ site, onDone }: { site?: Site; onDone: () => void }) 
         <TextField label="Region (for the wage order)" name="region" optional defaultValue={site?.region ?? ''} />
       </div>
       <div className="form-row">
-        <TextField label="Latitude" name="latitude" optional type="number" step="0.000001" defaultValue={site?.latitude ?? ''} hint="For clock-in at the post, later in the app." />
-        <TextField label="Longitude" name="longitude" optional type="number" step="0.000001" defaultValue={site?.longitude ?? ''} />
+        <TextField
+          label="Location for time in and out" name="location" optional inputMode="decimal" autoComplete="off"
+          placeholder="14.554729, 121.024445" error={fieldErrors.location}
+          defaultValue={site?.latitude != null && site?.longitude != null ? `${site.latitude}, ${site.longitude}` : ''}
+          hint="In Google Maps, right-click the post's entrance and click the two numbers at the top of the menu to copy them, then paste them here."
+        />
+        <TextField
+          label="Allowed distance (metres)" name="geofence_radius_m" type="number" min="20" max="5000" step="1"
+          defaultValue={site?.geofence_radius_m ?? 150} error={fieldErrors.geofence_radius_m}
+          hint="How far from that point a time in still counts as at the post. 150 m suits most posts; use more for a big compound."
+        />
       </div>
       <TextArea label="Notes" name="notes" optional defaultValue={site?.notes ?? ''} rows={2} />
       <div className="form-foot"><button className="btn" type="submit" aria-busy={busy}>Save the post</button></div>

@@ -17,6 +17,7 @@ declare
   v_no text;
   v_email text;
   v_id uuid;
+  v_ticket text;
   emp public.employees;
 begin
   foreach v_no in array array['DEMO-0001', 'DEMO-0002'] loop
@@ -28,7 +29,12 @@ begin
     v_id := coalesce(emp.user_id, (select id from auth.users where lower(email) = v_email));
 
     if v_id is null then
-      -- the sign-up trigger checks these three facts against the 201 file, then links the login
+      -- the sign-up trigger checks these three facts against the 201 file, then links the login. It
+      -- also wants the one-time ticket the activate-employee Edge Function gets for a guard who
+      -- activates in the app; this script writes one the same way (only its hash is kept).
+      v_ticket := encode(extensions.gen_random_bytes(32), 'hex');
+      insert into public.activation_tickets (employee_id, token_hash, ip)
+      values (emp.id, encode(extensions.digest(v_ticket, 'sha256'), 'hex'), 'demo-employee-logins.sql');
       v_id := gen_random_uuid();
       insert into auth.users (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
                               raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
@@ -37,7 +43,8 @@ begin
               extensions.crypt(v_password, extensions.gen_salt('bf', 10)), now(),
               '{"provider": "email", "providers": ["email"]}',
               jsonb_build_object('account_type', 'employee', 'employee_no', emp.employee_no,
-                                 'birthdate', emp.birthdate, 'mobile_no', emp.mobile_no),
+                                 'birthdate', emp.birthdate, 'mobile_no', emp.mobile_no,
+                                 'activation_ticket', v_ticket),
               now(), now(), '', '', '', '');
       insert into auth.identities (id, user_id, provider_id, provider, identity_data, last_sign_in_at, created_at, updated_at)
       values (gen_random_uuid(), v_id, v_id::text, 'email',

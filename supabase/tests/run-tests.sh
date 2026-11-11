@@ -21,6 +21,14 @@ as_user() { # uid sql
 as_anon() {
   psql $H -U authenticator -tA -v ON_ERROR_STOP=1 -q -c "set role anon" -c "$1" 2>&1 | sed '/^$/d'
 }
+as_service() { # what an Edge Function does with the service role key
+  psql $H -U authenticator -tA -v ON_ERROR_STOP=1 -q \
+    -c "set role service_role" -c "do \$\$ begin perform set_config('request.jwt.claims', '{\"role\":\"service_role\"}', false); end \$\$" \
+    -c "$1" 2>&1 | sed '/^$/d'
+}
+jget() { python3 -c "import json,sys
+try: print(json.load(sys.stdin).get('$1', ''))
+except Exception: print('not json')"; }
 check() { # name actual expected
   if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); echo "  ok   $1"; else FAIL=$((FAIL+1)); echo "  FAIL $1"; echo "       expected: $3"; echo "       got:      $2"; fi
 }
@@ -67,18 +75,61 @@ DC_EMP=$(pg "select id from public.employees where employee_no = 'G-001'")
 as_user "$OPS" "insert into public.site_supervisors (site_id, employee_id) values ('$SITE1', '$DC_EMP')" >/dev/null
 
 echo "== Employee activation"
-check "activation check: wrong birthdate" "$(as_anon "select public.check_employee_activation('G-002', '1999-01-01', '09171110002')")" "no_match"
-check "activation check: match" "$(as_anon "select public.check_employee_activation('g-002', '1992-02-02', '0917-111-0002')")" "ok"
-r=$(signup 'g002@emp.bannuar.test' '{"account_type":"employee","employee_no":"G-002","birthdate":"1999-01-01","mobile_no":"09171110002"}')
-check_has "activation with the wrong birthdate is refused" "$r" "BANNUAR_ACTIVATION_FAILED"
-BEA=$(signup 'g002@emp.bannuar.test' '{"account_type":"employee","employee_no":"G-002","birthdate":"1992-02-02","mobile_no":"09171110002"}')
-DC=$(signup 'g001@emp.bannuar.test' '{"account_type":"employee","employee_no":"G-001","birthdate":"1985-01-01","mobile_no":"09171110001"}')
-CARLO=$(signup 'g003@emp.bannuar.test' '{"account_type":"employee","employee_no":"G-003","birthdate":"1990-03-03","mobile_no":"09171110003"}')
-EDU=$(signup 'g004@emp.bannuar.test' '{"account_type":"employee","employee_no":"G-004","birthdate":"1991-04-04","mobile_no":"09171110004"}')
+# The activate-employee Edge Function: begin_employee_activation as the service role (limits, log,
+# one-time ticket), then auth.admin.createUser with the ticket in the user metadata.
+begin_act() { as_service "select public.begin_employee_activation('$1', '$2', '$3', '${4:-203.0.113.9}')"; }
+activate() { # employee_no birthdate mobile email [ip] -> new user id, or the error
+  local t; t=$(begin_act "$1" "$2" "$3" "${5:-203.0.113.9}" | jget ticket)
+  signup "$4" "{\"account_type\":\"employee\",\"employee_no\":\"$1\",\"birthdate\":\"$2\",\"mobile_no\":\"$3\",\"activation_ticket\":\"$t\"}"
+}
+r=$(as_anon "select public.check_employee_activation('G-002', '1992-02-02', '09171110002')"); check_has "the activation check is closed to the website and app (no unlimited guessing)" "$r" "permission denied"
+r=$(as_user "$HR" "select public.begin_employee_activation('G-002', '1992-02-02', '09171110002', null)"); check_has "signed-in users cannot start an activation" "$r" "permission denied"
+check "activation check: wrong birthdate" "$(begin_act 'G-002' '1999-01-01' '09171110002' | jget status)" "no_match"
+check "activation check: unknown number gives the same answer" "$(begin_act 'NOPE-9' '1992-02-02' '09171110002' | jget status)" "no_match"
+T1=$(begin_act 'g-002' '1992-02-02' '0917-111-0002')
+check "activation check: match, typed loosely" "$(echo "$T1" | jget status)" "ok"
+T1=$(echo "$T1" | jget ticket)
+check "the ticket is 64 random hex characters" "$(echo "$T1" | grep -cE '^[0-9a-f]{64}$')" "1"
+check "only the ticket's hash is stored" "$(pg "select count(*) filter (where token_hash = '$T1') || '/' || count(*) filter (where token_hash = encode(extensions.digest('$T1', 'sha256'), 'hex')) from public.activation_tickets")" "0/1"
+r=$(signup 'g002@emp.bannuar.test' '{"account_type":"employee","employee_no":"G-002","birthdate":"1992-02-02","mobile_no":"09171110002"}')
+check_has "the three facts alone no longer make a login (auth.signUp without a ticket)" "$r" "BANNUAR_ACTIVATION_FAILED"
+r=$(signup 'g002@emp.bannuar.test' '{"account_type":"employee","employee_no":"G-002","birthdate":"1992-02-02","mobile_no":"09171110002","activation_ticket":"made-up"}')
+check_has "a made-up ticket is refused" "$r" "BANNUAR_ACTIVATION_FAILED"
+r=$(signup 'g002@emp.bannuar.test' "{\"account_type\":\"employee\",\"employee_no\":\"G-002\",\"birthdate\":\"1999-01-01\",\"mobile_no\":\"09171110002\",\"activation_ticket\":\"$T1\"}")
+check_has "activation with the wrong birthdate is refused, even with a ticket" "$r" "BANNUAR_ACTIVATION_FAILED"
+r=$(signup 'g001@emp.bannuar.test' "{\"account_type\":\"employee\",\"employee_no\":\"G-001\",\"birthdate\":\"1985-01-01\",\"mobile_no\":\"09171110001\",\"activation_ticket\":\"$T1\"}")
+check_has "one employee's ticket does not open another's record" "$r" "BANNUAR_ACTIVATION_FAILED"
+BEA=$(signup 'g002@emp.bannuar.test' "{\"account_type\":\"employee\",\"employee_no\":\"G-002\",\"birthdate\":\"1992-02-02\",\"mobile_no\":\"09171110002\",\"activation_ticket\":\"$T1\"}")
 check "activated employee is linked" "$(pg "select employee_no from public.employees where user_id = '$BEA'")" "G-002"
-check "already active is reported" "$(as_anon "select public.check_employee_activation('G-002', '1992-02-02', '09171110002')")" "already_active"
-r=$(signup 'g002b@emp.bannuar.test' '{"account_type":"employee","employee_no":"G-002","birthdate":"1992-02-02","mobile_no":"09171110002"}')
+check "the ticket is used up" "$(pg "select (used_at is not null) || ':' || (used_by = '$BEA') from public.activation_tickets where token_hash = encode(extensions.digest('$T1', 'sha256'), 'hex')")" "true:true"
+check "birthdate, mobile and ticket leave the login's metadata (they would ride in every token)" "$(pg "select (raw_user_meta_data ? 'birthdate') || '/' || (raw_user_meta_data ? 'mobile_no') || '/' || (raw_user_meta_data ? 'activation_ticket') || '/' || (raw_user_meta_data ->> 'employee_no') from auth.users where id = '$BEA'")" "false/false/false/G-002"
+# Supabase Auth confirms the email in the same transaction and saves its own copy of the metadata
+pg "update auth.users set email_confirmed_at = now(), raw_user_meta_data = raw_user_meta_data || '{\"birthdate\":\"1992-02-02\",\"mobile_no\":\"09171110002\",\"activation_ticket\":\"x\",\"email_verified\":true}' where id = '$BEA'" >/dev/null
+check "and stay out when Auth writes its own copy back" "$(pg "select (raw_user_meta_data ?| array['birthdate', 'mobile_no', 'activation_ticket']) || '/' || (raw_user_meta_data ->> 'email_verified') from auth.users where id = '$BEA'")" "false/true"
+check "staff metadata is left alone" "$(pg "update auth.users set raw_user_meta_data = raw_user_meta_data || '{\"mobile_no\":\"x\"}' where id = '$HR' returning raw_user_meta_data ->> 'mobile_no'")" "x"
+check "the activation is logged" "$(pg "select count(*) from public.activation_attempts where employee_no = 'G-002' and result = 'activated' and ip = '203.0.113.9'")" "1"
+check "already active is reported" "$(begin_act 'G-002' '1992-02-02' '09171110002' | jget status)" "already_active"
+pg "insert into public.activation_tickets (employee_id, token_hash) select id, encode(extensions.digest('kept-ticket', 'sha256'), 'hex') from public.employees where employee_no = 'G-002'" >/dev/null
+r=$(signup 'g002b@emp.bannuar.test' '{"account_type":"employee","employee_no":"G-002","birthdate":"1992-02-02","mobile_no":"09171110002","activation_ticket":"kept-ticket"}')
 check_has "a second account for the same employee is refused" "$r" "BANNUAR_ACTIVATION_FAILED"
+T2=$(begin_act 'G-001' '1985-01-01' '09171110001' | jget ticket)
+pg "update public.activation_tickets set expires_at = now() - interval '1 minute' where token_hash = encode(extensions.digest('$T2', 'sha256'), 'hex')" >/dev/null
+r=$(signup 'g001@emp.bannuar.test' "{\"account_type\":\"employee\",\"employee_no\":\"G-001\",\"birthdate\":\"1985-01-01\",\"mobile_no\":\"09171110001\",\"activation_ticket\":\"$T2\"}")
+check_has "an expired ticket is refused (tickets last ten minutes)" "$r" "BANNUAR_ACTIVATION_FAILED"
+DC=$(activate 'G-001' '1985-01-01' '09171110001' 'g001@emp.bannuar.test')
+CARLO=$(activate 'G-003' '1990-03-03' '09171110003' 'g003@emp.bannuar.test')
+for i in 1 2 3 4 5; do begin_act 'G-004' '2000-01-0'$i '09171110004' "198.51.100.$i" >/dev/null; done
+check "five wrong tries lock the employee number, from any IP" "$(begin_act 'G-004' '1991-04-04' '09171110004' '192.0.2.50' | jget status)" "rate_limited"
+pg "update public.activation_attempts set occurred_at = occurred_at - interval '31 minutes' where employee_no = 'G-004'" >/dev/null
+EDU=$(activate 'G-004' '1991-04-04' '09171110004' 'g004@emp.bannuar.test' '192.0.2.50')
+check "the lock lifts after 30 minutes" "$(pg "select employee_no from public.employees where user_id = '$EDU'")" "G-004"
+for i in $(seq 1 20); do begin_act "GUESS-$i" '1990-01-01' '09170000000' '198.51.100.99' >/dev/null; done
+check "twenty wrong tries lock the IP for an hour" "$(begin_act 'G-002' '1992-02-02' '09171110002' '198.51.100.99' | jget status)" "rate_limited"
+check "other IPs are not affected" "$(begin_act 'G-002' '1992-02-02' '09171110002' '198.51.100.100' | jget status)" "already_active"
+check "every try is logged with its IP and result" "$(pg "select count(*) || ':' || count(*) filter (where result = 'rate_limited') from public.activation_attempts where ip = '198.51.100.99'")" "21:1"
+r=$(as_user "$BEA" "select count(*) from public.activation_attempts"); check_has "the attempt log is closed to the API" "$r" "permission denied"
+r=$(as_anon "select count(*) from public.activation_tickets"); check_has "tickets are closed to the API" "$r" "permission denied"
+check "the service role reads tickets" "$(as_service "select count(*) > 0 from public.activation_tickets")" "t"
 
 echo "== Who sees which employees"
 check "a guard sees only herself" "$(as_user "$BEA" "select string_agg(employee_no, ',' order by employee_no) from public.employees")" "G-002"
@@ -283,6 +334,105 @@ check "my_access for a guard" "$(as_user "$BEA" "select public.my_access() -> 'e
 r=$(as_anon "select public.bootstrap_super_admin('evil@x.com', 'Evil')"); check_has "anon cannot bootstrap" "$r" "permission denied"
 r=$(as_user "$BEA" "select public.notify_user('$BEA', 'x', 'y', 'z', null)"); check_has "notify helpers are internal" "$r" "permission denied"
 check "audit trail records leave decisions" "$(pg "select count(*) > 0 from public.audit_log where table_name = 'leave_requests' and action = 'UPDATE'")" "t"
+
+echo "== Devices for push"
+as_user "$BEA" "select public.register_device_token('fcm-token-1', 'android', '1.0.0 (1)')" >/dev/null
+check "a guard registers her phone" "$(pg "select (user_id = '$BEA') || ':' || platform || ':' || app_version from public.device_tokens where token = 'fcm-token-1'")" "true:android:1.0.0 (1)"
+check "a guard sees only her own phones" "$(as_user "$CARLO" "select count(*) from public.device_tokens")" "0"
+as_user "$CARLO" "select public.register_device_token('fcm-token-1', 'android', '1.0.0 (1)')" >/dev/null
+check "a phone passed to another guard moves to them" "$(pg "select user_id = '$CARLO' from public.device_tokens where token = 'fcm-token-1'")" "t"
+r=$(as_anon "select public.register_device_token('x', 'android', null)"); check_has "anon cannot register a phone" "$r" "permission denied"
+r=$(as_user "$BEA" "select public.register_device_token('fcm-token-2', 'symbian', null)"); check_has "an unknown platform is refused" "$r" "device_tokens_platform_check"
+check "sign-out removes the phone" "$(as_user "$CARLO" "delete from public.device_tokens where token = 'fcm-token-1' returning token")" "fcm-token-1"
+
+echo "== Attendance: time in and out with a selfie and the post's location"
+# Post A gets a location (a point in Makati) and the default allowed distance; Post B has none yet
+as_user "$OPS" "update public.sites set latitude = 14.554700, longitude = 121.024400 where id = '$SITE1'" >/dev/null
+check "a post's allowed distance starts at 150 m" "$(pg "select geofence_radius_m from public.sites where id = '$SITE1'")" "150"
+r=$(as_user "$OPS" "update public.sites set latitude = 14.5 where id = '$SITE2'"); check_has "a post's location needs both numbers" "$r" "sites_location_check"
+r=$(as_user "$OPS" "update public.sites set latitude = 121.0244, longitude = 214.5547 where id = '$SITE2'"); check_has "and a point on the map" "$r" "sites_location_check"
+r=$(as_user "$OPS" "update public.sites set geofence_radius_m = 5 where id = '$SITE2'"); check_has "the allowed distance is at least 20 m" "$r" "geofence_radius_m"
+selfie() { # uid employee_id name -> the uploaded photo's path
+  as_user "$1" "insert into storage.objects (bucket_id, name) values ('attendance-photos', '$2/$3.jpg')" >/dev/null; echo "$2/$3.jpg"; }
+logat() { as_user "$1" "select public.log_attendance('$2', '$3', $4, $5, $6, ${7:-null})"; } # uid kind path lat lon accuracy [mock]
+P1=$(selfie "$BEA" "$BEA_EMP" in-1)
+check "a guard uploads her selfie to her own folder" "$(pg "select count(*) from storage.objects where bucket_id = 'attendance-photos' and name = '$P1'")" "1"
+r=$(as_user "$BEA" "insert into storage.objects (bucket_id, name) values ('attendance-photos', '$CARLO_EMP/x.jpg')"); check_has "not into another guard's folder" "$r" "row-level security"
+R1=$(logat "$BEA" time_in "$P1" 14.5552 121.0244 12)
+check "56 m from the post with good GPS: at the post" "$(echo "$R1" | jget location_check):$(echo "$R1" | jget distance_m)" "at_post:56"
+check "the time is the database's own" "$(pg "select abs(extract(epoch from now() - logged_at)) < 60 from public.attendance_logs where photo_path = '$P1'")" "t"
+check "the post, its allowed distance and the GPS error are kept with the log" "$(pg "select (site_id = '$SITE1') || ':' || radius_m || ':' || accuracy_m || ':' || latitude from public.attendance_logs where photo_path = '$P1'")" "true:150:12:14.555200"
+check "the answer names the post" "$(echo "$R1" | jget site_name)" "Post A"
+R=$(logat "$BEA" time_in "$P1" 1 1 5)
+check "sending the same photo again returns the first log" "$(echo "$R" | jget id)" "$(echo "$R1" | jget id)"
+check "and logs once" "$(pg "select count(*) || ':' || max(location_check) from public.attendance_logs where photo_path = '$P1'")" "1:at_post"
+R=$(logat "$BEA" time_out "$(selfie "$BEA" "$BEA_EMP" out-1)" 14.5647 121.0244 20)
+check "a kilometre away: away from the post, and still logged" "$(echo "$R" | jget location_check):$(echo "$R" | jget distance_m)" "away:1112"
+R=$(logat "$BEA" time_in "$(selfie "$BEA" "$BEA_EMP" in-2)" 14.5552 121.0244 300)
+check "near the post with rough GPS (300 m): cannot tell" "$(echo "$R" | jget location_check)" "unsure"
+R=$(logat "$BEA" time_in "$(selfie "$BEA" "$BEA_EMP" in-3)" 14.5565 121.0244 80)
+check "200 m away with an 80 m error: cannot tell" "$(echo "$R" | jget location_check):$(echo "$R" | jget distance_m)" "unsure:200"
+R=$(logat "$BEA" time_out "$(selfie "$BEA" "$BEA_EMP" out-2)" null null null)
+check "no location from the phone: logged as such" "$(echo "$R" | jget location_check)" "no_location"
+logat "$BEA" time_in "$(selfie "$BEA" "$BEA_EMP" in-4)" 14.5547 121.0244 5 true >/dev/null
+check "a mock location app is noted" "$(pg "select mock_location from public.attendance_logs where photo_path = '$BEA_EMP/in-4.jpg'")" "t"
+R=$(logat "$EDU" time_in "$(selfie "$EDU" "$(pg "select id from public.employees where user_id = '$EDU'")" in-1)" 14.5547 121.0244 5)
+check "a post without a location yet: noted for HR" "$(echo "$R" | jget location_check)" "post_not_set"
+pg "update public.employees set site_id = null where id = '$CARLO_EMP'" >/dev/null
+R=$(logat "$CARLO" time_in "$(selfie "$CARLO" "$CARLO_EMP" in-1)" 14.5547 121.0244 5)
+check "a guard with no post: noted for HR" "$(echo "$R" | jget location_check)" "no_post"
+pg "update public.employees set site_id = '$SITE1' where id = '$CARLO_EMP'" >/dev/null
+R=$(logat "$CARLO" time_in "$(selfie "$CARLO" "$CARLO_EMP" in-2)" 14.5547 121.0244 5)
+check "back at a post: at the post" "$(echo "$R" | jget location_check)" "at_post"
+r=$(logat "$BEA" lunch "$(selfie "$BEA" "$BEA_EMP" in-5)" 14.5547 121.0244 5); check_has "only time in or time out" "$r" "Choose time in or time out"
+r=$(logat "$BEA" time_in "$CARLO_EMP/in-2.jpg" 14.5547 121.0244 5); check_has "another guard's logged photo is refused" "$r" "not yours"
+selfie "$CARLO" "$CARLO_EMP" spare >/dev/null
+r=$(logat "$BEA" time_in "$CARLO_EMP/spare.jpg" 14.5547 121.0244 5); check_has "and so is one of their uploads" "$r" "Take your photo first"
+r=$(logat "$BEA" time_in "$BEA_EMP/never-uploaded.jpg" 14.5547 121.0244 5); check_has "a photo that never arrived is refused" "$r" "did not arrive"
+P6=$(selfie "$BEA" "$BEA_EMP" in-6)
+pg "update storage.objects set created_at = now() - interval '2 hours' where name = '$P6'" >/dev/null
+r=$(logat "$BEA" time_in "$P6" 14.5547 121.0244 5); check_has "an old upload is refused (the photo is taken at the log)" "$r" "did not arrive"
+r=$(logat "$BEA" time_in "$(selfie "$BEA" "$BEA_EMP" in-7)" 95 121.0244 5); check_has "a latitude off the map is refused" "$r" "not valid"
+r=$(logat "$BEA" time_in "$(selfie "$BEA" "$BEA_EMP" in-8)" 14.5547 121.0244 null); check_has "a location without its GPS error is refused" "$r" "not valid"
+r=$(logat "$HR" time_in "$BEA_EMP/in-5.jpg" 14.5547 121.0244 5); check_has "staff without a 201 file do not log" "$r" "Only employees"
+r=$(as_anon "select public.log_attendance('time_in', 'x/y.jpg', null, null, null, null)"); check_has "anon cannot log" "$r" "permission denied"
+pg "update public.employees set status = 'resigned' where user_id = '$EDU'" >/dev/null
+r=$(logat "$EDU" time_in "$(selfie "$EDU" "$(pg "select id from public.employees where user_id = '$EDU'")" in-2)" 14.5547 121.0244 5); check_has "a separated employee cannot log" "$r" "record is closed"
+pg "update public.employees set status = 'active' where user_id = '$EDU'" >/dev/null
+r=$(as_user "$BEA" "insert into public.attendance_logs (employee_id, kind, photo_path, location_check) values ('$BEA_EMP', 'time_in', '$BEA_EMP/in-5.jpg', 'at_post')"); check_has "a guard cannot write a log directly" "$r" "permission denied"
+r=$(as_user "$BEA" "update public.attendance_logs set location_check = 'at_post'"); check_has "or change one" "$r" "permission denied"
+r=$(as_user "$BEA" "delete from public.attendance_logs"); check_has "or delete one" "$r" "permission denied"
+r=$(as_user "$BEA" "update storage.objects set name = '$BEA_EMP/swapped.jpg' where name = '$P1' returning name"); check "or swap her photo" "$r" ""
+r=$(as_user "$BEA" "select public.geo_distance_m(0, 0, 1, 1)"); check_has "the distance helper is internal" "$r" "permission denied"
+check "a guard sees only her own logs" "$(as_user "$BEA" "select count(*) || ':' || count(*) filter (where employee_id <> '$BEA_EMP') from public.attendance_logs")" "6:0"
+check "the commander sees the logs at his post, not other posts" "$(as_user "$DC" "select count(*) || ':' || count(*) filter (where site_id <> '$SITE1' or site_id is null) from public.attendance_logs")" "7:0"
+check "HR sees every log" "$(as_user "$HR" "select count(*) from public.attendance_logs")" "9"
+check "management sees every log" "$(as_user "$MGMT" "select count(*) from public.attendance_logs")" "9"
+check "the commander opens selfies from his post" "$(as_user "$DC" "select count(*) from storage.objects where name = '$P1'")" "1"
+check "a guard at another post does not" "$(as_user "$EDU" "select count(*) from storage.objects where name = '$P1'")" "0"
+check "HR opens them" "$(as_user "$HR" "select count(*) from storage.objects where name = '$P1'")" "1"
+check "the guard opens her own" "$(as_user "$BEA" "select count(*) from storage.objects where name = '$P1'")" "1"
+
+echo "== schema.sql runs again over existing data"
+before=$(pg "select (select count(*) from public.employees) || '/' || (select count(*) from public.notifications) || '/' || (select count(*) from public.activation_attempts) || '/' || (select count(*) from public.leave_types)")
+r=$(psql $H -U postgres -v ON_ERROR_STOP=1 -q -f "$(dirname "$0")/../schema.sql" 2>&1 | grep -iv '^NOTICE' || true)
+check "re-running schema.sql succeeds" "$r" ""
+check "and keeps every record" "$(pg "select (select count(*) from public.employees) || '/' || (select count(*) from public.notifications) || '/' || (select count(*) from public.activation_attempts) || '/' || (select count(*) from public.leave_types)")" "$before"
+check "attendance logs are kept, and still closed to direct writes" "$(pg "select count(*) from public.attendance_logs"):$(as_user "$BEA" "delete from public.attendance_logs" | grep -c 'permission denied')" "9:1"
+check "activation stays closed to anon after a re-run" "$(as_anon "select public.check_employee_activation('G-002', '1992-02-02', '09171110002')" | grep -c 'permission denied')" "1"
+
+echo "== Demo scripts still match the schema (on a second, empty database)"
+D="$(dirname "$0")/.."
+DEMO_DB="${PGDATABASE:-bannuar_test}_demo"
+DH="-h ${PGHOST:-localhost} -p ${PGPORT:-5432} -d $DEMO_DB"
+psql -h "${PGHOST:-localhost}" -p "${PGPORT:-5432}" -U postgres -d postgres -q -c "drop database if exists $DEMO_DB" -c "create database $DEMO_DB" 2>&1 | grep -v NOTICE
+pgd() { psql $DH -U postgres -tA -v ON_ERROR_STOP=1 -q -c "$1" 2>&1; }
+r=$(for f in tests/supabase-stubs.sql schema.sql seed-demo.sql demo-employee-logins.sql demo-employee-logins.sql; do psql $DH -U postgres -v ON_ERROR_STOP=1 -q -f "$D/$f" 2>&1 | grep -v 'NOTICE' || true; done)
+check "seed-demo.sql, then the demo employee logins twice" "$r" ""
+check "both demo logins link through the sign-up trigger, metadata scrubbed" "$(pgd "select string_agg(e.employee_no || '=' || (u.raw_user_meta_data ?| array['birthdate', 'mobile_no', 'activation_ticket'])::text, ',' order by e.employee_no) from public.employees e join auth.users u on u.id = e.user_id where e.employee_no like 'DEMO-%'")" "DEMO-0001=false,DEMO-0002=false"
+r=$(psql $DH -U postgres -v ON_ERROR_STOP=1 -q -f "$D/remove-demo.sql" 2>&1 | grep -v 'NOTICE' || true)
+check "remove-demo.sql clears them" "$r:$(pgd "select count(*) from public.employees where employee_no like 'DEMO-%'")" ":0"
+psql -h "${PGHOST:-localhost}" -p "${PGPORT:-5432}" -U postgres -d postgres -q -c "drop database if exists $DEMO_DB" 2>&1 | grep -v NOTICE
 
 echo
 echo "PASSED $PASS · FAILED $FAIL"

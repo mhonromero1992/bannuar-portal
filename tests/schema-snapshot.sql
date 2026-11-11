@@ -19,5 +19,7 @@ select json_build_object(
     from pg_constraint c where c.contype = 'p' and c.connamespace = 'public'::regnamespace),
   'functions', (select json_object_agg(proname, json_build_object(
       'args', coalesce(proargnames[1:pronargs], '{}'), 'defaults', pronargdefaults))
-    from pg_proc where pronamespace = 'public'::regnamespace)
+    from pg_proc where pronamespace = 'public'::regnamespace),
+  -- storage buckets, for the employee app's contract test
+  'buckets', (select json_agg(id order by id) from storage.buckets)
 );

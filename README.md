@@ -194,10 +194,18 @@ mock and every real Supabase host is cut, so the tests never touch the live proj
 after the first admin signs in, click through each screen once before rollout. Running PostgREST
 locally for a fully live test was not possible on the build machine.
 
-## Next phase: the employee app
+## The employee app
 
-The database already holds what the React Native app needs: employee activation by employee
-number, birthday and mobile (`check_employee_activation`; an Edge Function will create the login),
-payslips, leave filing and balances, COE requests and downloads, announcements with
-acknowledgment, contact detail changes, payroll concerns, document renewals from the phone,
-notifications and device tokens for push.
+[bannuar-app](https://github.com/mhonromero1992/bannuar-app) (React Native) reads and writes this
+database for the guards: activation and sign-in with the employee number, payslips, leave,
+certificates of employment, announcements with acknowledgment, the 201 file and document renewals,
+detail changes, payroll concerns, notifications and push, the commander's leave endorsements, and
+time in and out with a photo and a location check against the post (reviewed here under
+Attendance).
+Its two Edge Functions live here in [`supabase/functions`](supabase/functions/README.md); set-up
+steps in [`supabase/SETUP.md`](supabase/SETUP.md), step 8.
+
+Employee activation: the `activate-employee` function checks the employee number, birthdate and
+mobile number with limits per employee number and per IP, then creates the login; the database
+accepts it only with the one-time ticket the check issued, so knowing the three facts is not enough
+to claim a record through the public sign-up.

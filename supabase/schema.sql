@@ -15,6 +15,8 @@
 --                            requests, check a certificate code
 --   authenticated            staff in the portal (by role) and employees in the app
 --                            (their own records only); row level security on every table
+--   service role             the Edge Functions in supabase/functions: employee activation
+--                            (activate-employee) and push notifications (send-push)
 -- =====================================================================================
 
 set client_min_messages = warning;
@@ -313,6 +315,33 @@ create table if not exists public.staff_invitations (
   accepted_user_id uuid references auth.users (id) on delete set null
 );
 
+-- Employee app activation. The activate-employee Edge Function checks the employee number,
+-- birthdate and mobile number (begin_employee_activation), which writes a one-time ticket here;
+-- handle_new_user accepts an employee login only with that ticket. Only the hash is stored.
+-- Neither table has a policy: only the service role (Edge Functions) and the SQL editor reach them.
+create table if not exists public.activation_tickets (
+  id uuid primary key default gen_random_uuid(),
+  employee_id uuid not null references public.employees (id) on delete cascade,
+  token_hash text not null unique,
+  ip text,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default (now() + interval '10 minutes'),
+  used_at timestamptz,
+  used_by uuid references auth.users (id) on delete set null
+);
+create index if not exists activation_tickets_employee_idx on public.activation_tickets (employee_id);
+
+-- Every activation attempt, for the rate limits (per employee number and per IP). Kept 30 days.
+create table if not exists public.activation_attempts (
+  id bigint generated always as identity primary key,
+  occurred_at timestamptz not null default now(),
+  employee_no text not null,
+  ip text,
+  result text not null check (result in ('ok', 'no_match', 'already_active', 'rate_limited', 'activated'))
+);
+create index if not exists activation_attempts_no_idx on public.activation_attempts (employee_no, occurred_at desc);
+create index if not exists activation_attempts_ip_idx on public.activation_attempts (ip, occurred_at desc) where ip is not null;
+
 -- Detachment commanders and inspectors of each post
 create table if not exists public.site_supervisors (
   site_id uuid not null references public.sites (id) on delete cascade,
@@ -596,6 +625,30 @@ create table if not exists public.device_tokens (
   created_at timestamptz not null default now(),
   last_seen_at timestamptz not null default now()
 );
+
+-- Attendance: each time in and time out from the app, with a selfie taken then and the phone's
+-- location. Only log_attendance writes here: the database sets the time and compares the location
+-- with the guard's post. GPS can be off indoors and can be faked, so a log away from the post is kept
+-- and marked for HR to look at, never refused.
+create table if not exists public.attendance_logs (
+  id uuid primary key default gen_random_uuid(),
+  employee_id uuid not null references public.employees (id) on delete cascade,
+  site_id uuid references public.sites (id) on delete set null,  -- the guard's post at the time
+  kind text not null check (kind in ('time_in', 'time_out')),
+  logged_at timestamptz not null default now(),                   -- the database's clock, not the phone's
+  photo_path text not null unique,                                -- attendance-photos/{employee_id}/...
+  latitude numeric(9, 6),
+  longitude numeric(9, 6),
+  accuracy_m integer,                                             -- the phone's own error estimate
+  distance_m integer,                                             -- from the post's location
+  radius_m integer,                                               -- the post's allowed distance then
+  location_check text not null
+    check (location_check in ('at_post', 'unsure', 'away', 'no_location', 'post_not_set', 'no_post')),
+  mock_location boolean                                           -- Android: a mock location app was on
+);
+create index if not exists attendance_logs_employee_idx on public.attendance_logs (employee_id, logged_at desc);
+create index if not exists attendance_logs_site_idx on public.attendance_logs (site_id, logged_at desc);
+create index if not exists attendance_logs_logged_idx on public.attendance_logs (logged_at desc);
 
 -- Recruitment (the website's careers page)
 create table if not exists public.job_openings (
@@ -1340,6 +1393,7 @@ declare
   v_email text := lower(coalesce(new.email, ''));
   inv public.staff_invitations;
   emp public.employees;
+  v_ip text;
 begin
   if meta ->> 'account_type' = 'employee' then
     select * into emp from public.employees
@@ -1351,10 +1405,29 @@ begin
        or public.normalize_ph_mobile(emp.mobile_no) is distinct from public.normalize_ph_mobile(meta ->> 'mobile_no') then
       raise exception 'BANNUAR_ACTIVATION_FAILED' using errcode = 'P0001';
     end if;
+    -- only with the one-time ticket the activate-employee function got from begin_employee_activation:
+    -- knowing the three facts is not enough to claim the record through auth.signUp
+    update public.activation_tickets t set used_at = now(), used_by = new.id
+    where t.employee_id = emp.id and t.used_at is null and t.expires_at > now()
+      and t.token_hash = encode(extensions.digest(coalesce(meta ->> 'activation_ticket', ''), 'sha256'), 'hex')
+    returning t.ip into v_ip;
+    if not found then
+      raise exception 'BANNUAR_ACTIVATION_FAILED' using errcode = 'P0001';
+    end if;
     insert into public.profiles (id, full_name, email) values (new.id, public.full_name(emp), v_email)
     on conflict (id) do nothing;
     update public.employees set user_id = new.id where id = emp.id;
     insert into public.user_roles (user_id, role) values (new.id, 'employee') on conflict do nothing;
+    insert into public.activation_attempts (employee_no, ip, result) values (emp.employee_no, v_ip, 'activated');
+    -- the birthdate, mobile number and ticket were needed only for this check; user metadata is
+    -- copied into every access token, so they do not stay there (strip_activation_metadata below
+    -- also catches Auth writing its own copy back when it confirms the email)
+    begin
+      update auth.users set raw_user_meta_data = raw_user_meta_data - 'birthdate' - 'mobile_no' - 'activation_ticket'
+      where id = new.id;
+    exception when insufficient_privilege then
+      null;
+    end;
     return new;
   end if;
 
@@ -1381,6 +1454,22 @@ end $$;
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users
   for each row execute function public.handle_new_user();
+
+-- Supabase Auth saves the user metadata again from its own copy right after creating a login (when it
+-- confirms the email), which would put the birthdate, mobile number and activation ticket back.
+-- This keeps them out of employee logins on every write.
+create or replace function public.strip_activation_metadata() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  new.raw_user_meta_data := new.raw_user_meta_data - 'birthdate' - 'mobile_no' - 'activation_ticket';
+  return new;
+end $$;
+
+drop trigger if exists strip_activation_metadata on auth.users;
+create trigger strip_activation_metadata before update on auth.users
+  for each row when (new.raw_user_meta_data ->> 'account_type' = 'employee'
+                     and new.raw_user_meta_data ?| array['birthdate', 'mobile_no', 'activation_ticket'])
+  execute function public.strip_activation_metadata();
 
 -- -------------------------------------------------------------------------------------
 -- 8. Attach triggers
@@ -1589,6 +1678,166 @@ begin
     return 'already_active';
   end if;
   return 'ok';
+end $$;
+
+-- Employee app activation, step 1 (called by the activate-employee Edge Function with the service
+-- role; not callable from the app or the website). Limits wrong tries per employee number and per IP,
+-- logs every attempt, and on a match returns a one-time ticket valid for ten minutes. Step 2 is the
+-- function creating the login with auth.admin.createUser; handle_new_user then uses up the ticket.
+create or replace function public.begin_employee_activation(p_employee_no text, p_birthdate date, p_mobile text, p_ip text default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_no text := upper(trim(coalesce(p_employee_no, '')));
+  v_ip text := nullif(left(trim(coalesce(p_ip, '')), 64), '');
+  v_result text;
+  v_ticket text;
+begin
+  if not public.is_trusted() then
+    raise exception 'Not allowed' using errcode = '42501';
+  end if;
+  delete from public.activation_attempts where occurred_at < now() - interval '30 days';
+  if (select count(*) from public.activation_attempts a
+      where a.employee_no = v_no and a.result in ('no_match', 'rate_limited')
+        and a.occurred_at > now() - interval '30 minutes') >= 5
+     or (v_ip is not null and (select count(*) from public.activation_attempts a
+      where a.ip = v_ip and a.result in ('no_match', 'rate_limited')
+        and a.occurred_at > now() - interval '1 hour') >= 20) then
+    insert into public.activation_attempts (employee_no, ip, result) values (v_no, v_ip, 'rate_limited');
+    return jsonb_build_object('status', 'rate_limited');
+  end if;
+  v_result := public.check_employee_activation(v_no, p_birthdate, p_mobile);
+  insert into public.activation_attempts (employee_no, ip, result) values (v_no, v_ip, v_result);
+  if v_result <> 'ok' then
+    return jsonb_build_object('status', v_result);
+  end if;
+  v_ticket := encode(extensions.gen_random_bytes(32), 'hex');
+  delete from public.activation_tickets t
+  where t.used_at is null and t.employee_id = (select e.id from public.employees e where e.employee_no = v_no);
+  insert into public.activation_tickets (employee_id, token_hash, ip)
+  select e.id, encode(extensions.digest(v_ticket, 'sha256'), 'hex'), v_ip
+  from public.employees e where e.employee_no = v_no;
+  return jsonb_build_object('status', 'ok', 'ticket', v_ticket);
+end $$;
+
+-- The app registers this phone for push. A phone that passes to another guard moves to them, so a
+-- signed-out guard's notifications stop reaching it.
+create or replace function public.register_device_token(p_token text, p_platform text, p_app_version text default null)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in first' using errcode = '42501';
+  end if;
+  if coalesce(trim(p_token), '') = '' or length(p_token) > 4096 then
+    raise exception 'No device token' using errcode = '22023';
+  end if;
+  insert into public.device_tokens (token, user_id, platform, app_version, last_seen_at)
+  values (p_token, auth.uid(), p_platform, left(p_app_version, 40), now())
+  on conflict (token) do update
+    set user_id = excluded.user_id, platform = excluded.platform, app_version = excluded.app_version,
+        last_seen_at = excluded.last_seen_at;
+end $$;
+
+-- Metres between two points on the earth (haversine; within a few metres at post distances)
+create or replace function public.geo_distance_m(p_lat1 double precision, p_lon1 double precision,
+                                                 p_lat2 double precision, p_lon2 double precision)
+returns double precision language sql immutable set search_path = '' as $$
+  select 2 * 6371008.8 * asin(least(1, sqrt(
+    power(sin(radians(p_lat2 - p_lat1) / 2), 2)
+    + cos(radians(p_lat1)) * cos(radians(p_lat2)) * power(sin(radians(p_lon2 - p_lon1) / 2), 2))))
+$$;
+
+-- Time in and time out from the app. The app first uploads the selfie to
+-- attendance-photos/{the guard's employee id}/..., then calls this with its path and the location the
+-- phone read. The time is the database's. The location is checked against the guard's post:
+--   at_post       within the post's allowed distance, with GPS precise enough to tell
+--   unsure        the GPS was too rough to tell (its error reaches across the edge of the area)
+--   away          outside the allowed distance even after allowing for the GPS error
+--   no_location   the phone gave no location (location off or not allowed)
+--   post_not_set  the post has no location yet (portal: Posts, edit the post)
+--   no_post       the guard has no post (floating)
+-- A log is never refused for its location: HR sees each one with its check and photo. Sending the same
+-- photo again returns the first log, so a retry after a lost answer does not log twice.
+create or replace function public.log_attendance(
+  p_kind text, p_photo_path text,
+  p_latitude double precision default null, p_longitude double precision default null,
+  p_accuracy_m double precision default null, p_mock_location boolean default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  me public.employees;
+  s public.sites;
+  v_log public.attendance_logs;
+  v_has_location boolean := p_latitude is not null and p_longitude is not null;
+  v_check text;
+  v_distance integer;
+  v_radius integer;
+begin
+  select * into me from public.employees where user_id = auth.uid();
+  if not found then
+    raise exception 'Only employees log attendance' using errcode = '42501';
+  end if;
+  if p_kind is null or p_kind not in ('time_in', 'time_out') then
+    raise exception 'Choose time in or time out' using errcode = '22023';
+  end if;
+
+  select * into v_log from public.attendance_logs where photo_path = p_photo_path;
+  if found then
+    if v_log.employee_id <> me.id then
+      raise exception 'That photo is not yours' using errcode = '42501';
+    end if;
+  else
+    if me.status in ('resigned', 'terminated', 'end_of_contract', 'retired') then
+      raise exception 'Your employment record is closed. Ask HR.' using errcode = 'P0001';
+    end if;
+    if coalesce(p_photo_path, '') = '' or (storage.foldername(p_photo_path))[1] is distinct from me.id::text then
+      raise exception 'Take your photo first' using errcode = '22023';
+    end if;
+    if not exists (select 1 from storage.objects o
+                   where o.bucket_id = 'attendance-photos' and o.name = p_photo_path
+                     and o.created_at > now() - interval '30 minutes') then
+      raise exception 'Your photo did not arrive. Take it again.' using errcode = 'P0001';
+    end if;
+    if v_has_location and (p_latitude not between -90 and 90 or p_longitude not between -180 and 180
+                           or p_accuracy_m is null or p_accuracy_m not between 0 and 1000000) then
+      raise exception 'That location is not valid' using errcode = '22023';
+    end if;
+
+    if not v_has_location then
+      v_check := 'no_location';
+    elsif me.site_id is null then
+      v_check := 'no_post';
+    else
+      select * into s from public.sites where id = me.site_id;
+      if s.latitude is null or s.longitude is null then
+        v_check := 'post_not_set';
+      else
+        v_radius := s.geofence_radius_m;
+        v_distance := round(public.geo_distance_m(p_latitude, p_longitude, s.latitude::float8, s.longitude::float8));
+        v_check := case
+          when v_distance <= v_radius and ceil(p_accuracy_m) <= v_radius then 'at_post'
+          when v_distance - ceil(p_accuracy_m) > v_radius then 'away'
+          else 'unsure'
+        end;
+      end if;
+    end if;
+
+    insert into public.attendance_logs (employee_id, site_id, kind, photo_path, latitude, longitude,
+                                        accuracy_m, distance_m, radius_m, location_check, mock_location)
+    values (me.id, me.site_id, p_kind, p_photo_path,
+            case when v_has_location then round(p_latitude::numeric, 6) end,
+            case when v_has_location then round(p_longitude::numeric, 6) end,
+            case when v_has_location then ceil(p_accuracy_m)::integer end,
+            v_distance, v_radius, v_check, p_mock_location)
+    on conflict (photo_path) do nothing
+    returning * into v_log;
+    if not found then
+      select * into v_log from public.attendance_logs where photo_path = p_photo_path;
+    end if;
+  end if;
+
+  return jsonb_build_object(
+    'id', v_log.id, 'kind', v_log.kind, 'logged_at', v_log.logged_at, 'location_check', v_log.location_check,
+    'distance_m', v_log.distance_m, 'accuracy_m', v_log.accuracy_m, 'radius_m', v_log.radius_m,
+    'site_name', (select st.name from public.sites st where st.id = v_log.site_id));
 end $$;
 
 -- First administrator. Run once in the SQL editor:
@@ -2577,6 +2826,12 @@ create policy "clear own notifications" on public.notifications for delete to au
 create policy "own devices" on public.device_tokens for all to authenticated
   using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
 
+-- Attendance: the guard's own logs, staff all, commanders the logs at their posts (written by
+-- log_attendance only)
+create policy "read attendance" on public.attendance_logs for select to authenticated
+  using ((select public.is_staff()) or employee_id = (select public.current_employee_id())
+         or site_id = any ((select public.my_supervised_site_ids())::uuid[]));
+
 -- Website: open job openings are public; applications and proposal requests can be sent by anyone
 create policy "public reads open jobs" on public.job_openings for select to anon, authenticated
   using (status = 'open' and (closes_on is null or closes_on >= current_date));
@@ -2624,9 +2879,13 @@ begin
   end loop;
 end $$;
 
+-- activation tickets and attempts: the service role only (no policies, no API access)
+revoke all on public.activation_tickets, public.activation_attempts from public, anon, authenticated;
+grant select, insert, update, delete on public.activation_tickets, public.activation_attempts to service_role;
+
 -- writes that must go through functions only
 revoke insert, update, delete on public.employee_government_ids, public.user_roles, public.certificates,
-  public.audit_log, public.announcement_receipts from authenticated;
+  public.audit_log, public.announcement_receipts, public.attendance_logs from authenticated;
 revoke insert, delete on public.notifications from authenticated;
 revoke update, delete on public.coe_requests, public.leave_requests, public.profile_change_requests from authenticated;
 
@@ -2674,9 +2933,32 @@ grant execute on function
 to authenticated;
 
 grant execute on function
-  public.verify_certificate(text), public.check_staff_invitation(text, text),
-  public.check_employee_activation(text, date, text)
+  public.verify_certificate(text), public.check_staff_invitation(text, text)
 to anon, authenticated;
+
+-- Employee activation runs only in the activate-employee Edge Function (service role), which limits
+-- and logs tries. check_employee_activation was open to anon before; without this, anyone could keep
+-- guessing birthdates through it with no limit.
+revoke execute on function
+  public.check_employee_activation(text, date, text),
+  public.begin_employee_activation(text, date, text, text)
+from public, anon, authenticated;
+grant execute on function
+  public.check_employee_activation(text, date, text),
+  public.begin_employee_activation(text, date, text, text)
+to service_role;
+
+-- the app registers its push token through this function (see its comment)
+revoke execute on function public.register_device_token(text, text, text) from public, anon;
+grant execute on function public.register_device_token(text, text, text) to authenticated;
+
+-- time in and time out (log_attendance); the distance helper is internal
+revoke execute on function public.geo_distance_m(double precision, double precision, double precision, double precision)
+  from public, anon, authenticated;
+revoke execute on function public.log_attendance(text, text, double precision, double precision, double precision, boolean)
+  from public, anon;
+grant execute on function public.log_attendance(text, text, double precision, double precision, double precision, boolean)
+  to authenticated;
 
 -- -------------------------------------------------------------------------------------
 -- 13. File storage (all buckets private; files are read through short-lived signed links)
@@ -2686,7 +2968,8 @@ insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_typ
     array['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic']),
   ('certificates', 'certificates', false, 5242880, array['application/pdf']),
   ('applications', 'applications', false, 5242880, array['application/pdf', 'image/jpeg', 'image/png']),
-  ('announcement-media', 'announcement-media', false, 5242880, array['image/jpeg', 'image/png', 'image/webp'])
+  ('announcement-media', 'announcement-media', false, 5242880, array['image/jpeg', 'image/png', 'image/webp']),
+  ('attendance-photos', 'attendance-photos', false, 3145728, array['image/jpeg', 'image/png', 'image/webp', 'image/heic'])
 on conflict (id) do update
   set public = excluded.public, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
 
@@ -2735,6 +3018,19 @@ create policy "bannuar add announcement media" on storage.objects for insert to 
   with check (bucket_id = 'announcement-media' and (select public.can_publish()));
 create policy "bannuar remove announcement media" on storage.objects for delete to authenticated
   using (bucket_id = 'announcement-media' and (select public.can_publish()));
+
+-- attendance-photos/{employee_id}/{random}.jpg : the selfie of a time in or out. Guards add their
+-- own and cannot change them; staff, and commanders for the logs at their posts, open them.
+create policy "bannuar read attendance photos" on storage.objects for select to authenticated
+  using (bucket_id = 'attendance-photos' and ((select public.is_staff())
+         or (storage.foldername(name))[1] = (select public.current_employee_id())::text
+         or exists (select 1 from public.attendance_logs a
+                    where a.photo_path = name and a.site_id = any ((select public.my_supervised_site_ids())::uuid[]))));
+create policy "bannuar add attendance photos" on storage.objects for insert to authenticated
+  with check (bucket_id = 'attendance-photos'
+              and (storage.foldername(name))[1] = (select public.current_employee_id())::text);
+create policy "bannuar remove attendance photos" on storage.objects for delete to authenticated
+  using (bucket_id = 'attendance-photos' and (select public.has_any_role(array['super_admin', 'hr_admin']::public.app_role[])));
 
 -- -------------------------------------------------------------------------------------
 -- 14. Reference data (edit freely in the portal; re-running this file never overwrites it)
