@@ -434,6 +434,8 @@ await page.waitForTimeout(300);
 check('payroll: publish goes through the database', rpcCalls('publish_payroll_period')[0]?.body.p_period_id === 'p1');
 await page.getByRole('row', { name: /Bea Lim/ }).getByRole('button', { name: 'View' }).click();
 const slipDialog = page.locator('dialog[open]');
+await slipDialog.getByRole('button', { name: 'Download PDF' }).waitFor();
+await page.screenshot({ path: `${ROOT}tests/shots/payslip-dialog.png` });
 const dlSlip = page.waitForEvent('download');
 await slipDialog.getByRole('button', { name: 'Download PDF' }).click();
 const slipFile = await dlSlip;
@@ -447,6 +449,8 @@ await page.goto(`${BASE}/settings`);
 await page.getByRole('tab', { name: 'Document types' }).click();
 const nbiFolder = page.getByLabel('NBI clearance folder in S3');
 await nbiFolder.waitFor();
+await page.waitForTimeout(500); // let the tab underline finish sliding
+await page.screenshot({ path: `${ROOT}tests/shots/document-types.png` });
 check('document types: each files into its S3 folder', (await page.getByLabel('Security guard license (LESP) folder in S3').inputValue()) === 'lesp' && (await nbiFolder.inputValue()) === 'work-requirements');
 await nbiFolder.selectOption('201-file');
 await page.waitForTimeout(300);
