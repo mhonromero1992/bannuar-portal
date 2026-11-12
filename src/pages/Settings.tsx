@@ -1,13 +1,14 @@
 import { useState, type FormEvent } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
-import { errorText } from '../lib/format';
+import { errorText, fmtNum } from '../lib/format';
+import { checkFileStorage, STORAGE_FOLDER, type StorageCheck } from '../lib/files';
 import { useAreas, useDocTypes, useLeaveTypes } from '../lib/refs';
 import { Badge, Empty, ErrorState, Loading, PageHead, Tabs, TextField, useToast } from '../ui/kit';
 import { PaySettings } from './Pay';
 
-type Tab = 'areas' | 'documents' | 'leave' | 'pay';
+type Tab = 'areas' | 'documents' | 'leave' | 'pay' | 'storage';
 
 export default function Settings() {
   const { can } = useAuth();
@@ -16,6 +17,7 @@ export default function Settings() {
     { id: 'documents' as Tab, label: 'Document types', show: can.hr },
     { id: 'leave' as Tab, label: 'Leave types', show: can.hr },
     { id: 'pay' as Tab, label: 'Pay rules and rates', show: can.payroll || can.hr },
+    { id: 'storage' as Tab, label: 'File storage', show: can.admin },
   ].filter((t) => t.show);
   const [tab, setTab] = useState<Tab>(tabs[0]?.id ?? 'areas');
   return (
@@ -26,7 +28,82 @@ export default function Settings() {
       {tab === 'documents' && <DocTypes />}
       {tab === 'leave' && <LeaveTypes />}
       {tab === 'pay' && <PaySettings />}
+      {tab === 'storage' && <FileStorage />}
     </>
+  );
+}
+
+const S3_FOLDERS: [string, string, string][] = [
+  ['201-file', '201 file', 'Personal records: birth certificate, IDs, diploma, contract, BIR 2316'],
+  ['work-requirements', 'Work requirements', 'Clearances, drug test, neuro-psychiatric and medical results, training'],
+  ['lesp', 'LESP', 'The License to Exercise Security Profession'],
+  ['attendance', 'Attendance', 'Time in and time out selfies, by year and month'],
+  ['leave', 'Leave', 'Supporting documents attached to leave requests'],
+  ['certificates', 'Certificates', 'Certificates of employment as issued (PDF)'],
+];
+
+/** Super admins: where files go in Amazon S3, how many are there, and a live check of the set-up. */
+function FileStorage() {
+  const toast = useToast();
+  const [result, setResult] = useState<StorageCheck | null>(null);
+  const [busy, setBusy] = useState(false);
+  const counts = useQuery({
+    queryKey: ['stored-file-counts'],
+    queryFn: async () => {
+      const out: Record<string, number> = {};
+      for (const [folder] of S3_FOLDERS) {
+        const { count, error } = await supabase.from('stored_files').select('id', { count: 'exact', head: true }).eq('folder', folder).eq('status', 'stored');
+        if (error) throw error;
+        out[folder] = count ?? 0;
+      }
+      return out;
+    },
+  });
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      setResult(await checkFileStorage());
+    } catch (err) {
+      toast(errorText(err), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="stack">
+      <div className="panel">
+        <div className="panel-head"><h2>Where files go</h2></div>
+        <div className="panel-pad stack">
+          <p className="muted">Employee files are kept in a private Amazon S3 bucket, one folder per employee, named after the employee number: <span className="code">employees/&lt;employee number&gt;/</span>. Each document type files into one of the first three folders (Document types tab). Payslips are not stored: their PDF is made each time someone downloads it.</p>
+          <div className="table-wrap">
+            <table className="table">
+              <thead><tr><th>Folder</th><th>What goes in it</th><th className="num">Files</th></tr></thead>
+              <tbody>{S3_FOLDERS.map(([folder, name, what]) => (
+                <tr key={folder}>
+                  <td><b>{name}</b><span className="cell-sub"><span className="code">{folder}/</span></span></td>
+                  <td>{what}</td>
+                  <td className="num">{counts.data ? fmtNum(counts.data[folder]) : '·'}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+          <p className="muted small">Files stored before the switch to S3 stay in Supabase Storage and still open. The website’s job applications and announcement pictures stay there too.</p>
+        </div>
+      </div>
+      <div className="panel">
+        <div className="panel-head"><h2>Check the connection</h2><button className="btn btn-sm" type="button" aria-busy={busy} disabled={busy} onClick={run}>Check S3 now</button></div>
+        <div className="panel-pad">
+          {!result ? (
+            <p className="muted">Stores a small test file, reads it back, makes sure the bucket refuses a public read, then deletes it.</p>
+          ) : result.ok ? (
+            <p className="callout" role="status"><Badge tone="ok">Connected</Badge> Bucket <b className="code">{result.bucket}</b> in <b className="code">{result.region}</b>: the test file was stored, read back and deleted, and the bucket refused a public read.</p>
+          ) : (
+            <div className="callout warn" role="alert"><b>Not working yet{result.step ? ` (step: ${result.step})` : ''}.</b> {result.message}{result.aws_code ? <> AWS said <span className="code">{result.aws_code}</span>.</> : null}</div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -88,10 +165,15 @@ function DocTypes() {
     <div className="panel">
       <div className="table-wrap">
         <table className="table">
-          <thead><tr><th>Document</th><th>Expires</th><th>Needed for deployment</th><th>Remind days before</th><th>Employee may upload</th><th>Shown to employee</th><th>In use</th></tr></thead>
+          <thead><tr><th>Document</th><th>Folder in S3</th><th>Expires</th><th>Needed for deployment</th><th>Remind days before</th><th>Employee may upload</th><th>Shown to employee</th><th>In use</th></tr></thead>
           <tbody>{(q.data ?? []).map((d) => (
             <tr key={d.id}>
               <td><b>{d.name}</b><span className="cell-sub">{d.category}</span></td>
+              <td>
+                <select className="select" style={{ minWidth: 170 }} aria-label={`${d.name} folder in S3`} value={d.storage_folder} onChange={(e) => update(d.id, { storage_folder: e.target.value })}>
+                  {Object.entries(STORAGE_FOLDER).map(([value, name]) => <option key={value} value={value}>{name}</option>)}
+                </select>
+              </td>
               <td><input type="checkbox" aria-label={`${d.name} expires`} checked={d.has_expiry} onChange={(e) => update(d.id, { has_expiry: e.target.checked })} /></td>
               <td><input type="checkbox" aria-label={`${d.name} needed for deployment`} checked={d.required_for_deployment} onChange={(e) => update(d.id, { required_for_deployment: e.target.checked })} /></td>
               <td><input className="input" style={{ width: 90 }} type="number" min="0" max="365" aria-label={`${d.name} reminder days`} defaultValue={d.remind_days_before} onBlur={(e) => Number(e.target.value) !== d.remind_days_before && update(d.id, { remind_days_before: Number(e.target.value) })} /></td>

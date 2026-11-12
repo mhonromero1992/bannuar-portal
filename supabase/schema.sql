@@ -380,6 +380,28 @@ create table if not exists public.document_types (
   created_at timestamptz not null default now()
 );
 
+-- The S3 folder a document type's files go to: employees/<employee number>/<storage_folder>/...
+--   201-file           personal records: birth certificate, IDs, diploma, contract, BIR 2316
+--   work-requirements  clearances, drug test, neuro-psychiatric and medical results, training
+--   lesp               the License to Exercise Security Profession
+-- Types that existed before the column are sorted once, here; HR changes it in Settings afterwards.
+alter table public.document_types add column if not exists storage_folder text;
+update public.document_types set storage_folder = case
+    when code = 'SECURITY_LICENSE' or name ilike '%lesp%' then 'lesp'
+    when category in ('clearance', 'medical', 'training') then 'work-requirements'
+    else '201-file' end
+  where storage_folder is null;
+alter table public.document_types alter column storage_folder set default '201-file';
+alter table public.document_types alter column storage_folder set not null;
+do $$
+begin
+  if not exists (select 1 from pg_constraint
+                 where conname = 'document_types_storage_folder_check' and conrelid = 'public.document_types'::regclass) then
+    alter table public.document_types add constraint document_types_storage_folder_check
+      check (storage_folder in ('201-file', 'work-requirements', 'lesp'));
+  end if;
+end $$;
+
 create table if not exists public.employee_documents (
   id uuid primary key default gen_random_uuid(),
   employee_id uuid not null references public.employees (id) on delete cascade,
@@ -659,6 +681,37 @@ create table if not exists public.attendance_logs (
 create index if not exists attendance_logs_employee_idx on public.attendance_logs (employee_id, logged_at desc);
 create index if not exists attendance_logs_site_idx on public.attendance_logs (site_id, logged_at desc);
 create index if not exists attendance_logs_logged_idx on public.attendance_logs (logged_at desc);
+
+-- Files kept in Amazon S3. The files Edge Function puts them in a private bucket and records each one
+-- here; the AWS keys live only in that function's secrets. Every employee has one folder, named after
+-- the employee number when the file was stored:
+--   employees/<employee number>/201-file/<date>_<document type>_<random>.<ext>
+--   employees/<employee number>/work-requirements/<date>_<document type>_<random>.<ext>
+--   employees/<employee number>/lesp/<date>_<document type>_<random>.<ext>
+--   employees/<employee number>/attendance/<yyyy>/<mm>/<date>_<hhmm>_<time-in|time-out>_<random>.jpg
+--   employees/<employee number>/leave/<date>_leave-attachment_<random>.<ext>
+--   employees/<employee number>/certificates/<certificate number>.pdf
+-- Payslips are not stored: their PDF is made each time someone downloads it.
+create table if not exists public.stored_files (
+  id uuid primary key default gen_random_uuid(),
+  object_key text not null unique check (
+    object_key ~ '^employees/[A-Za-z0-9][A-Za-z0-9._-]*/(201-file|work-requirements|lesp|attendance|leave|certificates)/[A-Za-z0-9][A-Za-z0-9/._-]*$'
+    and object_key !~ '/\.' and length(object_key) <= 300),
+  employee_id uuid references public.employees (id) on delete set null,
+  purpose text not null check (purpose in ('document', 'leave', 'attendance', 'certificate')),
+  folder text not null check (folder in ('201-file', 'work-requirements', 'lesp', 'attendance', 'leave', 'certificates')),
+  document_type_id uuid references public.document_types (id) on delete set null,
+  certificate_id uuid references public.certificates (id) on delete set null,
+  content_type text not null check (content_type in ('application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic')),
+  max_bytes integer not null check (max_bytes > 0),
+  size_bytes integer check (size_bytes > 0 and size_bytes <= max_bytes),
+  status text not null default 'pending' check (status in ('pending', 'stored')),  -- stored once S3 has it
+  uploaded_by uuid references auth.users (id) on delete set null,
+  created_at timestamptz not null default now(),
+  stored_at timestamptz
+);
+create index if not exists stored_files_employee_idx on public.stored_files (employee_id, folder, created_at desc);
+create index if not exists stored_files_uploader_idx on public.stored_files (uploaded_by, created_at desc);
 
 -- Recruitment (the website's careers page)
 create table if not exists public.job_openings (
@@ -950,12 +1003,36 @@ begin
   return new;
 end $$;
 
+-- A record may point at an S3 file only when the file is stored, belongs to this employee and this
+-- use (and document type), and, for anyone but HR, was uploaded by the person saving the record.
+-- Paths from before S3 (Supabase Storage) do not start with employees/; their callers check them.
+create or replace function public.stored_file_ok(p_key text, p_employee_id uuid, p_purpose text,
+                                                 p_document_type_id uuid default null) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select exists (
+    select 1 from public.stored_files f
+    where f.object_key = p_key and f.status = 'stored' and f.purpose = p_purpose
+      and f.employee_id = p_employee_id
+      and (p_document_type_id is null or f.document_type_id = p_document_type_id)
+      and (public.is_hr() or public.is_trusted() or f.uploaded_by = auth.uid()))
+$$;
+
 create or replace function public.employee_documents_before_write() returns trigger
 language plpgsql security definer set search_path = '' as $$
 declare
   dt public.document_types;
 begin
   select * into dt from public.document_types where id = new.document_type_id;
+  if new.file_path is not null and (tg_op = 'INSERT' or new.file_path is distinct from old.file_path) then
+    if new.file_path like 'employees/%' then
+      if not public.stored_file_ok(new.file_path, new.employee_id, 'document', new.document_type_id) then
+        raise exception 'That file did not arrive. Upload it again.' using errcode = 'P0001';
+      end if;
+    elsif not (public.is_hr() or public.is_trusted())
+          and new.file_path not like coalesce(public.current_employee_id()::text, '-') || '/uploads/%' then
+      raise exception 'Upload the file again' using errcode = 'P0001';
+    end if;
+  end if;
   if public.is_hr() or public.is_trusted() then
     if tg_op = 'INSERT' then
       new.uploaded_by := coalesce(new.uploaded_by, auth.uid());
@@ -1031,6 +1108,16 @@ begin
   end if;
   if lt.applies_to_sex is not null and e.sex is distinct from lt.applies_to_sex then
     raise exception '% is not available for this employee', lt.name using errcode = 'P0001';
+  end if;
+  if new.attachment_path is not null then
+    if new.attachment_path like 'employees/%' then
+      if not public.stored_file_ok(new.attachment_path, new.employee_id, 'leave') then
+        raise exception 'The attachment did not arrive. Attach it again.' using errcode = 'P0001';
+      end if;
+    elsif not (public.is_hr() or public.is_trusted())
+          and new.attachment_path not like coalesce(public.current_employee_id()::text, '-') || '/uploads/%' then
+      raise exception 'Attach the file again' using errcode = 'P0001';
+    end if;
   end if;
   if new.end_date < new.start_date then
     raise exception 'The last day is before the first day' using errcode = '22023';
@@ -1798,13 +1885,27 @@ begin
     if me.status in ('resigned', 'terminated', 'end_of_contract', 'retired') then
       raise exception 'Your employment record is closed. Ask HR.' using errcode = 'P0001';
     end if;
-    if coalesce(p_photo_path, '') = '' or (storage.foldername(p_photo_path))[1] is distinct from me.id::text then
+    if coalesce(p_photo_path, '') = '' then
       raise exception 'Take your photo first' using errcode = '22023';
     end if;
-    if not exists (select 1 from storage.objects o
-                   where o.bucket_id = 'attendance-photos' and o.name = p_photo_path
-                     and o.created_at > now() - interval '30 minutes') then
-      raise exception 'Your photo did not arrive. Take it again.' using errcode = 'P0001';
+    if p_photo_path like 'employees/%' then
+      -- the selfie in S3: this guard's own upload for attendance, from the last 30 minutes
+      if not exists (select 1 from public.stored_files f
+                     where f.object_key = p_photo_path and f.purpose = 'attendance' and f.status = 'stored'
+                       and f.employee_id = me.id and f.uploaded_by = auth.uid()
+                       and f.created_at > now() - interval '30 minutes') then
+        raise exception 'Your photo did not arrive. Take it again.' using errcode = 'P0001';
+      end if;
+    else
+      -- app versions from before S3 put the selfie in Supabase Storage (attendance-photos/<employee id>/...)
+      if (storage.foldername(p_photo_path))[1] is distinct from me.id::text then
+        raise exception 'Take your photo first' using errcode = '22023';
+      end if;
+      if not exists (select 1 from storage.objects o
+                     where o.bucket_id = 'attendance-photos' and o.name = p_photo_path
+                       and o.created_at > now() - interval '30 minutes') then
+        raise exception 'Your photo did not arrive. Take it again.' using errcode = 'P0001';
+      end if;
     end if;
     if v_has_location and (p_latitude not between -90 and 90 or p_longitude not between -180 and 180
                            or p_accuracy_m is null or p_accuracy_m not between 0 and 1000000) then
@@ -1849,6 +1950,196 @@ begin
     'distance_m', v_log.distance_m, 'accuracy_m', v_log.accuracy_m, 'radius_m', v_log.radius_m,
     'site_name', (select st.name from public.sites st where st.id = v_log.site_id));
 end $$;
+
+-- Files in Amazon S3 ---------------------------------------------------------------------------------
+-- The files Edge Function holds the AWS keys. For an upload it calls begin_file_upload with the
+-- signed-in person's own token (the checks below), puts the file in S3 under the key it returns, then
+-- calls finish_file_upload with the service role. To open files it asks authorize_file_reads which
+-- keys the person may see and signs a five-minute link for each.
+
+-- What each kind of upload may be: its file types and its largest size
+create or replace function public.upload_rule(p_purpose text) returns jsonb
+language sql immutable set search_path = '' as $$
+  select (case p_purpose
+    when 'document' then '{"max_bytes": 10485760, "types": ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic"]}'
+    when 'leave' then '{"max_bytes": 10485760, "types": ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic"]}'
+    when 'attendance' then '{"max_bytes": 3145728, "types": ["image/jpeg", "image/png", "image/webp", "image/heic"]}'
+    when 'certificate' then '{"max_bytes": 5242880, "types": ["application/pdf"]}'
+  end)::jsonb
+$$;
+
+-- employees/<employee number>. Anything but letters, digits, '.', '_' and '-' becomes '-'; a number
+-- that still cannot name a folder falls back to the record's id. The key keeps the number the employee
+-- had when the file was stored, so renumbering someone leaves earlier files where they are (still
+-- linked from their records).
+create or replace function public.employee_storage_folder(p_employee_id uuid) returns text
+language sql stable security definer set search_path = '' as $$
+  select 'employees/' || case when x.n ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' then x.n else e.id::text end
+  from public.employees e,
+       lateral (select trim(both '-' from regexp_replace(trim(e.employee_no), '[^A-Za-z0-9._-]+', '-', 'g')) as n) x
+  where e.id = p_employee_id
+$$;
+
+-- 'NBI_CLEARANCE' -> 'nbi-clearance'
+create or replace function public.storage_slug(p text) returns text
+language sql immutable set search_path = '' as $$
+  select coalesce(nullif(trim(both '-' from left(regexp_replace(lower(coalesce(p, '')), '[^a-z0-9]+', '-', 'g'), 48)), ''), 'file')
+$$;
+
+-- Step 1 of an upload: may this person store this file, and under which key? The file waits as
+-- 'pending' until S3 has it. HR stores files for anyone; everyone else only for themselves, at most 60
+-- an hour. Attendance selfies are only ever the guard's own; certificates only HR's.
+create or replace function public.begin_file_upload(
+  p_purpose text, p_content_type text, p_size_bytes bigint,
+  p_employee_id uuid default null, p_document_type_id uuid default null,
+  p_kind text default null, p_certificate_id uuid default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_rule jsonb := public.upload_rule(p_purpose);
+  v_me uuid := public.current_employee_id();
+  v_hr boolean := public.is_hr();
+  e public.employees;
+  dt public.document_types;
+  c public.certificates;
+  v_folder text;
+  v_label text;
+  v_ext text;
+  v_now timestamp := now() at time zone 'Asia/Manila';
+  v_rand text := left(replace(gen_random_uuid()::text, '-', ''), 10);
+  v_key text;
+  v_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in first' using errcode = '42501';
+  end if;
+  if v_rule is null then
+    raise exception 'Unknown kind of upload' using errcode = '22023';
+  end if;
+  if p_content_type is null or not ((v_rule -> 'types') ? p_content_type) then
+    raise exception 'This kind of file cannot be uploaded here' using errcode = '22023';
+  end if;
+  if p_size_bytes is null or p_size_bytes < 1 then
+    raise exception 'The file is empty' using errcode = '22023';
+  end if;
+  if p_size_bytes > (v_rule ->> 'max_bytes')::bigint then
+    raise exception 'The file is too large: up to % MB', (v_rule ->> 'max_bytes')::bigint / 1048576 using errcode = '22023';
+  end if;
+  if not v_hr and (select count(*) from public.stored_files f
+                   where f.uploaded_by = auth.uid() and f.created_at > now() - interval '1 hour') >= 60 then
+    raise exception 'Too many uploads in an hour. Try again later.' using errcode = 'P0001';
+  end if;
+
+  if p_purpose = 'document' then
+    select * into dt from public.document_types where id = p_document_type_id and is_active;
+    if not found then
+      raise exception 'Choose the kind of document' using errcode = '22023';
+    end if;
+    if not v_hr and not dt.employee_can_upload then
+      raise exception 'Bring this document to the HR office' using errcode = 'P0001';
+    end if;
+    v_folder := dt.storage_folder;
+    v_label := public.storage_slug(dt.code);
+  elsif p_purpose = 'leave' then
+    v_folder := 'leave';
+    v_label := 'leave-attachment';
+  elsif p_purpose = 'attendance' then
+    if p_kind is null or p_kind not in ('time_in', 'time_out') then
+      raise exception 'Choose time in or time out' using errcode = '22023';
+    end if;
+    v_folder := 'attendance';
+    v_label := replace(p_kind, '_', '-');
+  else
+    if not v_hr then
+      raise exception 'Only HR stores certificates' using errcode = '42501';
+    end if;
+    select * into c from public.certificates where id = p_certificate_id;
+    if not found then
+      raise exception 'Certificate not found' using errcode = 'P0002';
+    end if;
+    v_folder := 'certificates';
+  end if;
+
+  if p_purpose = 'certificate' then
+    select * into e from public.employees where id = c.employee_id;
+  elsif v_hr and p_purpose <> 'attendance' and p_employee_id is not null then
+    select * into e from public.employees where id = p_employee_id;
+  else
+    if p_employee_id is not null and p_employee_id is distinct from v_me then
+      raise exception 'You can only upload your own files' using errcode = '42501';
+    end if;
+    select * into e from public.employees where id = v_me;
+  end if;
+  if e.id is null then
+    raise exception 'There is no employee record for this file' using errcode = '42501';
+  end if;
+  if not v_hr and e.status in ('resigned', 'terminated', 'end_of_contract', 'retired') then
+    raise exception 'Your employment record is closed. Ask HR.' using errcode = 'P0001';
+  end if;
+
+  v_ext := case p_content_type when 'application/pdf' then 'pdf' when 'image/jpeg' then 'jpg' when 'image/png' then 'png'
+                               when 'image/webp' then 'webp' else 'heic' end;
+  v_key := public.employee_storage_folder(e.id) || '/' || v_folder || '/' || case p_purpose
+    when 'attendance' then to_char(v_now, 'YYYY/MM/YYYY-MM-DD_HH24MI') || '_' || v_label || '_' || v_rand || '.' || v_ext
+    when 'certificate' then coalesce(nullif(trim(both '-' from regexp_replace(c.certificate_no, '[^A-Za-z0-9-]+', '-', 'g')), ''),
+                                     c.id::text) || '.pdf'
+    else to_char(v_now, 'YYYY-MM-DD') || '_' || v_label || '_' || v_rand || '.' || v_ext
+  end;
+
+  -- a certificate keeps one key: making its PDF again replaces the file (S3 versioning keeps the old one)
+  insert into public.stored_files as f (object_key, employee_id, purpose, folder, document_type_id, certificate_id,
+                                        content_type, max_bytes, uploaded_by)
+  values (v_key, e.id, p_purpose, v_folder, dt.id, c.id, p_content_type, (v_rule ->> 'max_bytes')::integer, auth.uid())
+  on conflict (object_key) do update
+    set status = 'pending', content_type = excluded.content_type, size_bytes = null, stored_at = null,
+        uploaded_by = excluded.uploaded_by, created_at = now()
+    where f.purpose = 'certificate'
+  returning f.id into v_id;
+  if v_id is null then
+    raise exception 'Try the upload again' using errcode = 'P0001';
+  end if;
+  return jsonb_build_object('id', v_id, 'key', v_key, 'content_type', p_content_type,
+                            'max_bytes', (v_rule ->> 'max_bytes')::integer);
+end $$;
+
+-- Step 2, the files Edge Function only (service role): S3 has the file, so it may be linked
+create or replace function public.finish_file_upload(p_file_id uuid, p_size_bytes bigint) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  f public.stored_files;
+begin
+  if not public.is_trusted() then
+    raise exception 'Only the files service records uploads' using errcode = '42501';
+  end if;
+  update public.stored_files set status = 'stored', size_bytes = p_size_bytes, stored_at = now()
+  where id = p_file_id and status = 'pending' and p_size_bytes between 1 and max_bytes
+  returning * into f;
+  if not found then
+    raise exception 'Upload not found' using errcode = 'P0002';
+  end if;
+  return jsonb_build_object('id', f.id, 'key', f.object_key, 'content_type', f.content_type, 'size_bytes', f.size_bytes);
+end $$;
+
+-- Which of these S3 keys the signed-in person may open. The same rules the storage buckets had: staff
+-- open employees' files (certificates: HR only), employees their own (documents only of the types
+-- shown to them), and commanders the selfies of time ins and outs at their posts.
+create or replace function public.authorize_file_reads(p_keys text[])
+returns table (object_key text, file_name text, content_type text)
+language sql stable security definer set search_path = '' as $$
+  select f.object_key, regexp_replace(f.object_key, '^.*/', ''), f.content_type
+  from public.stored_files f
+  where auth.uid() is not null and f.status = 'stored'
+    and f.object_key = any (p_keys[1:200])
+    and (
+      (f.purpose = 'certificate' and public.is_hr())
+      or (f.purpose <> 'certificate' and public.is_staff())
+      or (f.employee_id = public.current_employee_id()
+          and (f.purpose <> 'document'
+               or exists (select 1 from public.document_types dt where dt.id = f.document_type_id and dt.visible_to_employee)))
+      or (f.purpose = 'attendance' and exists (
+            select 1 from public.attendance_logs a
+            where a.photo_path = f.object_key and a.site_id = any (public.my_supervised_site_ids())))
+    )
+$$;
 
 -- First administrator. Run once in the SQL editor:
 --   select public.bootstrap_super_admin('you@company.ph', 'Your Name');
@@ -2403,6 +2694,11 @@ begin
   if not public.is_hr() then
     raise exception 'Only HR can attach certificate files' using errcode = '42501';
   end if;
+  if p_path like 'employees/%' and not exists (
+      select 1 from public.stored_files f
+      where f.object_key = p_path and f.purpose = 'certificate' and f.status = 'stored' and f.certificate_id = p_certificate_id) then
+    raise exception 'The certificate PDF did not arrive. Make it again.' using errcode = 'P0001';
+  end if;
   update public.certificates set file_path = p_path where id = p_certificate_id;
   if not found then
     raise exception 'Certificate not found' using errcode = 'P0002';
@@ -2667,7 +2963,7 @@ begin
       'payslips', 'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates',
       'profile_change_requests', 'payroll_concerns', 'announcements', 'announcement_receipts', 'notifications',
       'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log', 'pay_rules', 'pay_rates',
-      'employee_assignments', 'activation_tickets', 'activation_attempts', 'attendance_logs'])
+      'employee_assignments', 'activation_tickets', 'activation_attempts', 'attendance_logs', 'stored_files'])
   loop
     execute format('drop policy if exists %I on %I.%I', r.policyname, r.schemaname, r.tablename);
   end loop;
@@ -2677,7 +2973,7 @@ begin
       'payslips', 'leave_types', 'leave_credits', 'leave_requests', 'coe_requests', 'certificates',
       'profile_change_requests', 'payroll_concerns', 'announcements', 'announcement_receipts', 'notifications',
       'device_tokens', 'job_openings', 'job_applications', 'inquiries', 'audit_log', 'pay_rules', 'pay_rates',
-      'employee_assignments', 'activation_tickets', 'activation_attempts', 'attendance_logs'])
+      'employee_assignments', 'activation_tickets', 'activation_attempts', 'attendance_logs', 'stored_files'])
   loop
     execute format('alter table public.%I enable row level security', r.tablename);
   end loop;
@@ -2842,6 +3138,10 @@ create policy "read attendance" on public.attendance_logs for select to authenti
   using ((select public.is_staff()) or employee_id = (select public.current_employee_id())
          or site_id = any ((select public.my_supervised_site_ids())::uuid[]));
 
+-- The S3 file list: staff can see it; only the files Edge Function writes it (through functions)
+create policy "staff read stored files" on public.stored_files for select to authenticated
+  using ((select public.is_staff()));
+
 -- Website: open job openings are public; applications and proposal requests can be sent by anyone
 create policy "public reads open jobs" on public.job_openings for select to anon, authenticated
   using (status = 'open' and (closes_on is null or closes_on >= current_date));
@@ -2970,9 +3270,29 @@ revoke execute on function public.log_attendance(text, text, double precision, d
 grant execute on function public.log_attendance(text, text, double precision, double precision, double precision, boolean)
   to authenticated;
 
+-- files in S3: the files Edge Function begins uploads and asks what may be opened with the person's own
+-- token, and finishes uploads with the service role; the helpers are internal
+revoke all on public.stored_files from public, anon, authenticated;
+grant select on public.stored_files to authenticated;
+grant select, insert, update on public.stored_files to service_role;
+revoke execute on function
+  public.upload_rule(text), public.employee_storage_folder(uuid), public.storage_slug(text),
+  public.stored_file_ok(text, uuid, text, uuid), public.finish_file_upload(uuid, bigint)
+from public, anon, authenticated;
+grant execute on function public.finish_file_upload(uuid, bigint) to service_role;
+revoke execute on function
+  public.begin_file_upload(text, text, bigint, uuid, uuid, text, uuid), public.authorize_file_reads(text[])
+from public, anon;
+grant execute on function
+  public.begin_file_upload(text, text, bigint, uuid, uuid, text, uuid), public.authorize_file_reads(text[])
+to authenticated;
+
 -- -------------------------------------------------------------------------------------
 -- 13. File storage (all buckets private; files are read through short-lived signed links)
 -- -------------------------------------------------------------------------------------
+-- Employee files now go to Amazon S3 (stored_files, the files Edge Function). These buckets stay for
+-- files stored before the switch, which still open, for the website's job applications, and for
+-- announcement pictures.
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types) values
   ('employee-files', 'employee-files', false, 10485760,
     array['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic']),
@@ -3055,21 +3375,21 @@ insert into public.leave_types (code, name, description, days_per_year, max_days
   ('LWOP', 'Leave without pay', 'Unpaid leave, decided case by case.', null, null, false, false, null, 0, 90)
 on conflict (code) do nothing;
 
-insert into public.document_types (code, name, category, has_expiry, required_for_deployment, remind_days_before, visible_to_employee, employee_can_upload, sort_order) values
-  ('SECURITY_LICENSE', 'Security guard license (LESP)', 'license', true, true, 60, true, true, 10),
-  ('NBI_CLEARANCE', 'NBI clearance', 'clearance', true, true, 30, true, true, 20),
-  ('POLICE_CLEARANCE', 'Police clearance', 'clearance', true, false, 30, true, true, 30),
-  ('BARANGAY_CLEARANCE', 'Barangay clearance', 'clearance', true, false, 30, true, true, 40),
-  ('DRUG_TEST', 'Drug test result', 'medical', true, true, 30, true, true, 50),
-  ('NEURO_PSYCH', 'Neuro-psychiatric examination', 'medical', true, true, 30, true, true, 60),
-  ('MEDICAL_CERT', 'Medical certificate', 'medical', true, false, 30, true, true, 70),
-  ('PRE_LICENSING_TRAINING', 'Pre-licensing training certificate', 'training', false, false, 30, true, true, 80),
-  ('REFRESHER_TRAINING', 'Refresher training certificate', 'training', true, false, 60, true, true, 90),
-  ('BIRTH_CERT', 'PSA birth certificate', 'personal', false, false, 30, true, true, 100),
-  ('DIPLOMA', 'Diploma or transcript of records', 'personal', false, false, 30, true, true, 110),
-  ('GOVERNMENT_ID', 'Government-issued ID', 'government', true, false, 30, true, true, 120),
-  ('EMPLOYMENT_CONTRACT', 'Employment contract', 'contract', false, false, 30, true, false, 130),
-  ('BIR_2316', 'BIR Form 2316', 'payroll', false, false, 30, true, false, 140)
+insert into public.document_types (code, name, category, has_expiry, required_for_deployment, remind_days_before, visible_to_employee, employee_can_upload, sort_order, storage_folder) values
+  ('SECURITY_LICENSE', 'Security guard license (LESP)', 'license', true, true, 60, true, true, 10, 'lesp'),
+  ('NBI_CLEARANCE', 'NBI clearance', 'clearance', true, true, 30, true, true, 20, 'work-requirements'),
+  ('POLICE_CLEARANCE', 'Police clearance', 'clearance', true, false, 30, true, true, 30, 'work-requirements'),
+  ('BARANGAY_CLEARANCE', 'Barangay clearance', 'clearance', true, false, 30, true, true, 40, 'work-requirements'),
+  ('DRUG_TEST', 'Drug test result', 'medical', true, true, 30, true, true, 50, 'work-requirements'),
+  ('NEURO_PSYCH', 'Neuro-psychiatric examination', 'medical', true, true, 30, true, true, 60, 'work-requirements'),
+  ('MEDICAL_CERT', 'Medical certificate', 'medical', true, false, 30, true, true, 70, 'work-requirements'),
+  ('PRE_LICENSING_TRAINING', 'Pre-licensing training certificate', 'training', false, false, 30, true, true, 80, 'work-requirements'),
+  ('REFRESHER_TRAINING', 'Refresher training certificate', 'training', true, false, 60, true, true, 90, 'work-requirements'),
+  ('BIRTH_CERT', 'PSA birth certificate', 'personal', false, false, 30, true, true, 100, '201-file'),
+  ('DIPLOMA', 'Diploma or transcript of records', 'personal', false, false, 30, true, true, 110, '201-file'),
+  ('GOVERNMENT_ID', 'Government-issued ID', 'government', true, false, 30, true, true, 120, '201-file'),
+  ('EMPLOYMENT_CONTRACT', 'Employment contract', 'contract', false, false, 30, true, false, 130, '201-file'),
+  ('BIR_2316', 'BIR Form 2316', 'payroll', false, false, 30, true, false, 140, '201-file')
 on conflict (code) do nothing;
 
 -- The agency-wide pay rule: Labor Code overtime (125%) and night differential (10%)

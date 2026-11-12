@@ -421,6 +421,93 @@ check "and keeps every record" "$(pg "select (select count(*) from public.employ
 check "attendance logs are kept, and still closed to direct writes" "$(pg "select count(*) from public.attendance_logs"):$(as_user "$BEA" "delete from public.attendance_logs" | grep -c 'permission denied')" "9:1"
 check "activation stays closed to anon after a re-run" "$(as_anon "select public.check_employee_activation('G-002', '1992-02-02', '09171110002')" | grep -c 'permission denied')" "1"
 
+echo "== Files in Amazon S3 (the database's half: who may store or open what, and under which key)"
+TODAY=$(TZ=Asia/Manila date +%Y-%m-%d); MONTH=$(TZ=Asia/Manila date +%Y/%m)
+begin() { as_user "$1" "select public.begin_file_upload($2)"; }   # uid "args"
+stored() { as_service "select public.finish_file_upload('$1', $2)" >/dev/null; }   # id size: what the Edge Function does once S3 has it
+nread() { as_user "$1" "select count(*) from public.authorize_file_reads(array[$2]::text[])"; }   # uid "'key', ..."
+check "document types are sorted into the three folders" "$(pg "select string_agg(code || '=' || storage_folder, ',' order by code) from public.document_types where code in ('SECURITY_LICENSE', 'NBI_CLEARANCE', 'DRUG_TEST', 'BIRTH_CERT', 'EMPLOYMENT_CONTRACT')")" "BIRTH_CERT=201-file,DRUG_TEST=work-requirements,EMPLOYMENT_CONTRACT=201-file,NBI_CLEARANCE=work-requirements,SECURITY_LICENSE=lesp"
+r=$(as_user "$HR" "update public.document_types set storage_folder = 'payslips' where code = 'BIR_2316'"); check_has "and only those three" "$r" "storage_folder_check"
+LESP_T=$(pg "select id from public.document_types where code = 'SECURITY_LICENSE'")
+NBI_T=$(pg "select id from public.document_types where code = 'NBI_CLEARANCE'")
+CONTRACT_T=$(pg "select id from public.document_types where code = 'EMPLOYMENT_CONTRACT'")
+B1=$(begin "$BEA" "'document', 'image/jpeg', 200000, null, '$LESP_T'"); K1=$(echo "$B1" | jget key)
+check "a guard's LESP renewal goes to her own LESP folder" "$(echo "$K1" | grep -cE "^employees/G-002/lesp/${TODAY}_security-license_[0-9a-f]{10}\.jpg$")" "1"
+B2=$(begin "$BEA" "'document', 'application/pdf', 300000, null, '$NBI_T'"); K2=$(echo "$B2" | jget key)
+check "her NBI clearance goes to work-requirements" "$(echo "$K2" | grep -cE "^employees/G-002/work-requirements/${TODAY}_nbi-clearance_[0-9a-f]{10}\.pdf$")" "1"
+r=$(begin "$BEA" "'document', 'application/pdf', 300000, null, '$CONTRACT_T'"); check_has "a document HR keeps (the contract) is refused" "$r" "Bring this document"
+r=$(begin "$BEA" "'document', 'image/jpeg', 200000, '$CARLO_EMP', '$LESP_T'"); check_has "never into another guard's folder" "$r" "only upload your own"
+r=$(begin "$BEA" "'document', 'application/zip', 200000, null, '$LESP_T'"); check_has "only PDFs and photos" "$r" "cannot be uploaded"
+r=$(begin "$BEA" "'document', 'image/jpeg', 20000000, null, '$LESP_T'"); check_has "of up to 10 MB" "$r" "too large"
+r=$(begin "$BEA" "'payslip', 'application/pdf', 2000"); check_has "payslips are never stored (their PDF is made on download)" "$r" "Unknown kind of upload"
+r=$(as_anon "select public.begin_file_upload('document', 'image/jpeg', 2000)"); check_has "anon cannot upload" "$r" "permission denied"
+B3=$(begin "$HR" "'document', 'application/pdf', 400000, '$CARLO_EMP', '$CONTRACT_T'"); K3=$(echo "$B3" | jget key)
+check "HR files a contract in Carlo's 201-file folder" "$(echo "$K3" | grep -cE "^employees/G-003/201-file/${TODAY}_employment-contract_[0-9a-f]{10}\.pdf$")" "1"
+r=$(as_user "$BEA" "select public.finish_file_upload('$(echo "$B1" | jget id)', 200000)"); check_has "only the files service marks a file stored" "$r" "permission denied"
+r=$(as_user "$HR" "insert into public.stored_files (object_key, purpose, folder, content_type, max_bytes) values ('employees/G-002/lesp/x.jpg', 'document', 'lesp', 'image/jpeg', 10)"); check_has "nobody writes the file list directly" "$r" "permission denied"
+r=$(as_user "$BEA" "insert into public.employee_documents (employee_id, document_type_id, file_path) values ('$BEA_EMP', '$LESP_T', '$K1')"); check_has "a file S3 does not have yet cannot be attached" "$r" "did not arrive"
+r=$(as_service "select public.finish_file_upload('$(echo "$B1" | jget id)', 999999999)"); check_has "a size over the limit is not marked stored" "$r" "Upload not found"
+stored "$(echo "$B1" | jget id)" 200000; stored "$(echo "$B2" | jget id)" 300000; stored "$(echo "$B3" | jget id)" 400000
+check "once stored, the renewal is attached and waits for HR" "$(as_user "$BEA" "insert into public.employee_documents (employee_id, document_type_id, file_path) values ('$BEA_EMP', '$LESP_T', '$K1') returning status")" "pending_review"
+r=$(as_user "$BEA" "insert into public.employee_documents (employee_id, document_type_id, file_path) values ('$BEA_EMP', '$LESP_T', '$K2')"); check_has "a file must match its document type" "$r" "did not arrive"
+r=$(as_user "$HR" "insert into public.employee_documents (employee_id, document_type_id, file_path) values ('$BEA_EMP', '$CONTRACT_T', '$K3')"); check_has "HR cannot attach Carlo's file to Bea" "$r" "did not arrive"
+check "HR attaches it to Carlo" "$(as_user "$HR" "insert into public.employee_documents (employee_id, document_type_id, file_path) values ('$CARLO_EMP', '$CONTRACT_T', '$K3') returning status")" "verified"
+r=$(as_user "$CARLO" "insert into public.employee_documents (employee_id, document_type_id, file_path) values ('$CARLO_EMP', '$NBI_T', '$BEA_EMP/uploads/x.pdf')"); check_has "an old Supabase path outside one's own folder is refused" "$r" "Upload the file again"
+check "one in one's own folder (older app versions) still works" "$(as_user "$CARLO" "insert into public.employee_documents (employee_id, document_type_id, file_path) values ('$CARLO_EMP', '$NBI_T', '$CARLO_EMP/uploads/x.pdf') returning status")" "pending_review"
+ALL="'$K1', '$K2', '$K3'"
+check "Bea opens her two files, not Carlo's contract" "$(nread "$BEA" "$ALL")" "2"
+check "Carlo opens his contract only" "$(nread "$CARLO" "$ALL")" "1"
+check "HR opens all three" "$(nread "$HR" "$ALL")" "3"
+check "management (read-only staff) too" "$(nread "$MGMT" "$ALL")" "3"
+check "the commander does not open his guards' documents" "$(nread "$DC" "$ALL")" "0"
+pg "update public.document_types set visible_to_employee = false where code = 'EMPLOYMENT_CONTRACT'" >/dev/null
+check "a document type hidden from employees stays hidden in S3" "$(nread "$CARLO" "$ALL")" "0"
+pg "update public.document_types set visible_to_employee = true where code = 'EMPLOYMENT_CONTRACT'" >/dev/null
+check "a pending upload opens for nobody" "$(nread "$HR" "'$(begin "$BEA" "'leave', 'image/png', 5000" | jget key)'")" "0"
+r=$(as_anon "select count(*) from public.authorize_file_reads(array['$K1'])"); check_has "anon opens nothing" "$r" "permission denied"
+check "the file list is for staff" "$(as_user "$BEA" "select count(*) from public.stored_files"):$(as_user "$HR" "select count(*) > 0 from public.stored_files")" "0:t"
+r=$(as_user "$BEA" "select public.employee_storage_folder('$BEA_EMP')"); check_has "the key helpers are internal" "$r" "permission denied"
+A1=$(begin "$BEA" "'attendance', 'image/jpeg', 150000, null, null, 'time_in'"); AK1=$(echo "$A1" | jget key)
+check "a selfie goes to attendance/<year>/<month>, named with the time and the kind" "$(echo "$AK1" | grep -cE "^employees/G-002/attendance/${MONTH}/${TODAY}_[0-9]{4}_time-in_[0-9a-f]{10}\.jpg$")" "1"
+r=$(logat "$BEA" time_in "$AK1" 14.5552 121.0244 12); check_has "logging before S3 has the selfie is refused" "$r" "did not arrive"
+stored "$(echo "$A1" | jget id)" 150000
+check "then the time in logs, at the post" "$(logat "$BEA" time_in "$AK1" 14.5552 121.0244 12 | jget location_check)" "at_post"
+r=$(logat "$CARLO" time_in "$AK1" 14.5552 121.0244 12); check_has "another guard cannot log with it" "$r" "not yours"
+A2=$(begin "$CARLO" "'attendance', 'image/jpeg', 150000, null, null, 'time_out'"); AK2=$(echo "$A2" | jget key); stored "$(echo "$A2" | jget id)" 150000
+r=$(logat "$BEA" time_in "$AK2" 14.5552 121.0244 12); check_has "nor use another guard's upload" "$r" "did not arrive"
+pg "update public.stored_files set created_at = now() - interval '2 hours' where object_key = '$AK2'" >/dev/null
+r=$(logat "$CARLO" time_out "$AK2" 14.5552 121.0244 12); check_has "a selfie older than 30 minutes is refused" "$r" "did not arrive"
+r=$(begin "$HR" "'attendance', 'image/jpeg', 150000, '$BEA_EMP', null, 'time_in'"); check_has "nobody uploads a selfie for someone else, HR included" "$r" "only upload your own"
+r=$(begin "$BEA" "'attendance', 'application/pdf', 150000, null, null, 'time_in'"); check_has "a selfie is a photo" "$r" "cannot be uploaded"
+r=$(begin "$BEA" "'attendance', 'image/jpeg', 4000000, null, null, 'time_in'"); check_has "of up to 3 MB" "$r" "too large"
+check "the commander opens selfies from his post" "$(nread "$DC" "'$AK1'")" "1"
+check "a guard at another post does not" "$(nread "$EDU" "'$AK1'")" "0"
+LWOP=$(pg "select id from public.leave_types where code = 'LWOP'")
+L1=$(begin "$BEA" "'leave', 'application/pdf', 50000"); LK1=$(echo "$L1" | jget key); stored "$(echo "$L1" | jget id)" 50000
+check "a leave attachment goes to the leave folder" "$(echo "$LK1" | grep -cE "^employees/G-002/leave/${TODAY}_leave-attachment_[0-9a-f]{10}\.pdf$")" "1"
+r=$(as_user "$CARLO" "insert into public.leave_requests (employee_id, leave_type_id, start_date, end_date, attachment_path) values ('$CARLO_EMP', '$LWOP', '2027-03-01', '2027-03-01', '$LK1')"); check_has "another guard's attachment is refused" "$r" "did not arrive"
+check "her own is attached" "$(as_user "$BEA" "insert into public.leave_requests (employee_id, leave_type_id, start_date, end_date, attachment_path) values ('$BEA_EMP', '$LWOP', '2027-03-01', '2027-03-01', '$LK1') returning attachment_path = '$LK1'")" "t"
+C1=$(begin "$HR" "'certificate', 'application/pdf', 80000, null, null, null, '$CERT_ID'"); CK1=$(echo "$C1" | jget key)
+check "a certificate is filed under its number" "$CK1" "employees/G-002/certificates/$(pg "select certificate_no from public.certificates where id = '$CERT_ID'").pdf"
+r=$(begin "$BEA" "'certificate', 'application/pdf', 80000, null, null, null, '$CERT_ID'"); check_has "only HR stores certificates" "$r" "Only HR"
+r=$(as_user "$HR" "select public.attach_certificate_file('$CERT_ID', '$CK1')"); check_has "a PDF S3 does not have yet is not attached" "$r" "did not arrive"
+stored "$(echo "$C1" | jget id)" 80000; as_user "$HR" "select public.attach_certificate_file('$CERT_ID', '$CK1')" >/dev/null
+check "once stored it is attached" "$(pg "select file_path from public.certificates where id = '$CERT_ID'")" "$CK1"
+check "the employee opens her certificate; payroll does not" "$(nread "$BEA" "'$CK1'"):$(nread "$PAY" "'$CK1'")" "1:0"
+C2=$(begin "$HR" "'certificate', 'application/pdf', 90000, null, null, null, '$CERT_ID'")
+check "making the PDF again keeps its key" "$(echo "$C2" | jget key)" "$CK1"
+EDU_EMP=$(pg "select id from public.employees where user_id = '$EDU'")
+pg "insert into public.stored_files (object_key, employee_id, purpose, folder, content_type, max_bytes, uploaded_by) select 'employees/G-004/leave/flood-' || g || '.jpg', '$EDU_EMP', 'leave', 'leave', 'image/jpeg', 10, '$EDU' from generate_series(1, 60) g" >/dev/null
+r=$(begin "$EDU" "'leave', 'image/jpeg', 5000"); check_has "at most 60 uploads an hour for employees" "$r" "Too many uploads"
+pg "update public.employees set status = 'resigned' where id = '$CARLO_EMP'" >/dev/null
+r=$(begin "$CARLO" "'leave', 'image/jpeg', 5000"); check_has "a separated employee cannot upload" "$r" "record is closed"
+pg "update public.employees set status = 'active', employee_no = 'G 003/B' where id = '$CARLO_EMP'" >/dev/null
+check "an employee number with spaces or slashes still makes one folder" "$(begin "$CARLO" "'leave', 'image/jpeg', 5000" | jget key | cut -d/ -f1-3)" "employees/G-003-B/leave"
+pg "update public.employees set employee_no = 'G-003' where id = '$CARLO_EMP'" >/dev/null
+as_user "$HR" "update public.document_types set storage_folder = '201-file' where code = 'MEDICAL_CERT'" >/dev/null
+psql $H -U postgres -v ON_ERROR_STOP=1 -q -f "$(dirname "$0")/../schema.sql" >/dev/null 2>&1
+check "re-running schema.sql keeps HR's folder choice and the file list" "$(pg "select storage_folder from public.document_types where code = 'MEDICAL_CERT'"):$(pg "select count(*) > 60 from public.stored_files")" "201-file:t"
+
 echo "== Demo scripts still match the schema (on a second, empty database)"
 D="$(dirname "$0")/.."
 DEMO_DB="${PGDATABASE:-bannuar_test}_demo"

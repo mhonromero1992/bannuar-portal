@@ -21,6 +21,10 @@ const key =
 /** True with the built-in project; false only if a build is given empty values on purpose. */
 export const configured = Boolean(url && key);
 
+/** Where the project's Edge Functions answer (files, payslip-pdf), and the public key they need. */
+export const FUNCTIONS_URL = `${url}/functions/v1`;
+export const PUBLIC_KEY = key;
+
 export const supabase = createClient(configured ? url : 'https://not-configured.invalid', configured ? key : 'not-configured', {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
 });

@@ -154,6 +154,108 @@ service role or in the SQL Editor:
 select occurred_at, employee_no, ip, result from public.activation_attempts order by occurred_at desc limit 50;
 ```
 
+## 9. Files in Amazon S3
+
+Employee files (the 201 file, work requirements, the LESP, time in and out selfies, leave
+attachments, certificates of employment) are kept in a private Amazon S3 bucket, one folder per
+employee, named after the employee number:
+
+```
+employees/<employee number>/
+  201-file/            birth certificate, IDs, diploma, contract, BIR 2316
+  work-requirements/   clearances, drug test, neuro-psychiatric and medical results, training
+  lesp/                the License to Exercise Security Profession
+  attendance/<year>/<month>/   time in and time out selfies
+  leave/               supporting documents attached to leave
+  certificates/        certificates of employment as issued (PDF)
+```
+
+Each document type files into one of the first three folders; HR changes it in the portal (Settings
+→ Document types → Folder in S3). File names carry the date, the document type and a random part,
+for example `employees/G-002/lesp/2026-11-12_security-license_3f9a1c2b7d.jpg`. **Payslips are not
+stored**: their PDF is made each time someone downloads it (the `payslip-pdf` function).
+
+The AWS keys live only in the `files` Edge Function's secrets, never in the portal or the app. The
+function asks the database (with the signed-in person's own token) whether they may store or open a
+file, puts uploads in S3 encrypted, and hands out links that work for five minutes. Files stored
+before this step stay in Supabase Storage and still open; the website's job applications and
+announcement pictures stay there too.
+
+**a. Create the bucket.** AWS console → S3 → Create bucket:
+
+| Setting | Value |
+|---|---|
+| Region | Asia Pacific (Singapore) `ap-southeast-1`, the closest to the Philippines |
+| Bucket name | lowercase letters, digits and dashes, **no dots**, for example `bannuar-hr-files` (add a suffix if it is taken) |
+| Object Ownership | ACLs disabled (bucket owner enforced) |
+| Block all public access | **On** (all four boxes) |
+| Bucket Versioning | Enable: an older copy is kept when a certificate's PDF is made again |
+| Default encryption | SSE-S3 (Amazon S3 managed keys) |
+
+No CORS rule is needed: browsers and phones only open the five-minute links. Optionally add a
+lifecycle rule that expires objects under `healthcheck/` after 1 day (the storage check deletes its
+test file, so there should be none).
+
+**b. Create the key the function uses.** AWS console → IAM → Users → Create user, for example
+`bannuar-files-function`, without console access. Add this inline policy (replace `BUCKET`). It can
+store and read employee files but **cannot delete them**; only the storage check's own test files
+can be deleted:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EmployeeFiles",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject"],
+      "Resource": "arn:aws:s3:::BUCKET/employees/*"
+    },
+    {
+      "Sid": "StorageCheck",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::BUCKET/healthcheck/*"
+    }
+  ]
+}
+```
+
+Then the user → Security credentials → Create access key → "Application running outside AWS". Copy
+the access key ID and the secret access key (the secret is shown once). Keep them out of chat,
+email and the repository.
+
+**c. Give them to the function** (Edge Functions → Secrets, or the CLI):
+
+```bash
+supabase secrets set --project-ref bcynizcgdgqznlxuzwjx AWS_ACCESS_KEY_ID=<access key id> AWS_SECRET_ACCESS_KEY=<secret access key> AWS_REGION=ap-southeast-1 S3_BUCKET=bannuar-hr-files
+```
+
+**d. Run the schema again** (step 2): it adds `stored_files` (one row per file in S3),
+`document_types.storage_folder` (existing types are sorted once: the LESP to `lesp`, clearances,
+medical results and training to `work-requirements`, the rest to `201-file`), the upload and read
+checks, and points time in and out, renewals, leave attachments and certificates at S3 keys. Older
+app versions keep working until they update.
+
+**e. Deploy the two functions:**
+
+```bash
+supabase functions deploy files --no-verify-jwt --use-api --project-ref bcynizcgdgqznlxuzwjx
+supabase functions deploy payslip-pdf --no-verify-jwt --use-api --project-ref bcynizcgdgqznlxuzwjx
+```
+
+`--no-verify-jwt` because both pass the person's own token to the database, which checks it and
+refuses anything they may not do.
+
+**f. Check it.** Sign in to the portal as the super admin → Settings → File storage → Check S3 now.
+It stores a small test file, reads it back, makes sure the bucket refuses a public read, and deletes
+it. "Connected" means uploads will work; otherwise it says which step failed and what AWS answered
+(a wrong key, region or bucket name, or a missing permission).
+
+To change the key later, create a second access key, set it with step c, then deactivate and delete
+the old one in IAM. If your privacy notice lists where employee data is kept, add Amazon Web
+Services (Singapore) to it.
+
 ## What is in the database
 
 | Area | Tables |
@@ -165,11 +267,13 @@ select occurred_at, employee_no, ip, result from public.activation_attempts orde
 | Communication | `announcements`, `announcement_receipts`, `notifications`, `device_tokens` |
 | App activation | `activation_tickets`, `activation_attempts` (service role only) |
 | Attendance | `attendance_logs` (written only by `log_attendance`), the post's point and allowed distance on `sites` |
+| Files in S3 | `stored_files` (one row per file the `files` function put in S3: whose folder, what for, its key), `document_types.storage_folder` |
 | Website | `job_openings`, `job_applications`, `inquiries` |
 | Access | `profiles`, `user_roles`, `staff_invitations`, `audit_log` |
 
-Storage buckets, all private: `employee-files`, `certificates`, `applications`, `announcement-media`,
-`attendance-photos` (the selfie of each time in and out; staff and the post's commanders open them).
+Employee files go to Amazon S3 (step 9). The Supabase Storage buckets, all private, keep what was
+stored before the switch (`employee-files`, `certificates`, `attendance-photos`), the website's job
+applications (`applications`) and announcement pictures (`announcement-media`).
 
 ## Roles
 
@@ -211,14 +315,17 @@ pay that does not equal gross minus deductions is reported as a warning, not cha
 
 `schema.sql` was run against Postgres 16 with stand-ins for Supabase's `auth` and `storage`
 schemas and its `anon` / `authenticated` / `authenticator` roles, connecting the way the Supabase
-API does. 190 checks passed: sign-up rules, employee activation through one-time tickets (rate
+API does. 269 checks passed: sign-up rules, employee activation through one-time tickets (rate
 limits per employee number and per IP, the facts removed from the login's metadata), who sees which
 rows for every role, payroll import and publishing, the leave and COE flows, certificate
 verification, announcements, website forms, storage folders, admin tools, push devices, attendance
 (the location check for each case, the database's time, photos only from the guard's own fresh
 upload, no direct writes, who sees which logs and photos), running the file again over existing
-data, and the demo scripts on an empty database. Upgrading a database built with the previous `schema.sql` was
+data, files in S3 (the folder and name each upload gets from the employee number and document type,
+who may store or open which file, attaching only files that arrived, the 60-an-hour limit, payslips
+never stored), and the demo scripts on an empty database. Upgrading a database built with the previous `schema.sql` was
 tested too. It has not yet been run inside a real Supabase project.
 
-The Edge Functions have their own tests (Deno, with a mocked admin client): `deno task test` in
-`supabase/functions` (22 passed).
+The Edge Functions have their own tests (Deno, with a mocked admin client, a fake S3 and no
+network): `deno task test` in `supabase/functions` (43 passed). The AWS request signing reproduces
+the worked examples in Amazon's S3 documentation exactly.
