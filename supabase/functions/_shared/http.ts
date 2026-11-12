@@ -37,6 +37,29 @@ export function sameSecret(a: string, b: string): boolean {
 }
 
 /**
+ * The public key a function uses to call the API as the signed-in person (with their own token):
+ * SUPABASE_ANON_KEY, or the first key in SUPABASE_PUBLISHABLE_KEYS (the newer sb_publishable_ keys).
+ */
+export function publicKey(env: (name: string) => string | undefined): string | undefined {
+  const legacy = env('SUPABASE_ANON_KEY');
+  if (legacy) return legacy;
+  const raw = env('SUPABASE_PUBLISHABLE_KEYS');
+  if (!raw) return undefined;
+  try {
+    const keys = JSON.parse(raw) as Record<string, string>;
+    return keys.default ?? Object.values(keys)[0];
+  } catch {
+    return raw.startsWith('sb_publishable_') ? raw : undefined;
+  }
+}
+
+/** The token after "Bearer " in the Authorization header, or null. */
+export function bearer(req: Request): string | null {
+  const m = /^Bearer\s+(\S+)$/i.exec(req.headers.get('authorization') ?? '');
+  return m ? m[1] : null;
+}
+
+/**
  * The service role key: SUPABASE_SERVICE_ROLE_KEY (the legacy JWT key, set in every project that still
  * has it), or the first key in SUPABASE_SECRET_KEYS (the newer sb_secret_ keys).
  */

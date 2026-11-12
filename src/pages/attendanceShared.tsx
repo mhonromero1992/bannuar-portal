@@ -1,18 +1,27 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { supabase } from '../lib/supabase';
+import { isS3Key, signFiles } from '../lib/files';
 import { fmtDateTime, fullName } from '../lib/format';
 import { ATTENDANCE_KIND, LOCATION_CHECK } from '../lib/labels';
 import { locationLine, mapsLink, needsALook, type AttendanceLog } from '../lib/attendance';
 import { Badge, Dialog, StatusBadge } from '../ui/kit';
 
-/** Ten-minute links to the selfies of a page of logs, in one request. A failure only hides the photos. */
+/**
+ * Links to the selfies of a page of logs: S3 ones (five minutes) from the files function, older ones
+ * (ten minutes) from Supabase Storage, one request each. A failure only hides the photos.
+ */
 export async function selfieLinks(rows: { photo_path: string }[]): Promise<Record<string, string>> {
-  if (!rows.length) return {};
-  const { data, error } = await supabase.storage.from('attendance-photos').createSignedUrls(rows.map((r) => r.photo_path), 600);
-  if (error || !data) return {};
-  const links: Record<string, string> = {};
-  for (const d of data) if (d.path && d.signedUrl) links[d.path] = d.signedUrl;
+  const paths = rows.map((r) => r.photo_path);
+  const legacy = paths.filter((p) => !isS3Key(p));
+  const [s3, old] = await Promise.all([
+    signFiles(paths).catch(() => ({})),
+    legacy.length
+      ? supabase.storage.from('attendance-photos').createSignedUrls(legacy, 600).then(({ data }) => data ?? []).catch(() => [])
+      : Promise.resolve([]),
+  ]);
+  const links: Record<string, string> = { ...s3 };
+  for (const d of old as { path: string | null; signedUrl: string }[]) if (d.path && d.signedUrl) links[d.path] = d.signedUrl;
   return links;
 }
 

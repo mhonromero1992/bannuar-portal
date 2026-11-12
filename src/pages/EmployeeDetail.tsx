@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { supabase, openFile } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
+import { downloadPayslipPdf, openStoredFile, uploadFile } from '../lib/files';
 import { useAuth } from '../lib/auth';
 import { daysBetween, errorText, fmtDate, fmtDateTime, fmtMoney, fullName, todayManila, dateRange } from '../lib/format';
 import { COE_PURPOSE, DOC_STATUS, EMPLOYEE_STATUS, EMPLOYMENT_TYPE, LEAVE_STATUS, label } from '../lib/labels';
@@ -187,7 +188,7 @@ function Documents({ employeeId }: { employeeId: string }) {
                     <td className="tabular">{fmtDate(d.issued_on)}</td>
                     <td className="tabular">{fmtDate(d.expires_on)} {expired && <Badge tone="bad">Expired</Badge>}</td>
                     <td><StatusBadge map={DOC_STATUS} value={d.status} /></td>
-                    <td>{d.file_path ? <button className="link-btn" type="button" onClick={() => openFile('employee-files', d.file_path).catch((err) => toast(errorText(err), 'error'))}>Open</button> : <span className="muted">None</span>}</td>
+                    <td>{d.file_path ? <button className="link-btn" type="button" onClick={() => openStoredFile('employee-files', d.file_path).catch((err) => toast(errorText(err), 'error'))}>Open</button> : <span className="muted">None</span>}</td>
                     {can.hr && (
                       <td>{d.status === 'pending_review' && <span className="row"><button className="btn btn-ok btn-sm" type="button" onClick={() => review(d.id, 'verified')}>Verify</button><button className="btn btn-line btn-sm" type="button" onClick={() => review(d.id, 'rejected')}>Reject</button></span>}</td>
                     )}
@@ -220,13 +221,8 @@ function AddDocument({ employeeId, types, onDone }: { employeeId: string; types:
     if (file && file.size > 10 * 1024 * 1024) return setError('Attach a file under 10 MB.');
     setBusy(true);
     try {
-      let path: string | null = null;
-      if (file) {
-        const ext = (file.name.split('.').pop() || 'pdf').toLowerCase().replace(/[^a-z0-9]/g, '');
-        path = `${employeeId}/${type.code.toLowerCase()}/${crypto.randomUUID()}.${ext}`;
-        const up = await supabase.storage.from('employee-files').upload(path, file, { contentType: file.type });
-        if (up.error) throw up.error;
-      }
+      // to S3: employees/<employee number>/<the type's folder: 201-file, work-requirements or lesp>/...
+      const path = file ? (await uploadFile({ purpose: 'document', employeeId, documentTypeId: type.id, file, fileName: file.name })).key : null;
       const { error: err } = await supabase.from('employee_documents').insert({
         employee_id: employeeId, document_type_id: type.id, document_no: v.no.trim() || null, issued_on: v.issued || null, expires_on: v.expires || null, file_path: path, status: 'verified',
       });
@@ -370,6 +366,28 @@ export function PayslipView({ p }: { p: Record<string, unknown> & { period?: { l
         <p className="muted small">Other deduction lines: {(p.deductions_detail as { label: string; amount: number }[]).map((d) => `${d.label} ${fmtMoney(d.amount)}`).join(' · ')}</p>
       )}
       <p style={{ fontSize: 20 }}>Net pay <b className="tabular">{fmtMoney(n('net_pay'))}</b></p>
+      {typeof p.id === 'string' && <PayslipPdfButton id={p.id} />}
+    </div>
+  );
+}
+
+/** The payslip as a PDF, made on the spot by the payslip-pdf function; nothing is stored. */
+function PayslipPdfButton({ id }: { id: string }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const download = async () => {
+    setBusy(true);
+    try {
+      await downloadPayslipPdf(id);
+    } catch (err) {
+      toast(errorText(err), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="form-foot">
+      <button className="btn btn-line" type="button" aria-busy={busy} disabled={busy} onClick={download}>Download PDF</button>
     </div>
   );
 }

@@ -43,6 +43,8 @@ for (let i = 0; i < 60; i++) {
 
 // ------------------------------------------------------------------ fixtures
 const now = new Date().toISOString();
+// one selfie in Amazon S3 (the files function signs it), one from before S3 (Supabase Storage)
+const S3_SELFIE = 'employees/G-002/attendance/2026/11/2026-11-12_0226_time-in_0a1b2c3d4e.jpg';
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 const jwt = (sub) => `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub, role: 'authenticated', aud: 'authenticated', exp: Math.floor(Date.now() / 1000) + 3600, email: 'ana@bannuar.test' })}.sig`;
 const user = { id: 'u-admin', aud: 'authenticated', role: 'authenticated', email: 'ana@bannuar.test', email_confirmed_at: now, user_metadata: {}, app_metadata: { provider: 'email' }, created_at: now };
@@ -89,8 +91,8 @@ const T = {
   clients: [{ id: 'c1', name: 'Acme Mart', industry: 'Retail', contact_person: 'Lorna', contact_phone: '0917 555 0101', contact_email: null, address: null, contract_start: '2026-01-01', contract_end: null, status: 'active', notes: null }],
   employees: Object.values(E),
   document_types: [
-    { id: 'dt1', code: 'SECURITY_LICENSE', name: 'Security guard license (LESP)', category: 'license', has_expiry: true, required_for_deployment: true, remind_days_before: 60, visible_to_employee: true, employee_can_upload: true, sort_order: 10, is_active: true },
-    { id: 'dt2', code: 'NBI_CLEARANCE', name: 'NBI clearance', category: 'clearance', has_expiry: true, required_for_deployment: true, remind_days_before: 30, visible_to_employee: true, employee_can_upload: true, sort_order: 20, is_active: true },
+    { id: 'dt1', code: 'SECURITY_LICENSE', name: 'Security guard license (LESP)', category: 'license', has_expiry: true, required_for_deployment: true, remind_days_before: 60, visible_to_employee: true, employee_can_upload: true, sort_order: 10, is_active: true, storage_folder: 'lesp' },
+    { id: 'dt2', code: 'NBI_CLEARANCE', name: 'NBI clearance', category: 'clearance', has_expiry: true, required_for_deployment: true, remind_days_before: 30, visible_to_employee: true, employee_can_upload: true, sort_order: 20, is_active: true, storage_folder: 'work-requirements' },
   ],
   employee_documents: [{ id: 'd1', employee_id: 'e2', document_type_id: 'dt1', document_no: 'LIC-1', issued_on: '2025-01-01', expires_on: '2026-11-28', file_path: 'e2/uploads/lic.jpg', status: 'pending_review', review_note: null, created_at: now, type: { name: 'Security guard license (LESP)', has_expiry: true } }],
   leave_types: [{ id: 'lt1', code: 'SIL', name: 'Service incentive leave', description: 'Five days a year.', days_per_year: 5, max_days_per_request: null, is_paid: true, requires_attachment: false, applies_to_sex: null, min_service_months: 12, is_active: true, sort_order: 10 }],
@@ -115,10 +117,14 @@ const T = {
   notifications: [{ id: 'n1', title: 'New COE request', body: 'Bea Lim · due Nov 11', kind: 'coe_request', read_at: null, created_at: now }],
   document_alerts: [{ id: 'd1', employee_id: 'e2', employee_no: 'G-002', first_name: 'Bea', last_name: 'Lim', site_id: 's1', site_name: 'Post A', type_code: 'SECURITY_LICENSE', type_name: 'Security guard license (LESP)', document_no: 'LIC-1', expires_on: '2026-11-28', days_left: 20, state: 'expiring' }],
   attendance_logs: [
-    { id: 'at1', employee_id: 'e2', site_id: 's1', kind: 'time_in', logged_at: now, photo_path: 'e2/selfie-1.jpg', latitude: 14.5552, longitude: 121.0244, accuracy_m: 12, distance_m: 56, radius_m: 150, location_check: 'at_post', mock_location: false, employee: empMini(E.e2), site: { id: 's1', name: 'Post A · Main Gate' } },
+    { id: 'at1', employee_id: 'e2', site_id: 's1', kind: 'time_in', logged_at: now, photo_path: S3_SELFIE, latitude: 14.5552, longitude: 121.0244, accuracy_m: 12, distance_m: 56, radius_m: 150, location_check: 'at_post', mock_location: false, employee: empMini(E.e2), site: { id: 's1', name: 'Post A · Main Gate' } },
     { id: 'at2', employee_id: 'e1', site_id: 's1', kind: 'time_in', logged_at: now, photo_path: 'e1/selfie-2.jpg', latitude: 14.5647, longitude: 121.0244, accuracy_m: 20, distance_m: 1112, radius_m: 150, location_check: 'away', mock_location: true, employee: empMini(E.e1), site: { id: 's1', name: 'Post A · Main Gate' } },
   ],
   compliance_gaps: [{ employee_id: 'e3', employee_no: 'G-003', first_name: 'Carlo', last_name: 'Diaz', status: 'floating', site_id: null, site_name: null, document_type_id: 'dt2', type_code: 'NBI_CLEARANCE', type_name: 'NBI clearance', last_expiry: null }],
+  stored_files: [
+    { id: 'sf1', folder: 'lesp', status: 'stored' }, { id: 'sf2', folder: 'attendance', status: 'stored' },
+    { id: 'sf3', folder: 'attendance', status: 'stored' }, { id: 'sf4', folder: 'leave', status: 'pending' },
+  ],
 };
 const access = { user_id: 'u-admin', roles: ['super_admin'], full_name: 'Ana Admin', email: 'ana@bannuar.test', must_change_password: false, employee: null };
 const dashboard = { employees_by_status: { active: 2, floating: 1 }, employees_current: 3, sites_active: 1, guards_required: 3, guards_deployed: 2, sites_short: 1, floating: 1, floating_over_150_days: 1, leave_pending_supervisor: 0, leave_pending_hr: 1, on_leave_today: 0, coe_pending: 1, coe_overdue: 1, profile_changes_pending: 1, payroll_concerns_open: 1, documents_expired: 0, documents_expiring: 1, compliance_gaps: 1, applications_new: 1, inquiries_new: 1, latest_period: { id: 'p1', label: 'Nov 1 to 15, 2026', status: 'draft', pay_date: '2026-11-20', payslips: 2 } };
@@ -153,6 +159,7 @@ const RPC = {
 // ------------------------------------------------------------------ the mock API
 const requests = [];
 const stored = new Map();
+const uploads = []; // what the portal sent the files function
 function filterRows(rows, url) {
   let out = rows;
   for (const [k, v] of url.searchParams) {
@@ -185,6 +192,42 @@ async function api(route) {
   if (path === '/auth/v1/user') return json(200, user);
   if (path === '/auth/v1/logout') return route.fulfill({ status: 204 });
   if (path === '/auth/v1/recover') return json(200, {});
+
+  // the files Edge Function (Amazon S3): uploads, five-minute links, the storage check
+  if (path === '/functions/v1/files') {
+    if ((req.headers()['content-type'] ?? '').startsWith('multipart/form-data')) {
+      const raw = req.postDataBuffer();
+      const text = raw.toString('latin1');
+      const field = (n) => new RegExp(`name="${n}"\\r\\n\\r\\n([^\\r]*)`).exec(text)?.[1] ?? '';
+      const purpose = field('purpose');
+      const no = (E[field('employee_id')] ?? E.e2).employee_no;
+      const dt = T.document_types.find((d) => d.id === field('document_type_id'));
+      const folder = purpose === 'document' ? dt.storage_folder : purpose === 'certificate' ? 'certificates' : purpose;
+      const name = purpose === 'certificate' ? `${certificate.certificate_no}.pdf` : `2026-11-12_${(dt?.code ?? purpose).toLowerCase().replace(/_/g, '-')}_mock${requests.length}.pdf`;
+      const key = `employees/${no}/${folder}/${name}`;
+      const start = text.indexOf('\r\n\r\n', text.indexOf('name="file"')) + 4;
+      stored.set(`s3/${key}`, raw.subarray(start, text.lastIndexOf('\r\n--')));
+      uploads.push({ purpose, employee_id: field('employee_id'), document_type_id: field('document_type_id'), certificate_id: field('certificate_id'), key });
+      return json(200, { id: `sf-${requests.length}`, key, name, content_type: 'application/pdf', size_bytes: start > 3 ? text.lastIndexOf('\r\n--') - start : 0 });
+    }
+    if (body?.action === 'sign') return json(200, { urls: Object.fromEntries(body.keys.map((k) => [k, `${MOCK}/s3-mock/${k}?X-Amz-Expires=300&download=${body.download ? 1 : 0}`])), expires_in: 300 });
+    if (body?.action === 'check') return json(200, { ok: true, bucket: 'bannuar-hr-files', region: 'ap-southeast-1' });
+    return json(400, { code: 'invalid_input', message: 'Something is missing from the request. Try again.' });
+  }
+  // the payslip-pdf Edge Function: a PDF made on request, never stored
+  if (path === '/functions/v1/payslip-pdf') {
+    return route.fulfill({
+      status: 200, contentType: 'application/pdf',
+      headers: { 'content-disposition': 'attachment; filename="payslip-G-002-2026-11-01-to-2026-11-15.pdf"', 'access-control-expose-headers': 'content-disposition' },
+      body: Buffer.from('%PDF-1.7\n% mock payslip\n%%EOF\n'),
+    });
+  }
+  // a five-minute S3 link being opened (the mock's stand-in for the bucket)
+  if (path.startsWith('/s3-mock/')) {
+    const key = decodeURIComponent(path.slice('/s3-mock/'.length));
+    if (/\.(jpe?g|png|webp)$/.test(key)) return route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64') });
+    return route.fulfill({ status: 200, contentType: 'application/pdf', body: stored.get(`s3/${key}`) ?? Buffer.from('%PDF-1.7\n%%EOF\n') });
+  }
 
   if (path.startsWith('/storage/v1/object/sign/')) {
     // a signed link being opened (the selfie thumbnails): a 1x1 picture
@@ -229,9 +272,14 @@ async function api(route) {
 // ------------------------------------------------------------------ run
 const browser = await chromium.launch();
 const context = await browser.newContext({ viewport: { width: 1280, height: 860 }, acceptDownloads: true });
-// the built-in project is Bannuar's live one: cut and record anything that tries to reach it
+// the built-in project is Bannuar's live one, and its files are in Amazon S3: cut and record anything
+// that tries to reach either
 const realHits = [];
-const blockReal = (ctx) => ctx.route(/^https:\/\/[a-z0-9-]+\.supabase\.co\//, (route) => { realHits.push(route.request().url()); return route.abort('blockedbyclient'); });
+const blockReal = async (ctx) => {
+  const cut = (route) => { realHits.push(route.request().url()); return route.abort('blockedbyclient'); };
+  await ctx.route(/^https:\/\/[a-z0-9-]+\.supabase\.co\//, cut);
+  await ctx.route(/^https:\/\/([a-z0-9.-]+\.)?amazonaws\.com\//, cut);
+};
 await blockReal(context);
 await context.route(`${MOCK}/**`, api);
 const page = await context.newPage();
@@ -314,6 +362,19 @@ await page.getByRole('button', { name: 'Verify' }).click();
 await page.waitForTimeout(300);
 const ver = requests.find((r) => r.method === 'PATCH' && r.path === '/rest/v1/employee_documents');
 check('documents: verify an upload from the app', ver?.body.status === 'verified');
+await page.getByRole('button', { name: 'Add a document' }).click();
+const docDialog = page.locator('dialog[open]');
+await docDialog.getByLabel('Kind of document').selectOption('dt2');
+await docDialog.getByLabel('Expires').fill('2027-06-30');
+await docDialog.getByLabel(/Scan or photo/).setInputFiles({ name: 'nbi.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n% NBI clearance scan\n%%EOF\n') });
+await docDialog.getByRole('button', { name: 'Add the document' }).click();
+await page.getByText('Document added.').waitFor();
+const docUp = uploads.at(-1);
+check('documents: the scan goes to S3 through the files function, in the type\'s folder', docUp?.purpose === 'document' && docUp?.employee_id === 'e2' && docUp?.document_type_id === 'dt2' && docUp?.key.startsWith('employees/G-002/work-requirements/') && stored.get(`s3/${docUp?.key}`)?.subarray(0, 5).toString() === '%PDF-', JSON.stringify(docUp));
+const docIns = requests.filter((r) => r.method === 'POST' && r.path === '/rest/v1/employee_documents').at(-1);
+const docRow = Array.isArray(docIns?.body) ? docIns.body[0] : docIns?.body;
+check('documents: the record points at the S3 key', docRow?.file_path === docUp?.key && docRow?.document_type_id === 'dt2', JSON.stringify(docRow));
+check('documents: nothing goes to Supabase Storage any more', !requests.some((r) => r.method === 'POST' && r.path.startsWith('/storage/v1/object/employee-files')));
 await page.goto(`${BASE}/employees/e2?tab=certificates`);
 await page.getByRole('button', { name: 'Issue a certificate' }).click();
 await page.getByLabel('Signed by').fill('Hector HR');
@@ -323,7 +384,8 @@ const file = await dl;
 const pdf = readFileSync(await file.path());
 check('walk-in COE: a PDF is made and downloaded', pdf.subarray(0, 5).toString() === '%PDF-' && pdf.length > 5000, `${pdf.length} bytes`);
 check('walk-in COE: issued through the database', rpcCalls('issue_certificate_for').length === 1);
-check('walk-in COE: PDF stored for the app, path recorded', stored.has('certificates/e2/cert1.pdf') && rpcCalls('attach_certificate_file')[0]?.body.p_path === 'e2/cert1.pdf');
+const certUp = uploads.find((u) => u.purpose === 'certificate');
+check('walk-in COE: the PDF goes to the employee\'s S3 certificates folder, its key recorded for the app', certUp?.certificate_id === 'cert1' && certUp?.key === 'employees/G-002/certificates/COE-2026-000001.pdf' && stored.get(`s3/${certUp?.key}`)?.subarray(0, 5).toString() === '%PDF-' && rpcCalls('attach_certificate_file')[0]?.body.p_path === certUp?.key, JSON.stringify(certUp));
 
 console.log('Requests');
 await page.goto(`${BASE}/requests?tab=leave`);
@@ -370,6 +432,40 @@ await page.getByRole('button', { name: 'Done' }).click();
 await page.getByRole('button', { name: 'Publish to employees' }).click();
 await page.waitForTimeout(300);
 check('payroll: publish goes through the database', rpcCalls('publish_payroll_period')[0]?.body.p_period_id === 'p1');
+await page.getByRole('row', { name: /Bea Lim/ }).getByRole('button', { name: 'View' }).click();
+const slipDialog = page.locator('dialog[open]');
+await slipDialog.getByRole('button', { name: 'Download PDF' }).waitFor();
+await page.screenshot({ path: `${ROOT}tests/shots/payslip-dialog.png` });
+const dlSlip = page.waitForEvent('download');
+await slipDialog.getByRole('button', { name: 'Download PDF' }).click();
+const slipFile = await dlSlip;
+const slipReq = requests.filter((r) => r.path === '/functions/v1/payslip-pdf').at(-1);
+check('payslip PDF: made on request by the payslip-pdf function, for this payslip', slipReq?.body?.payslip_id === 'ps1' && slipFile.suggestedFilename() === 'payslip-G-002-2026-11-01-to-2026-11-15.pdf' && readFileSync(await slipFile.path()).subarray(0, 5).toString() === '%PDF-', `${JSON.stringify(slipReq?.body)} ${slipFile.suggestedFilename()}`);
+check('payslip PDF: never uploaded or stored', !uploads.some((u) => !['document', 'certificate'].includes(u.purpose)) && !requests.some((r) => r.method !== 'GET' && /payslip/i.test(r.path) && r.path.includes('storage')));
+await slipDialog.getByRole('button', { name: 'Close' }).click();
+
+console.log('Files in Amazon S3: folders and the storage check');
+await page.goto(`${BASE}/settings`);
+await page.getByRole('tab', { name: 'Document types' }).click();
+const nbiFolder = page.getByLabel('NBI clearance folder in S3');
+await nbiFolder.waitFor();
+await page.waitForTimeout(500); // let the tab underline finish sliding
+await page.screenshot({ path: `${ROOT}tests/shots/document-types.png` });
+check('document types: each files into its S3 folder', (await page.getByLabel('Security guard license (LESP) folder in S3').inputValue()) === 'lesp' && (await nbiFolder.inputValue()) === 'work-requirements');
+await nbiFolder.selectOption('201-file');
+await page.waitForTimeout(300);
+const folderPatch = requests.filter((r) => r.method === 'PATCH' && r.path === '/rest/v1/document_types').at(-1);
+check('document types: HR moves a type to another folder', folderPatch?.body.storage_folder === '201-file' && /id=eq\.dt2/.test(folderPatch?.url), JSON.stringify(folderPatch?.body));
+await page.getByRole('tab', { name: 'File storage' }).click();
+const countIn = (name) => page.getByRole('row', { name: new RegExp(`^${name} `) }).locator('td.num');
+await page.waitForFunction(() => [...document.querySelectorAll('td.num')].length === 6 && ![...document.querySelectorAll('td.num')].some((td) => td.textContent === '·'));
+check('file storage: files counted by folder, stored ones only', (await countIn('LESP').innerText()) === '1' && (await countIn('Attendance').innerText()) === '2' && (await countIn('Leave').innerText()) === '0');
+await page.getByRole('button', { name: 'Check S3 now' }).click();
+await page.getByText('Connected', { exact: true }).waitFor();
+const storageText = await page.locator('.panel').last().innerText();
+check('file storage: the live check names the bucket and the region', /bannuar-hr-files/.test(storageText) && /ap-southeast-1/.test(storageText) && /refused a public read/.test(storageText), storageText.replace(/\s+/g, ' ').slice(0, 160));
+await page.evaluate(() => window.scrollTo(0, 0));
+await page.screenshot({ path: `${ROOT}tests/shots/file-storage.png` });
 
 console.log('Pay rules, rates, assignments, worked-out pay and the 13th month');
 await page.goto(`${BASE}/settings`);
@@ -538,7 +634,10 @@ check('attendance: the day\'s logs with their photos', (await page.locator('.thu
 const attReq = requests.filter((r) => r.path === '/rest/v1/attendance_logs').at(-1);
 check('attendance: one day in Manila, newest first', /logged_at=gte\./.test(attReq?.url) && /logged_at=lt\./.test(attReq?.url) && /order=logged_at\.desc/.test(attReq?.url), attReq?.url);
 const signReq = requests.filter((r) => r.path === '/storage/v1/object/sign/attendance-photos' && r.method === 'POST').at(-1);
-check('attendance: the photos are signed in one request, for ten minutes', signReq?.body.paths.length === 2 && signReq?.body.expiresIn === 600, JSON.stringify(signReq?.body));
+check('attendance: a photo from before S3 is signed by Supabase Storage, for ten minutes', JSON.stringify(signReq?.body.paths) === '["e1/selfie-2.jpg"]' && signReq?.body.expiresIn === 600, JSON.stringify(signReq?.body));
+const s3Sign = requests.filter((r) => r.path === '/functions/v1/files' && r.body?.action === 'sign').at(-1);
+check('attendance: an S3 selfie gets a five-minute link from the files function', JSON.stringify(s3Sign?.body.keys) === JSON.stringify([S3_SELFIE]) && !s3Sign?.body.download, JSON.stringify(s3Sign?.body));
+check('attendance: the S3 thumbnail loads from the signed link', (await page.locator(`.thumb img[src*="s3-mock/${S3_SELFIE}"]`).count()) === 1);
 check('attendance: a mock location app is flagged', (await page.getByText('Mock location app').count()) === 1);
 check('attendance: away shows how far', (await page.getByText('1.1 km from the post, GPS accurate to 20 m').count()) === 1);
 await page.getByLabel('Which logs').selectOption('look');

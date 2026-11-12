@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { supabase } from '../lib/supabase';
+import { isS3Key, openStoredFile, uploadFile } from '../lib/files';
 import type { Certificate } from '../lib/coe';
 
 // pdf-lib and the QR encoder load only when a certificate is made
@@ -10,21 +11,30 @@ import { SelectField, TextField } from '../ui/kit';
 
 const SIGNATORY_KEY = 'bannuar-coe-signatory';
 
-/** Make the PDF, keep it in the certificates bucket, and record its path. Returns the PDF bytes. */
+/**
+ * Make the PDF, keep it in the employee's S3 folder (employees/<employee number>/certificates/<number>.pdf)
+ * for their app, and record its key. Returns the PDF bytes.
+ */
 export async function storeCertificatePdf(c: Certificate) {
   const { certificatePdf } = await coe();
   const bytes = await certificatePdf(c);
-  const path = `${c.employee_id}/${c.id}.pdf`;
-  const up = await supabase.storage.from('certificates').upload(path, new Blob([bytes as BlobPart], { type: 'application/pdf' }), { contentType: 'application/pdf', upsert: true });
-  if (up.error) throw up.error;
-  const { error } = await supabase.rpc('attach_certificate_file', { p_certificate_id: c.id, p_path: path });
+  const stored = await uploadFile({
+    purpose: 'certificate', certificateId: c.id, fileName: `${c.certificate_no}.pdf`,
+    file: new Blob([bytes as BlobPart], { type: 'application/pdf' }),
+  });
+  const { error } = await supabase.rpc('attach_certificate_file', { p_certificate_id: c.id, p_path: stored.key });
   if (error) throw error;
   return bytes;
 }
 
 export async function downloadCertificate(c: Certificate) {
   const { downloadBytes } = await coe();
+  if (isS3Key(c.file_path)) {
+    await openStoredFile('certificates', c.file_path, true);
+    return;
+  }
   if (c.file_path) {
+    // certificates issued before the switch to S3
     const { data, error } = await supabase.storage.from('certificates').download(c.file_path);
     if (!error && data) {
       downloadBytes(new Uint8Array(await data.arrayBuffer()), `${c.certificate_no}.pdf`);

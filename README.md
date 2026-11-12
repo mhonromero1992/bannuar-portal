@@ -76,17 +76,17 @@ made. No account or record was created.
 | Screen | For | What it does |
 |---|---|---|
 | Dashboard | all staff | What waits for a decision first (leave, certificates, detail changes, payroll concerns, applications, proposal requests), then the roll, today's time in and out (and how many need a look), floating guards near the six-month limit, expired documents, each post's guards against the number needed, and the roll by status. Jump to (Ctrl K, in the top bar on every screen) finds an employee, a post or a page |
-| Employees | all staff (HR edits) | Search 4,000 records by name or number, filter by status and post, add employees. The 201 file: profile, deployment, licenses and documents (upload, verify what employees send from the app), government numbers (each view logged), pay rate, payslips, leave balances and history, certificates, app account (temporary passwords), assignment history (post, duty and shift, from when to when) |
+| Employees | all staff (HR edits) | Search 4,000 records by name or number, filter by status and post, add employees. The 201 file: profile, deployment, licenses and documents (upload to the employee's S3 folder, verify what employees send from the app), government numbers (each view logged), pay rate, payslips, leave balances and history, certificates, app account (temporary passwords), assignment history (post, duty and shift, from when to when) |
 | Posts and clients | all staff (operations edits) | Posts with guards needed against assigned, commanders, the duty pattern (8, 12 or 24 hours), deploying guards on a shift and setting them to floating; the post's pay rule and hourly rates (payroll); client records |
 | Licenses and documents | all staff | Expired and expiring documents; field employees missing a document required for deployment |
 | Requests | HR, payroll, operations | Leave (commander endorses with a reliever, HR approves), certificates of employment (three-day due date, overdue flag, issue as PDF), contact detail changes (apply or decline), payroll concerns (answer) |
 | Announcements | publishers | Write for everyone, chosen areas or chosen posts; ask for acknowledgment; see how many read and acknowledged |
-| Payroll | payroll | Cutoffs; work out pay from the assignments, rates and client pay rules (attendance sheet to download, edit and upload) or import the payroll file (CSV, common column names recognised, `earning:` and `deduction:` lines kept); check totals; publish to employees, who are notified without the amount; the 13th month, pro-rated by post and rate (a timeline of each employee's year, each stretch marked with its share and the total at the right, or the list), and its payout cutoff |
+| Payroll | payroll | Cutoffs; work out pay from the assignments, rates and client pay rules (attendance sheet to download, edit and upload) or import the payroll file (CSV, common column names recognised, `earning:` and `deduction:` lines kept); check totals; publish to employees, who are notified without the amount; download any payslip as a PDF, made on request and never stored; the 13th month, pro-rated by post and rate (a timeline of each employee's year, each stretch marked with its share and the total at the right, or the list), and its payout cutoff |
 | Recruitment | HR | Applications from the website (open the attached resume, notes, status, hire into an employee record); the open posts listed on the website |
 | Proposal requests | all staff | Companies asking for guards through the website: call, email, status, notes |
 | Users and roles | super admin | Staff accounts and roles, invitations with codes, temporary passwords |
 | Audit log | HR admin, super admin | Who changed what, and who viewed whose government numbers |
-| Settings | HR, operations, payroll | Areas, document types (expiry, reminders, what employees may upload), leave types and credits; pay rules (formulas, night differential, duty days) and client rates (payroll edits) |
+| Settings | HR, operations, payroll | Areas, document types (expiry, reminders, what employees may upload, which S3 folder: 201 file, work requirements or LESP), leave types and credits; pay rules (formulas, night differential, duty days) and client rates (payroll edits) |
 
 Notifications (top right) update live: new leave, certificate and detail requests, applications,
 proposal requests.
@@ -151,6 +151,11 @@ project, run `supabase/seed-demo.sql` again to add the demo rule, rates and DEMO
 - Staff sign up by invitation code only; roles are set by a super admin and checked in the database.
 - Government numbers are read through a function that writes each view to the audit log. Payslips
   stay hidden from employees until payroll publishes the cutoff.
+- Employee files are kept in a private Amazon S3 bucket, one folder per employee number
+  (`employees/<number>/201-file`, `work-requirements`, `lesp`, `attendance`, `leave`, `certificates`).
+  Only the `files` Edge Function holds the AWS keys, and its key can store and read files but not
+  delete them; the database decides who may store or open each file, and links last five minutes.
+  Payslips are never stored: the `payslip-pdf` function makes the PDF when someone downloads it.
 - Temporary passwords force a new password at the next sign-in.
 - For production: custom SMTP for the password-reset and confirmation emails, "Confirm email" on,
   and a Data Privacy Act registration with the NPC (4,000 employees is above its threshold).
@@ -195,13 +200,19 @@ of the database requests the portal made is then checked
 against the real schema exported from Postgres (`tests/schema-snapshot.json`): tables, views,
 columns, embedded relations (each must resolve to exactly one link, as PostgREST requires), filters,
 functions and arguments. The test build is pointed at the
-mock and every real Supabase host is cut, so the tests never touch the live project. **158 passed,
-0 console errors, and every request matches the schema.**
+mock and every real Supabase and Amazon S3 host is cut, so the tests never touch the live project or
+the bucket. The files in S3 are checked too: a document's scan goes to the files function and into
+its type's folder, the record keeps the S3 key, a walk-in certificate's PDF lands in the employee's
+certificates folder, an S3 selfie gets a five-minute link while an older one still opens from
+Supabase Storage, the folder of each document type is changed in Settings, the File storage tab
+counts files by folder and runs the live check, and a payslip downloads as a PDF made on request.
+**169 passed, 0 console errors, and every request matches the schema.**
 
 The look and its reasons (the watch room, the duty clock, where glass and glow are allowed, motion
 and charts) are in [DESIGN.md](DESIGN.md).
 
-**Not tested here:** signed-in work against the live project (storage uploads, realtime, emails):
+**Not tested here:** signed-in work against the live project and the real S3 bucket (uploads,
+realtime, emails): after the AWS set-up (SETUP.md step 9), run Settings → File storage → Check S3 now;
 after the first admin signs in, click through each screen once before rollout. Running PostgREST
 locally for a fully live test was not possible on the build machine.
 
