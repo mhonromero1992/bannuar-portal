@@ -3,16 +3,16 @@ import { Link } from 'react-router';
 import { supabase } from '../lib/supabase';
 import { isS3Key, signFiles } from '../lib/files';
 import { fmtDateTime, fullName } from '../lib/format';
-import { ATTENDANCE_KIND, LOCATION_CHECK } from '../lib/labels';
-import { locationLine, mapsLink, needsALook, type AttendanceLog } from '../lib/attendance';
+import { ATTENDANCE_KIND, ATTENDANCE_SOURCE, LOCATION_CHECK } from '../lib/labels';
+import { locationLine, mapsLink, needsALook, sourceLine, type AttendanceLog } from '../lib/attendance';
 import { Badge, Dialog, StatusBadge } from '../ui/kit';
 
 /**
  * Links to the selfies of a page of logs: S3 ones (five minutes) from the files function, older ones
  * (ten minutes) from Supabase Storage, one request each. A failure only hides the photos.
  */
-export async function selfieLinks(rows: { photo_path: string }[]): Promise<Record<string, string>> {
-  const paths = rows.map((r) => r.photo_path);
+export async function selfieLinks(rows: { photo_path: string | null }[]): Promise<Record<string, string>> {
+  const paths = rows.map((r) => r.photo_path).filter((p): p is string => Boolean(p));
   const legacy = paths.filter((p) => !isS3Key(p));
   const [s3, old] = await Promise.all([
     signFiles(paths).catch(() => ({})),
@@ -35,15 +35,15 @@ export function AttendanceTable({ rows, photos, showEmployee = true }: { rows: A
           <thead><tr><th>Photo</th><th>When</th>{showEmployee && <th>Employee</th>}<th>Post</th><th>Location</th></tr></thead>
           <tbody>{rows.map((r) => {
             const who = r.employee ? fullName(r.employee) : 'Employee';
-            const url = photos[r.photo_path];
+            const url = r.photo_path ? photos[r.photo_path] : undefined;
             return (
               <tr key={r.id}>
                 <td style={{ width: 64 }}>
                   <button className="thumb" type="button" onClick={() => setOpen(r)} aria-label={`Open the photo and details: ${who}, ${ATTENDANCE_KIND[r.kind].toLowerCase()} ${fmtDateTime(r.logged_at)}`}>
-                    {url ? <img src={url} alt="" loading="lazy" /> : <span aria-hidden="true">Photo</span>}
+                    {url ? <img src={url} alt="" loading="lazy" /> : <span aria-hidden="true">{r.photo_path ? 'Photo' : 'None'}</span>}
                   </button>
                 </td>
-                <td><b>{ATTENDANCE_KIND[r.kind]}</b><span className="cell-sub tabular">{fmtDateTime(r.logged_at)}</span></td>
+                <td><b>{ATTENDANCE_KIND[r.kind]}</b><span className="cell-sub tabular">{fmtDateTime(r.logged_at)}</span>{r.source !== 'self' && <span className="cell-sub"><StatusBadge map={ATTENDANCE_SOURCE} value={r.source} /></span>}</td>
                 {showEmployee && <td>{r.employee ? <><Link className="cell-main" to={`/employees/${r.employee.id}?tab=attendance`}>{who}</Link><span className="cell-sub tabular">{r.employee.employee_no}</span></> : <span className="muted">Removed</span>}</td>}
                 <td>{r.site ? <Link to={`/posts/${r.site.id}`}>{r.site.name}</Link> : <span className="muted">None</span>}</td>
                 <td>
@@ -56,7 +56,7 @@ export function AttendanceTable({ rows, photos, showEmployee = true }: { rows: A
         </table>
       </div>
       <Dialog open={open !== null} title={open ? `${ATTENDANCE_KIND[open.kind]}: ${open.employee ? fullName(open.employee) : 'Employee'}` : ''} onClose={() => setOpen(null)}>
-        {open && <LogDetails r={open} url={photos[open.photo_path]} />}
+        {open && <LogDetails r={open} url={open.photo_path ? photos[open.photo_path] : undefined} />}
       </Dialog>
     </>
   );
@@ -65,9 +65,11 @@ export function AttendanceTable({ rows, photos, showEmployee = true }: { rows: A
 function LogDetails({ r, url }: { r: AttendanceLog; url?: string }) {
   return (
     <div className="stack">
-      {url ? <img className="photo-large" src={url} alt={`Photo taken at ${ATTENDANCE_KIND[r.kind].toLowerCase()}`} /> : <p className="muted">The photo could not be loaded. Close this and open it again.</p>}
+      {!r.photo_path ? <p className="callout">Entered by hand by HR, so there is no photo and no location.</p>
+        : url ? <img className="photo-large" src={url} alt={`Photo taken at ${ATTENDANCE_KIND[r.kind].toLowerCase()}`} /> : <p className="muted">The photo could not be loaded. Close this and open it again.</p>}
       <dl className="dl">
-        <dt>When</dt><dd className="tabular">{fmtDateTime(r.logged_at)} (the database's clock)</dd>
+        <dt>When</dt><dd className="tabular">{fmtDateTime(r.logged_at)} {r.source === 'manual' ? '(as entered by HR)' : "(the database's clock)"}</dd>
+        {r.source !== 'self' && <><dt>Logged</dt><dd>{sourceLine(r)}</dd></>}
         <dt>Post</dt><dd>{r.site?.name ?? 'None'}</dd>
         <dt>Location</dt>
         <dd>

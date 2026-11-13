@@ -32,6 +32,7 @@ export const CONCERN_CATEGORY: Record<string, string> = {
   deduction: 'Deduction', contribution: 'Contribution', tax: 'Tax', other: 'Other',
 };
 export const ATTENDANCE_KIND: Record<string, string> = { time_in: 'Time in', time_out: 'Time out' };
+export const ATTENDANCE_SOURCE: Map = { self: ['Own phone', 'neutral'], commander: ['By the commander', 'info'], manual: ['By hand', 'warn'] };
 /** log_attendance's check of the phone's location against the post (schema.sql explains each). */
 export const LOCATION_CHECK: Map = {
   at_post: ['At the post', 'ok'],
@@ -40,6 +41,7 @@ export const LOCATION_CHECK: Map = {
   no_location: ['No location', 'warn'],
   post_not_set: ['Post location not set', 'neutral'],
   no_post: ['No post assigned', 'neutral'],
+  manual: ['Entered by hand', 'info'],
 };
 export const DOC_STATUS: Map = { pending_review: ['To review', 'warn'], verified: ['Verified', 'ok'], rejected: ['Rejected', 'bad'] };
 export const PERIOD_STATUS: Map = { draft: ['Draft', 'warn'], published: ['Published', 'ok'] };

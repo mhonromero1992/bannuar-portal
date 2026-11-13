@@ -508,6 +508,33 @@ as_user "$HR" "update public.document_types set storage_folder = '201-file' wher
 psql $H -U postgres -v ON_ERROR_STOP=1 -q -f "$(dirname "$0")/../schema.sql" >/dev/null 2>&1
 check "re-running schema.sql keeps HR's folder choice and the file list" "$(pg "select storage_folder from public.document_types where code = 'MEDICAL_CERT'"):$(pg "select count(*) > 60 from public.stored_files")" "201-file:t"
 
+echo "== Attendance without the guard's phone: the commander logs for a guard, or HR by hand"
+CP=$(begin "$DC" "'attendance', 'image/jpeg', 150000, '$BEA_EMP', null, 'time_in'"); CPK=$(echo "$CP" | jget key)
+check "the commander's photo of Bea goes to Bea's attendance folder" "$(echo "$CPK" | grep -c '^employees/G-002/attendance/')" "1"
+r=$(begin "$DC" "'attendance', 'image/jpeg', 150000, '$EDU_EMP', null, 'time_in'"); check_has "not for a guard at another post" "$r" "only upload your own"
+r=$(as_user "$DC" "select public.log_attendance_for('$BEA_EMP', 'time_in', '$CPK', 14.5552, 121.0244, 12)"); check_has "not before S3 has the photo" "$r" "did not arrive"
+stored "$(echo "$CP" | jget id)" 150000
+NB=$(pg "select count(*) from public.notifications where user_id = '$BEA'")
+R=$(as_user "$DC" "select public.log_attendance_for('$BEA_EMP', 'time_in', '$CPK', 14.5552, 121.0244, 12)")
+check "then it logs for Bea, checked against her post with the commander's location" "$(echo "$R" | jget location_check):$(echo "$R" | jget employee_name)" "at_post:Bea Lim"
+check "the log says the commander logged it" "$(pg "select source || ':' || (logged_by = '$DC') || ':' || (logged_by_employee_id = '$DC_EMP') || ':' || (employee_id = '$BEA_EMP') from public.attendance_logs where photo_path = '$CPK'")" "commander:true:true:true"
+check "and Bea is told" "$(pg "select count(*) - $NB from public.notifications where user_id = '$BEA'")" "1"
+check "sending it again returns the same log" "$(as_user "$DC" "select public.log_attendance_for('$BEA_EMP', 'time_in', '$CPK', 1, 1, 5)" | jget id)" "$(echo "$R" | jget id)"
+r=$(as_user "$CARLO" "select public.log_attendance_for('$BEA_EMP', 'time_in', '$CPK', 14.5552, 121.0244, 12)"); check_has "a guard cannot log for another guard" "$r" "only for the guards at your post"
+r=$(as_user "$DC" "select public.log_attendance_for('$DC_EMP', 'time_in', '$CPK', 14.5552, 121.0244, 12)"); check_has "the commander logs his own with log_attendance" "$r" "only for the guards at your post"
+CO=$(begin "$CARLO" "'attendance', 'image/jpeg', 150000, null, null, 'time_in'"); stored "$(echo "$CO" | jget id)" 150000
+r=$(as_user "$DC" "select public.log_attendance_for('$CARLO_EMP', 'time_in', '$(echo "$CO" | jget key)', 14.5552, 121.0244, 12)"); check_has "only with a photo he took himself" "$r" "did not arrive"
+r=$(as_user "$HR" "select public.log_attendance_for('$BEA_EMP', 'time_in', '$CPK', 1, 1, 1)"); check_has "office staff without a post do not log for guards" "$r" "Only commanders"
+M=$(as_user "$HR" "select public.add_manual_attendance('$CARLO_EMP', 'time_out', now() - interval '3 hours', 'Phone lost; from the post logbook')")
+check "HR enters a log by hand: no photo, no location, marked manual" "$(pg "select source || ':' || location_check || ':' || (photo_path is null) || ':' || manual_reason from public.attendance_logs where id = '$(echo "$M" | jget id)'")" "manual:manual:true:Phone lost; from the post logbook"
+check "the audit log keeps who entered it and why" "$(pg "select actor_id = '$HR' and note like 'Phone lost%' from public.audit_log where record_id = '$(echo "$M" | jget id)'")" "t"
+r=$(as_user "$DC" "select public.add_manual_attendance('$BEA_EMP', 'time_in', now(), 'Phone lost today')"); check_has "only HR enters by hand" "$r" "Only HR"
+r=$(as_user "$HR" "select public.add_manual_attendance('$BEA_EMP', 'time_in', now() - interval '1 hour', 'x')"); check_has "a reason is needed" "$r" "Say why"
+r=$(as_user "$HR" "select public.add_manual_attendance('$BEA_EMP', 'time_in', now() + interval '1 day', 'Phone lost today')"); check_has "not in the future" "$r" "last 62 days"
+r=$(as_user "$HR" "select public.add_manual_attendance('$BEA_EMP', 'time_in', now() - interval '90 days', 'Phone lost today')"); check_has "nor long ago" "$r" "last 62 days"
+r=$(as_user "$BEA" "insert into public.attendance_logs (employee_id, kind, location_check, source) values ('$BEA_EMP', 'time_in', 'manual', 'manual')"); check_has "nobody writes a manual log directly" "$r" "permission denied"
+check "the commander opens the photo he took" "$(nread "$DC" "'$CPK'")" "1"
+
 echo "== Demo scripts still match the schema (on a second, empty database)"
 D="$(dirname "$0")/.."
 DEMO_DB="${PGDATABASE:-bannuar_test}_demo"

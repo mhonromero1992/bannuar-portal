@@ -682,6 +682,19 @@ create index if not exists attendance_logs_employee_idx on public.attendance_log
 create index if not exists attendance_logs_site_idx on public.attendance_logs (site_id, logged_at desc);
 create index if not exists attendance_logs_logged_idx on public.attendance_logs (logged_at desc);
 
+-- When the guard has no phone: the post's commander logs for them (the guard's photo and the
+-- commander's location; log_attendance_for), or HR enters the log by hand from the post's logbook,
+-- with the reason (add_manual_attendance; no photo, no location, marked "manual").
+alter table public.attendance_logs
+  add column if not exists source text not null default 'self' check (source in ('self', 'commander', 'manual')),
+  add column if not exists logged_by uuid references auth.users (id) on delete set null,
+  add column if not exists logged_by_employee_id uuid references public.employees (id) on delete set null,
+  add column if not exists manual_reason text;
+alter table public.attendance_logs alter column photo_path drop not null;
+alter table public.attendance_logs drop constraint if exists attendance_logs_location_check_check;
+alter table public.attendance_logs add constraint attendance_logs_location_check_check
+  check (location_check in ('at_post', 'unsure', 'away', 'no_location', 'post_not_set', 'no_post', 'manual'));
+
 -- Files kept in Amazon S3. The files Edge Function puts them in a private bucket and records each one
 -- here; the AWS keys live only in that function's secrets. Every employee has one folder, named after
 -- the employee number when the file was stored:
@@ -1951,6 +1964,150 @@ begin
     'site_name', (select st.name from public.sites st where st.id = v_log.site_id));
 end $$;
 
+-- The location check of a time in or out at a post (the same rule log_attendance applies)
+create or replace function public.attendance_location_check(
+  p_site_id uuid, p_latitude double precision, p_longitude double precision, p_accuracy_m double precision)
+returns table (location_check text, distance_m integer, radius_m integer)
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  s public.sites;
+  v_distance integer;
+begin
+  if p_latitude is null or p_longitude is null then
+    return query select 'no_location'::text, null::integer, null::integer;
+    return;
+  end if;
+  if p_site_id is null then
+    return query select 'no_post'::text, null::integer, null::integer;
+    return;
+  end if;
+  select * into s from public.sites where id = p_site_id;
+  if s.latitude is null or s.longitude is null then
+    return query select 'post_not_set'::text, null::integer, null::integer;
+    return;
+  end if;
+  v_distance := round(public.geo_distance_m(p_latitude, p_longitude, s.latitude::float8, s.longitude::float8));
+  return query select (case
+      when v_distance <= s.geofence_radius_m and ceil(p_accuracy_m) <= s.geofence_radius_m then 'at_post'
+      when v_distance - ceil(p_accuracy_m) > s.geofence_radius_m then 'away'
+      else 'unsure' end)::text, v_distance, s.geofence_radius_m;
+end $$;
+
+-- A commander logs a time in or out for a guard of their post who has no phone with them: the
+-- commander takes the guard's photo (uploaded to the guard's S3 folder by the commander) and their
+-- own phone gives the location. The log says who logged it, and the guard is told.
+create or replace function public.log_attendance_for(
+  p_employee_id uuid, p_kind text, p_photo_path text,
+  p_latitude double precision default null, p_longitude double precision default null,
+  p_accuracy_m double precision default null, p_mock_location boolean default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  me public.employees;
+  g public.employees;
+  v_log public.attendance_logs;
+  c record;
+  v_has_location boolean := p_latitude is not null and p_longitude is not null;
+begin
+  select * into me from public.employees where user_id = auth.uid();
+  if not found then
+    raise exception 'Only commanders log for a guard' using errcode = '42501';
+  end if;
+  select * into g from public.employees where id = p_employee_id;
+  if not found or g.id = me.id or not public.supervises(g.id) then
+    raise exception 'You can log only for the guards at your post' using errcode = '42501';
+  end if;
+  if p_kind is null or p_kind not in ('time_in', 'time_out') then
+    raise exception 'Choose time in or time out' using errcode = '22023';
+  end if;
+
+  select * into v_log from public.attendance_logs where photo_path = p_photo_path;
+  if found then
+    if v_log.employee_id <> g.id then
+      raise exception 'That photo is of someone else' using errcode = '42501';
+    end if;
+  else
+    if g.status in ('resigned', 'terminated', 'end_of_contract', 'retired') then
+      raise exception 'This guard''s employment record is closed. Ask HR.' using errcode = 'P0001';
+    end if;
+    if coalesce(p_photo_path, '') = '' or not exists (
+        select 1 from public.stored_files f
+        where f.object_key = p_photo_path and f.purpose = 'attendance' and f.status = 'stored'
+          and f.employee_id = g.id and f.uploaded_by = auth.uid()
+          and f.created_at > now() - interval '30 minutes') then
+      raise exception 'The guard''s photo did not arrive. Take it again.' using errcode = 'P0001';
+    end if;
+    if v_has_location and (p_latitude not between -90 and 90 or p_longitude not between -180 and 180
+                           or p_accuracy_m is null or p_accuracy_m not between 0 and 1000000) then
+      raise exception 'That location is not valid' using errcode = '22023';
+    end if;
+    select * into c from public.attendance_location_check(g.site_id, p_latitude, p_longitude, p_accuracy_m);
+    insert into public.attendance_logs (employee_id, site_id, kind, photo_path, latitude, longitude, accuracy_m,
+                                        distance_m, radius_m, location_check, mock_location,
+                                        source, logged_by, logged_by_employee_id)
+    values (g.id, g.site_id, p_kind, p_photo_path,
+            case when v_has_location then round(p_latitude::numeric, 6) end,
+            case when v_has_location then round(p_longitude::numeric, 6) end,
+            case when v_has_location then ceil(p_accuracy_m)::integer end,
+            c.distance_m, c.radius_m, c.location_check, p_mock_location, 'commander', auth.uid(), me.id)
+    on conflict (photo_path) do nothing
+    returning * into v_log;
+    if not found then
+      select * into v_log from public.attendance_logs where photo_path = p_photo_path;
+    else
+      perform public.notify_employee(g.id,
+        case p_kind when 'time_in' then 'Your time in was logged by your commander' else 'Your time out was logged by your commander' end,
+        public.full_name(me), 'attendance', jsonb_build_object('screen', 'Attendance'));
+    end if;
+  end if;
+
+  return jsonb_build_object(
+    'id', v_log.id, 'kind', v_log.kind, 'logged_at', v_log.logged_at, 'location_check', v_log.location_check,
+    'distance_m', v_log.distance_m, 'accuracy_m', v_log.accuracy_m, 'radius_m', v_log.radius_m,
+    'site_name', (select st.name from public.sites st where st.id = v_log.site_id),
+    'employee_name', public.full_name(g));
+end $$;
+
+-- HR enters a time in or out by hand (a lost phone, no signal, the post's logbook). The time is the
+-- one HR gives (not in the future, at most 62 days back); the reason is required; no photo and no
+-- location, so the log is marked "manual". The audit log keeps who entered it, and the guard is told.
+create or replace function public.add_manual_attendance(
+  p_employee_id uuid, p_kind text, p_logged_at timestamptz, p_reason text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  e public.employees;
+  v_log public.attendance_logs;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR enters attendance by hand' using errcode = '42501';
+  end if;
+  select * into e from public.employees where id = p_employee_id;
+  if not found then
+    raise exception 'Employee not found' using errcode = 'P0002';
+  end if;
+  if p_kind is null or p_kind not in ('time_in', 'time_out') then
+    raise exception 'Choose time in or time out' using errcode = '22023';
+  end if;
+  if p_logged_at is null or p_logged_at > now() + interval '5 minutes' or p_logged_at < now() - interval '62 days' then
+    raise exception 'Enter a time from the last 62 days, not in the future' using errcode = '22023';
+  end if;
+  if length(trim(coalesce(p_reason, ''))) < 5 then
+    raise exception 'Say why the log is entered by hand' using errcode = '22023';
+  end if;
+  insert into public.attendance_logs (employee_id, site_id, kind, logged_at, photo_path, location_check,
+                                      source, logged_by, manual_reason)
+  values (e.id, e.site_id, p_kind, p_logged_at, null, 'manual', 'manual', auth.uid(), left(trim(p_reason), 500))
+  returning * into v_log;
+  insert into public.audit_log (actor_id, action, table_name, record_id, new_data, note)
+  values (auth.uid(), 'INSERT', 'attendance_logs', v_log.id::text,
+          jsonb_build_object('employee_id', e.id, 'kind', p_kind, 'logged_at', p_logged_at, 'source', 'manual'),
+          left(trim(p_reason), 500));
+  perform public.notify_employee(e.id,
+    case p_kind when 'time_in' then 'HR entered a time in for you' else 'HR entered a time out for you' end,
+    left(trim(p_reason), 120), 'attendance', jsonb_build_object('screen', 'Attendance'));
+  return jsonb_build_object('id', v_log.id, 'kind', v_log.kind, 'logged_at', v_log.logged_at,
+                            'location_check', v_log.location_check, 'source', v_log.source);
+end $$;
+
 -- Files in Amazon S3 ---------------------------------------------------------------------------------
 -- The files Edge Function holds the AWS keys. For an upload it calls begin_file_upload with the
 -- signed-in person's own token (the checks below), puts the file in S3 under the key it returns, then
@@ -2062,6 +2219,10 @@ begin
   if p_purpose = 'certificate' then
     select * into e from public.employees where id = c.employee_id;
   elsif v_hr and p_purpose <> 'attendance' and p_employee_id is not null then
+    select * into e from public.employees where id = p_employee_id;
+  elsif p_purpose = 'attendance' and p_employee_id is not null and p_employee_id is distinct from v_me
+        and v_me is not null and public.supervises(p_employee_id) then
+    -- a commander taking the photo of a guard at their post who has no phone (log_attendance_for)
     select * into e from public.employees where id = p_employee_id;
   else
     if p_employee_id is not null and p_employee_id is distinct from v_me then
@@ -3269,6 +3430,18 @@ revoke execute on function public.log_attendance(text, text, double precision, d
   from public, anon;
 grant execute on function public.log_attendance(text, text, double precision, double precision, double precision, boolean)
   to authenticated;
+
+-- attendance without the guard's phone: commanders (checked inside) and HR (checked inside)
+revoke execute on function public.attendance_location_check(uuid, double precision, double precision, double precision)
+  from public, anon, authenticated;
+revoke execute on function
+  public.log_attendance_for(uuid, text, text, double precision, double precision, double precision, boolean),
+  public.add_manual_attendance(uuid, text, timestamptz, text)
+from public, anon;
+grant execute on function
+  public.log_attendance_for(uuid, text, text, double precision, double precision, double precision, boolean),
+  public.add_manual_attendance(uuid, text, timestamptz, text)
+to authenticated;
 
 -- files in S3: the files Edge Function begins uploads and asks what may be opened with the person's own
 -- token, and finishes uploads with the service role; the helpers are internal

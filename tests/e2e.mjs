@@ -117,8 +117,9 @@ const T = {
   notifications: [{ id: 'n1', title: 'New COE request', body: 'Bea Lim · due Nov 11', kind: 'coe_request', read_at: null, created_at: now }],
   document_alerts: [{ id: 'd1', employee_id: 'e2', employee_no: 'G-002', first_name: 'Bea', last_name: 'Lim', site_id: 's1', site_name: 'Post A', type_code: 'SECURITY_LICENSE', type_name: 'Security guard license (LESP)', document_no: 'LIC-1', expires_on: '2026-11-28', days_left: 20, state: 'expiring' }],
   attendance_logs: [
-    { id: 'at1', employee_id: 'e2', site_id: 's1', kind: 'time_in', logged_at: now, photo_path: S3_SELFIE, latitude: 14.5552, longitude: 121.0244, accuracy_m: 12, distance_m: 56, radius_m: 150, location_check: 'at_post', mock_location: false, employee: empMini(E.e2), site: { id: 's1', name: 'Post A · Main Gate' } },
-    { id: 'at2', employee_id: 'e1', site_id: 's1', kind: 'time_in', logged_at: now, photo_path: 'e1/selfie-2.jpg', latitude: 14.5647, longitude: 121.0244, accuracy_m: 20, distance_m: 1112, radius_m: 150, location_check: 'away', mock_location: true, employee: empMini(E.e1), site: { id: 's1', name: 'Post A · Main Gate' } },
+    { id: 'at1', employee_id: 'e2', site_id: 's1', kind: 'time_in', logged_at: now, photo_path: S3_SELFIE, latitude: 14.5552, longitude: 121.0244, accuracy_m: 12, distance_m: 56, radius_m: 150, location_check: 'at_post', mock_location: false, source: 'self', manual_reason: null, logger: null, employee: empMini(E.e2), site: { id: 's1', name: 'Post A · Main Gate' } },
+    { id: 'at2', employee_id: 'e1', site_id: 's1', kind: 'time_in', logged_at: now, photo_path: 'e1/selfie-2.jpg', latitude: 14.5647, longitude: 121.0244, accuracy_m: 20, distance_m: 1112, radius_m: 150, location_check: 'away', mock_location: true, source: 'self', manual_reason: null, logger: null, employee: empMini(E.e1), site: { id: 's1', name: 'Post A · Main Gate' } },
+    { id: 'at3', employee_id: 'e3', site_id: null, kind: 'time_out', logged_at: now, photo_path: null, latitude: null, longitude: null, accuracy_m: null, distance_m: null, radius_m: null, location_check: 'manual', mock_location: null, source: 'manual', manual_reason: 'Phone lost; from the post logbook', logger: null, employee: empMini(E.e3), site: null },
   ],
   compliance_gaps: [{ employee_id: 'e3', employee_no: 'G-003', first_name: 'Carlo', last_name: 'Diaz', status: 'floating', site_id: null, site_name: null, document_type_id: 'dt2', type_code: 'NBI_CLEARANCE', type_name: 'NBI clearance', last_expiry: null }],
   stored_files: [
@@ -151,6 +152,7 @@ const RPC = {
   admin_reset_password: () => null,
   deploy_employees: () => 1,
   hire_applicant: () => 'e3',
+  add_manual_attendance: () => ({ id: 'at9', kind: 'time_in', logged_at: now, location_check: 'manual', source: 'manual' }),
   mark_password_changed: () => null,
   revoke_certificate: () => null,
   set_site_pay_rule: () => null,
@@ -328,7 +330,7 @@ check('dashboard: overdue COE flagged', (await page.getByText('1 past the three-
 await page.getByText(/need a look: away from the post/).waitFor();
 const todayTile = await page.locator('.tile', { hasText: 'Time in and out today' }).innerText();
 const todayReqs = requests.filter((r) => r.method === 'HEAD' && r.path === '/rest/v1/attendance_logs');
-check('dashboard: today\'s time in and out is counted by the database, with those needing a look', /\b2\b/.test(todayTile) && todayReqs.length >= 2 && todayReqs.every((r) => /logged_at=gte\./.test(r.url) && /logged_at=lt\./.test(r.url)) && todayReqs.some((r) => /or=/.test(r.url)), todayTile.replace(/\s+/g, ' '));
+check('dashboard: today\'s time in and out is counted by the database, with those needing a look', /\b3\b/.test(todayTile) && todayReqs.length >= 2 && todayReqs.every((r) => /logged_at=gte\./.test(r.url) && /logged_at=lt\./.test(r.url)) && todayReqs.some((r) => /or=/.test(r.url)), todayTile.replace(/\s+/g, ' '));
 const meterRow = await page.locator('.meters li').first().innerText();
 check('dashboard: each post shows its guards against the number needed, short posts first', /Post A · Main Gate/.test(meterRow) && /2 of 3/.test(meterRow) && /1 short/.test(meterRow), meterRow.replace(/\s+/g, ' '));
 check('dashboard: the roll by status adds up to the employees on the roll', /Active\s*2/.test(await page.locator('.legend').innerText()) && /Floating\s*1/.test(await page.locator('.legend').innerText()));
@@ -648,6 +650,23 @@ await page.locator('.thumb').nth(1).click();
 const attDialog = page.locator('dialog[open]');
 check('attendance: the photo opens with the place and a caution', await attDialog.locator('img.photo-large').isVisible() && /Open in Google Maps/.test(await attDialog.innerText()) && /mock location app on/.test(await attDialog.innerText()));
 await attDialog.getByRole('button', { name: 'Close' }).click();
+check('attendance: a log entered by hand shows its reason, with no photo', (await page.getByText('Reason: Phone lost; from the post logbook').count()) === 1 && (await page.getByText('By hand', { exact: true }).count()) >= 1);
+await page.getByLabel('Which logs').selectOption('other');
+await page.waitForTimeout(400);
+check('attendance: "By the commander or by hand" asks for logs not from the own phone', /source=neq\.self/.test(requests.filter((r) => r.path === '/rest/v1/attendance_logs').at(-1)?.url ?? ''));
+await page.getByRole('button', { name: 'Add a manual log' }).click();
+const manual = page.locator('dialog[open]');
+await manual.getByLabel('Find the employee').fill('Lim');
+await manual.getByLabel('Employee', { exact: true }).selectOption('e2');
+await manual.getByLabel('Date').fill('2026-11-10');
+await manual.getByLabel('Time (Manila)').fill('07:05');
+await manual.getByRole('button', { name: 'Add the log' }).click();
+check('manual log: a reason is required', /Say why/.test(await manual.innerText()));
+await manual.getByLabel('Reason').fill('Phone lost; time from the post logbook');
+await manual.getByRole('button', { name: 'Add the log' }).click();
+await page.getByText('Manual log added. The employee is told.').waitFor();
+const ml = rpcCalls('add_manual_attendance').at(-1)?.body;
+check('manual log: sent to the database with Manila time and the reason', ml?.p_employee_id === 'e2' && ml?.p_kind === 'time_in' && ml?.p_logged_at === '2026-11-09T23:05:00.000Z' && ml?.p_reason === 'Phone lost; time from the post logbook', JSON.stringify(ml));
 await page.goto(`${BASE}/employees/e2?tab=attendance`);
 await page.getByText('Time in and out from the app').waitFor();
 const empAtt = requests.filter((r) => r.path === '/rest/v1/attendance_logs').at(-1);
