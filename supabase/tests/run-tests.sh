@@ -606,7 +606,7 @@ MY=$(as_user "$CARLO" "select public.my_disciplinary_cases()")
 check "he reads the notice and the rule in the app, not HR's working notes" "$(echo "$MY" | python3 -c "import json,sys; c=json.load(sys.stdin)[0]; print(c['status'], c['rule']['ref'], 'facts' in c, 'ai_suggestion' in c, 'hearing_notes' in c, c['nte_text'][:11])")" "nte_issued A-1 False False False This notice"
 check "nobody else sees it" "$(as_user "$BEA" "select public.my_disciplinary_cases()"):$(as_user "$BEA" "select count(*) from public.disciplinary_cases")" "[]:0"
 r=$(as_user "$HR" "select public.update_case_draft('$C1ID', '$RULE_B', null, 'Late by an hour.')"); check_has "once issued, the charge cannot change" "$r" "can no longer change"
-r=$(as_user "$HR" "select public.decide_case('$C1ID', 'suspension', 7, current_date, 'Found asleep; his explanation does not hold; 7 days per A-1.')"); check_has "no decision before the employee has had his five days" "$r" "Wait for the explanation"
+r=$(as_user "$HR" "select public.decide_case('$C1ID', 'suspension', 7, (now() at time zone 'Asia/Manila')::date, 'Found asleep; his explanation does not hold; 7 days per A-1.')"); check_has "no decision before the employee has had his five days" "$r" "Wait for the explanation"
 as_user "$CARLO" "select public.acknowledge_case_notice('$C1ID', 'nte')" >/dev/null
 check "he says he received it" "$(pg "select nte_received_at is not null from public.disciplinary_cases where id = '$C1ID'")" "t"
 NH=$(pg "select count(*) from public.notifications where user_id = '$HR'")
@@ -614,15 +614,15 @@ as_user "$CARLO" "select public.submit_case_explanation('$C1ID', 'I was on my br
 check "his explanation arrives from the app, with his request for a hearing" "$(pg "select status || ':' || explanation_via || ':' || wants_hearing from public.disciplinary_cases where id = '$C1ID'")" "explained:app:true"
 check "and HR is told" "$(pg "select count(*) from public.notifications where user_id = '$HR' and title = 'Explanation received'")" "1"
 r=$(as_user "$CARLO" "select public.submit_case_explanation('$C1ID', 'Another try at the explanation.', false)"); check_has "only once" "$r" "already received"
-r=$(as_user "$HR" "select public.decide_case('$C1ID', 'suspension', 7, current_date, 'Found asleep; his explanation does not hold; 7 days per A-1.')"); check_has "he asked for a hearing, so there is one before a decision" "$r" "asked for a hearing"
+r=$(as_user "$HR" "select public.decide_case('$C1ID', 'suspension', 7, (now() at time zone 'Asia/Manila')::date, 'Found asleep; his explanation does not hold; 7 days per A-1.')"); check_has "he asked for a hearing, so there is one before a decision" "$r" "asked for a hearing"
 r=$(as_user "$HR" "select public.set_case_hearing('$C1ID', now() + interval '2 hours', 'HR office')"); check_has "a hearing is set at least a day ahead" "$r" "at least a day ahead"
 as_user "$HR" "select public.set_case_hearing('$C1ID', now() + interval '2 days', 'HR office, Makati')" >/dev/null
 r=$(as_user "$HR" "select public.record_case_hearing('$C1ID', 'Carlo attended with a co-guard as his representative.')"); check_has "it is recorded once it has taken place" "$r" "once it has taken place"
 pg "update public.disciplinary_cases set hearing_at = now() - interval '1 hour' where id = '$C1ID'" >/dev/null
 as_user "$HR" "select public.record_case_hearing('$C1ID', 'Carlo attended with a co-guard as his representative. The inspector confirmed he was asleep.')" >/dev/null
-r=$(as_user "$HR" "select public.decide_case('$C1ID', 'suspension', 3, current_date, 'Found asleep after hearing both sides; three days suspension.')"); check_has "a penalty other than the code's needs a reason" "$r" "Say why"
+r=$(as_user "$HR" "select public.decide_case('$C1ID', 'suspension', 3, (now() at time zone 'Asia/Manila')::date, 'Found asleep after hearing both sides; three days suspension.')"); check_has "a penalty other than the code's needs a reason" "$r" "Say why"
 NC=$(pg "select count(*) from public.notifications where user_id = '$CARLO'")
-D1=$(as_user "$HR" "select public.decide_case('$C1ID', 'suspension', 7, current_date, 'Found asleep after hearing both sides; seven days suspension under A-1, first offense.')")
+D1=$(as_user "$HR" "select public.decide_case('$C1ID', 'suspension', 7, (now() at time zone 'Asia/Manila')::date, 'Found asleep after hearing both sides; seven days suspension under A-1, first offense.')")
 check "the code's penalty is decided" "$(echo "$D1" | jget departs):$(pg "select status || ':' || decision || ':' || suspension_days from public.disciplinary_cases where id = '$C1ID'")" "False:decided:suspension:7"
 check "the report shows action taken, and Carlo is told" "$(pg "select status from public.incident_reports where id = '$IRID'"):$(pg "select count(*) - $NC from public.notifications where user_id = '$CARLO'")" "action_taken:1"
 as_user "$CARLO" "select public.acknowledge_case_notice('$C1ID', 'decision')" >/dev/null
@@ -634,16 +634,16 @@ check "the next case of the same rule is his second offense, and the code says d
 as_user "$HR" "select public.issue_nte('$C2ID', '$NTE', now() + interval '5 days')" >/dev/null
 pg "update public.disciplinary_cases set explain_by = now() - interval '1 minute' where id = '$C2ID'" >/dev/null
 r=$(as_user "$HR" "select public.decide_case('$C2ID', 'dismissal', null, null, 'No explanation came within the period; dismissal under A-1, second offense.')"); check_has "never a dismissal without a hearing or conference" "$r" "before a dismissal"
-r=$(as_user "$HR" "select public.decide_case('$C2ID', 'suspension', 7, current_date, 'No explanation came; a lighter penalty given his record of service.')"); check_has "a lighter penalty than the code's also needs a reason" "$r" "Say why"
-D2=$(as_user "$HR" "select public.decide_case('$C2ID', 'suspension', 7, current_date, 'No explanation came; a lighter penalty given his record of service.', 'Eight years of service with one earlier offense')")
+r=$(as_user "$HR" "select public.decide_case('$C2ID', 'suspension', 7, (now() at time zone 'Asia/Manila')::date, 'No explanation came; a lighter penalty given his record of service.')"); check_has "a lighter penalty than the code's also needs a reason" "$r" "Say why"
+D2=$(as_user "$HR" "select public.decide_case('$C2ID', 'suspension', 7, (now() at time zone 'Asia/Manila')::date, 'No explanation came; a lighter penalty given his record of service.', 'Eight years of service with one earlier offense')")
 check "with the reason, it is decided and marked as departing from the code" "$(echo "$D2" | jget departs):$(pg "select departs_reason like 'Eight years%' from public.disciplinary_cases where id = '$C2ID'")" "True:t"
 
 C3ID=$(as_user "$HR" "select public.open_disciplinary_case('$EDU_EMP', null, '$RULE_B', 'Arrived an hour late for the 6 AM shift.')" | jget id)
-r=$(as_user "$HR" "select public.set_preventive_suspension('$C3ID', current_date, current_date + 10, 'Serious threat to the property of the client.')"); check_has "no preventive suspension before the notice" "$r" "Issue the notice"
+r=$(as_user "$HR" "select public.set_preventive_suspension('$C3ID', (now() at time zone 'Asia/Manila')::date, (now() at time zone 'Asia/Manila')::date + 10, 'Serious threat to the property of the client.')"); check_has "no preventive suspension before the notice" "$r" "Issue the notice"
 as_user "$HR" "select public.issue_nte('$C3ID', 'On the morning of the 10th you arrived at Post B at 7:05 AM for the 6 AM shift. This may violate rule B-2, Tardiness. Please explain.', now() + interval '6 days')" >/dev/null
-r=$(as_user "$HR" "select public.set_preventive_suspension('$C3ID', current_date, current_date + 30, 'Serious threat to the property of the client.')"); check_has "a preventive suspension lasts at most 30 days" "$r" "at most 30 days"
-r=$(as_user "$HR" "select public.set_preventive_suspension('$C3ID', current_date, current_date + 29, 'Late')"); check_has "and needs the threat it prevents" "$r" "serious and imminent threat"
-as_user "$HR" "select public.set_preventive_suspension('$C3ID', current_date, current_date + 29, 'He was seen taking the client''s fuel; his presence risks the client''s property.')" >/dev/null
+r=$(as_user "$HR" "select public.set_preventive_suspension('$C3ID', (now() at time zone 'Asia/Manila')::date, (now() at time zone 'Asia/Manila')::date + 30, 'Serious threat to the property of the client.')"); check_has "a preventive suspension lasts at most 30 days" "$r" "at most 30 days"
+r=$(as_user "$HR" "select public.set_preventive_suspension('$C3ID', (now() at time zone 'Asia/Manila')::date, (now() at time zone 'Asia/Manila')::date + 29, 'Late')"); check_has "and needs the threat it prevents" "$r" "serious and imminent threat"
+as_user "$HR" "select public.set_preventive_suspension('$C3ID', (now() at time zone 'Asia/Manila')::date, (now() at time zone 'Asia/Manila')::date + 29, 'He was seen taking the client''s fuel; his presence risks the client''s property.')" >/dev/null
 check "30 days, set" "$(pg "select preventive_to - preventive_from from public.disciplinary_cases where id = '$C3ID'")" "29"
 
 CTX=$(as_user "$HR" "select public.case_ai_context('$C3ID')")
@@ -714,6 +714,66 @@ r=$(as_user "$BEA" "select public.save_document_check('$DLK', '{\"expiry\":\"val
 as_service "select public.save_document_check('$DLK', '{\"expiry\":\"valid\",\"document_no\":\"R01-123\"}')" >/dev/null
 check "HR reads the check with the file" "$(as_user "$HR" "select ai_check ->> 'document_no' from public.stored_files where object_key = '$DLK'")" "R01-123"
 r=$(as_user "$HR" "update public.document_types set ai_check = true where code = 'NBI_CLEARANCE' returning code"); check_has "HR turns it on for another type" "$r" "NBI_CLEARANCE"
+
+echo "== Cutoff review: duties from time in and out, payroll's exceptions, the client's confirmation"
+TD="(now() at time zone 'Asia/Manila')::date"
+at() { echo "((($TD - $1)::timestamp + time '$2') at time zone 'Asia/Manila')"; }   # days ago, HH:MM in Manila
+pg "insert into public.attendance_logs (employee_id, site_id, kind, logged_at, location_check, mock_location, source) values
+ ('$BEA_EMP', '$SITE1', 'time_in',  $(at 10 06:00), 'at_post', false, 'self'), ('$BEA_EMP', '$SITE1', 'time_out', $(at 10 18:00), 'at_post', false, 'self'),
+ ('$BEA_EMP', '$SITE1', 'time_in',  $(at 9 06:05), 'away', false, 'self'),     ('$BEA_EMP', '$SITE1', 'time_out', $(at 9 18:00), 'at_post', false, 'self'),
+ ('$BEA_EMP', '$SITE1', 'time_in',  $(at 8 06:00), 'at_post', false, 'self'),
+ ('$BEA_EMP', '$SITE1', 'time_in',  $(at 7 18:00), 'at_post', false, 'self'),  ('$BEA_EMP', '$SITE1', 'time_out', $(at 6 06:00), 'at_post', false, 'self'),
+ ('$BEA_EMP', '$SITE1', 'time_out', $(at 5 18:00), 'at_post', false, 'self'),
+ ('$BEA_EMP', '$SITE1', 'time_in',  $(at 4 06:00), 'at_post', false, 'commander'), ('$BEA_EMP', '$SITE1', 'time_out', $(at 4 18:00), 'at_post', false, 'self'),
+ ('$BEA_EMP', '$SITE1', 'time_in',  $(at 3 06:00), 'at_post', true, 'self'),   ('$BEA_EMP', '$SITE1', 'time_out', $(at 3 14:00), 'at_post', false, 'self'),
+ ('$EDU_EMP', '$SITE2', 'time_in',  $(at 6 06:00), 'at_post', false, 'self'),  ('$EDU_EMP', '$SITE2', 'time_out', $(at 6 18:00), 'at_post', false, 'self')" >/dev/null
+CUT=$(pg "insert into public.payroll_periods (label, period_start, period_end, pay_date) values ('Test cutoff', $TD - 12, $TD - 2, $TD + 3) returning id")
+check "a time in and the time out after it make one duty, dated by the time in; the rest are flagged" "$(pg "select string_agg(($TD - duty_date) || ':' || coalesce(hours::text, '-') || ':' || array_to_string(flags, '+') || ':' || clean, ' ' order by duty_date) from public.period_duties($TD - 12, $TD - 2) where employee_id = '$BEA_EMP'")" "10:12.00::true 9:11.92:away:false 8:-:no_time_out:false 7:12.00::true 5:-:no_time_in:false 4:12.00:commander:false 3:8.00:mock:false"
+r=$(as_user "$BEA" "select public.cutoff_review('$CUT')"); check_has "only payroll and HR see the review" "$r" "Only payroll and HR"
+R=$(as_user "$HR" "select public.cutoff_review('$CUT')")
+check "the review: duties, clean ones, and exceptions to decide" "$(echo "$R" | python3 -c "import json,sys; r=json.load(sys.stdin); print(r['duties'], r['clean'], r['counted'], r['to_decide'], len(r['exceptions']), r['period']['ended'])")" "8 3 3 5 5 True"
+check "clean duties count on their own" "$(as_user "$HR" "select array_length(dates, 1) || ':' || hours from public.cutoff_counted_duties('$CUT') where employee_id = '$BEA_EMP'")" "2:24.00"
+D2=$(pg "select log_id from public.period_duties($TD - 12, $TD - 2) where employee_id = '$BEA_EMP' and duty_date = $TD - 9")
+D6=$(pg "select log_id from public.period_duties($TD - 12, $TD - 2) where employee_id = '$BEA_EMP' and duty_date = $TD - 4")
+D1=$(pg "select log_id from public.period_duties($TD - 12, $TD - 2) where employee_id = '$BEA_EMP' and duty_date = $TD - 10")
+EDUD=$(pg "select log_id from public.period_duties($TD - 12, $TD - 2) where employee_id = '$EDU_EMP'")
+r=$(as_user "$BEA" "select public.decide_duty('$CUT', '$D6', true, null)"); check_has "only payroll decides" "$r" "Only payroll"
+as_user "$HR" "select public.decide_duty('$CUT', '$D6', true, null)" >/dev/null
+check "payroll counts the duty the commander logged" "$(as_user "$HR" "select array_length(dates, 1) from public.cutoff_counted_duties('$CUT') where employee_id = '$BEA_EMP'")" "3"
+r=$(as_user "$HR" "select public.decide_duty('$CUT', '$D2', false, null)"); check_has "taking a day out needs a reason" "$r" "Say why"
+NB=$(pg "select count(*) from public.notifications where user_id = '$BEA'")
+as_user "$HR" "select public.decide_duty('$CUT', '$D2', false, 'Away from the post at time in; commander says she came at 9 AM')" >/dev/null
+check "the guard is told when a day is not counted" "$(pg "select count(*) - $NB from public.notifications where user_id = '$BEA'"):$(pg "select title from public.notifications where user_id = '$BEA' order by created_at desc limit 1")" "1:A duty was not counted for pay"
+check "and it stays out" "$(as_user "$HR" "select array_length(dates, 1) from public.cutoff_counted_duties('$CUT') where employee_id = '$BEA_EMP'")" "3"
+NOW=$(pg "insert into public.payroll_periods (label, period_start, period_end, pay_date) values ('Running cutoff', $TD - 1, $TD + 5, $TD + 10) returning id")
+r=$(as_user "$OPS" "select public.open_cutoff_reviews('$NOW', 2)"); check_has "clients are asked once the cutoff has ended" "$r" "once the cutoff has ended"
+r=$(as_user "$BEA" "select public.open_cutoff_reviews('$CUT', 2)"); check_has "only payroll or operations asks them" "$r" "Only payroll or operations"
+check "every client with duties in the cutoff is asked" "$(as_user "$OPS" "select public.open_cutoff_reviews('$CUT', 2)")" "2"
+check "not twice" "$(as_user "$OPS" "select public.open_cutoff_reviews('$CUT', 2)")" "0"
+as_user "$OPS" "select public.set_client_user_active('$CU', true)" >/dev/null
+CC=$(as_user "$CU" "select public.client_cutoffs()")
+check "the client sees the cutoff waiting, due in two days" "$(echo "$CC" | python3 -c "import json,sys; c=json.load(sys.stdin)[0]; print(c['label'], c['status'], c['disputed'])")" "Test cutoff waiting 0"
+COV=$(as_user "$CU" "select public.client_cutoff_coverage('$CUT')")
+check "it sees only its posts' duties: who, when, how long, at the post or not; no photos, places or pay" "$(echo "$COV" | python3 -c "import json,sys; c=json.load(sys.stdin); t=json.dumps(c); print(len(c), {x['post'] for x in c} == {'Post A'}, sum(1 for x in c if not x['at_post']), sum(1 for x in c if not x['complete']), any(k in t for k in ('photo','latitude','flags','rate','pay')))")" "7 True 1 2 False"
+r=$(as_user "$CU" "select public.client_dispute_duty('$CUT', '$EDUD', 'Not here')"); check_has "never another client's duty" "$r" "not at your posts"
+r=$(as_user "$CU" "select public.client_dispute_duty('$CUT', '$D1', 'x')"); check_has "a dispute says what was wrong" "$r" "Say what was wrong"
+as_user "$CU" "select public.client_dispute_duty('$CUT', '$D1', 'No guard at the gate after 2 PM; we called the office')" >/dev/null
+check "a disputed day joins payroll's exceptions" "$(as_user "$HR" "select (public.cutoff_review('$CUT') ->> 'to_decide') || ':' || (public.cutoff_review('$CUT') ->> 'disputed')")" "4:1"
+NP=$(pg "select count(*) from public.notifications where user_id = '$HR' and kind = 'cutoff_review'")
+check "the client sends it back with its dispute" "$(as_user "$CU" "select public.client_respond_cutoff('$CUT', 'One day disputed')")" "disputed"
+check "payroll is told" "$(pg "select count(*) - $NP from public.notifications where user_id = '$HR' and kind = 'cutoff_review'")" "1"
+r=$(as_user "$CU" "select public.client_respond_cutoff('$CUT', null)"); check_has "only once" "$r" "already confirmed"
+r=$(as_user "$CU" "select public.client_dispute_duty('$CUT', '$D1', 'Another reason')"); check_has "and no more disputes after" "$r" "already confirmed"
+check "a disputed duty still counts until payroll decides" "$(as_user "$HR" "select array_length(dates, 1) from public.cutoff_counted_duties('$CUT') where employee_id = '$BEA_EMP'")" "3"
+r=$(as_user "$HR" "select public.decide_duty('$CUT', '$D1', true, null)"); check_has "keeping a disputed day needs a reason" "$r" "Say why"
+as_user "$HR" "select public.decide_duty('$CUT', '$D1', true, 'Time in and out at the post; the commander confirms she was there')" >/dev/null
+pg "update public.cutoff_client_reviews set due_at = now() - interval '1 minute' where period_id = '$CUT' and client_id = '$OTHER'" >/dev/null
+check "a client that does not answer in time counts as confirmed" "$(as_user "$HR" "select string_agg(c ->> 'status', ',' order by c ->> 'name') from jsonb_array_elements(public.cutoff_review('$CUT') -> 'clients') c")" "disputed,deemed_confirmed"
+pg "update public.payroll_periods set status = 'published' where id = '$CUT'" >/dev/null
+r=$(as_user "$HR" "select public.decide_duty('$CUT', '$D6', false, 'Changed my mind on this')"); check_has "a published cutoff is not changed" "$r" "published"
+pg "update public.payroll_periods set status = 'draft' where id = '$CUT'" >/dev/null
+r=$(as_user "$BEA" "update public.duty_decisions set decision = 'count'"); check_has "decisions change only through the functions" "$r" "permission denied"
+check "every decision is in the audit log" "$(pg "select count(*) >= 3 from public.audit_log where table_name = 'duty_decisions'")" "t"
 
 echo "== Demo scripts still match the schema (on a second, empty database)"
 D="$(dirname "$0")/.."

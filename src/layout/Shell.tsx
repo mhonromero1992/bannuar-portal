@@ -55,6 +55,7 @@ const SCREEN_ROUTES: Record<string, string> = {
   discipline: '/discipline?tab=cases',
   discipline_code: '/discipline?tab=code',
   client_request: '/requests?tab=clients',
+  cutoff_review: '/payroll',
 };
 
 function Bell() {

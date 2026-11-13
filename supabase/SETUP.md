@@ -390,13 +390,15 @@ Nothing to set up beyond running the schema again (step 2), which adds `client_u
    opens full screen like an app.
 
 They see only their own posts, guards' names and positions, time in and out by day, and the reports
-and requests their company filed. Turn a login off from the same Portal access list.
+and requests their company filed. After each cutoff, payroll or operations presses "Ask the clients to
+confirm" on the cutoff's page; each client then has two days to confirm its posts' duties or dispute
+some, and a cutoff not answered in time counts as confirmed. Turn a login off from the same Portal access list.
 
 ## Tested
 
 `schema.sql` was run against Postgres 16 with stand-ins for Supabase's `auth` and `storage`
 schemas and its `anon` / `authenticated` / `authenticator` roles, connecting the way the Supabase
-API does. 396 checks passed: sign-up rules, employee activation through one-time tickets (rate
+API does. 424 checks passed: sign-up rules, employee activation through one-time tickets (rate
 limits per employee number and per IP, the facts removed from the login's metadata), who sees which
 rows for every role, payroll import and publishing, the leave and COE flows, certificate
 verification, announcements, website forms, storage folders, admin tools, push devices, attendance
@@ -408,7 +410,8 @@ never stored), attendance logged by a commander or entered by HR, the discipline
 and approved before use, the five-day notice, the hearing before a dismissal, a reason for a penalty
 other than the code's, preventive suspension of at most 30 days, what employees and Claude may see), the client portal
 (client logins see only their own posts and what their company filed, and nothing once turned off),
-the document checks (whose files Claude may read, which types),
+the document checks (whose files Claude may read, which types), the cutoff review (how a time in and out
+become a duty, what counts, payroll's decisions, the client's confirmation and its deadline),
 and the demo scripts on an empty database. Upgrading a database built with the previous `schema.sql` was
 tested too. It has not yet been run inside a real Supabase project.
 
