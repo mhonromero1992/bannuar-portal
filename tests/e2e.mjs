@@ -155,6 +155,16 @@ T.disciplinary_cases = [
 const findCase = (id) => T.disciplinary_cases.find((c) => c.id === id);
 // the client portal: Acme Mart's request, and what its people see
 T.client_requests = [{ id: 'cr1', request_no: 'CR-2026-000001', client_id: 'c1', site_id: 's1', kind: 'additional_guards', details: 'Two more guards for the holiday rush, 6 AM to 6 PM.', guards_needed: 2, needed_from: '2026-12-01', status: 'received', reply: null, requester_name: 'Mia Manager', created_at: now, client: { name: 'Acme Mart' }, site: { name: 'Post A · Main Gate' } }];
+// the cutoff's time in and out: one flagged duty, one a client disputed; Acme Mart not asked yet
+const cutoffReview = { period: { id: 'p1', label: 'Nov 1 to 15, 2026', start: '2026-11-01', end: '2026-11-15', status: 'draft', ended: true }, duties: 28, clean: 25, counted: 26, to_decide: 2, disputed: 1,
+  exceptions: [
+    { log_id: 'lg1', employee_id: 'e2', employee_no: 'G-002', name: 'Bea Lim', post: 'Post A · Main Gate', client: 'Acme Mart', date: '2026-11-05', time_in: '2026-11-04T22:05:00Z', time_out: '2026-11-05T10:00:00Z', hours: 11.92, flags: ['away'], clean: false, client_reason: null, decision: null, decision_note: null, decided_at: null },
+    { log_id: 'lg2', employee_id: 'e1', employee_no: 'G-001', name: 'Dante Cruz', post: 'Post A · Main Gate', client: 'Acme Mart', date: '2026-11-03', time_in: '2026-11-02T22:00:00Z', time_out: '2026-11-03T10:00:00Z', hours: 12, flags: [], clean: true, client_reason: 'No guard at the gate after 2 PM', decision: null, decision_note: null, decided_at: null }],
+  clients: [{ client_id: 'c1', name: 'Acme Mart', status: 'not_asked', due_at: null, responded_at: null, responder: null, note: null }] };
+const coverage = [
+  { log_id: 'lg2', post: 'Post A · Main Gate', guard: 'Dante Cruz', date: '2026-11-03', time_in: '2026-11-02T22:00:00Z', time_out: '2026-11-03T10:00:00Z', hours: 12, at_post: true, complete: true, disputed: null },
+  { log_id: 'lg3', post: 'Post A · Main Gate', guard: 'Bea Lim', date: '2026-11-04', time_in: '2026-11-03T22:00:00Z', time_out: '2026-11-04T10:00:00Z', hours: 12, at_post: true, complete: true, disputed: null },
+];
 const clientAccess = { user_id: 'u-mia', roles: [], full_name: 'Mia Manager', email: 'mia@acme.test', must_change_password: false, employee: null, client: { id: 'c1', name: 'Acme Mart' } };
 const access = { user_id: 'u-admin', roles: ['super_admin'], full_name: 'Ana Admin', email: 'ana@bannuar.test', must_change_password: false, employee: null };
 const dashboard = { employees_by_status: { active: 2, floating: 1 }, employees_current: 3, sites_active: 1, guards_required: 3, guards_deployed: 2, sites_short: 1, floating: 1, floating_over_150_days: 1, leave_pending_supervisor: 0, leave_pending_hr: 1, on_leave_today: 0, coe_pending: 1, coe_overdue: 1, profile_changes_pending: 1, payroll_concerns_open: 1, documents_expired: 0, documents_expiring: 1, compliance_gaps: 1, applications_new: 1, inquiries_new: 1, latest_period: { id: 'p1', label: 'Nov 1 to 15, 2026', status: 'draft', pay_date: '2026-11-20', payslips: 2 } };
@@ -208,6 +218,16 @@ const RPC = {
   client_reports: () => [{ id: 'ir1', report_no: 'IR-2026-000001', post: 'Post A · Main Gate', occurred_at: now, title: 'Guard asleep at the gate', details: 'Our store manager found the guard asleep at the main gate at 2 AM.', guard: 'Carlo Diaz', status: 'investigating', update: 'We are looking into it with the detachment commander.', filed_by: 'Mia Manager · Acme Mart', created_at: now, updated_at: now }],
   client_requests_list: () => [{ id: 'cr1', request_no: 'CR-2026-000001', post: 'Post A · Main Gate', kind: 'additional_guards', details: 'Two more guards for the holiday rush.', guards_needed: 2, needed_from: '2026-12-01', status: 'in_progress', reply: 'Two guards from December 1.', requested_by: 'Mia Manager', created_at: now }],
   file_client_request: () => ({ id: 'cr9', request_no: 'CR-2026-000009', status: 'received' }),
+  cutoff_review: () => cutoffReview,
+  cutoff_counted_duties: () => [
+    { employee_id: 'e2', employee_no: 'G-002', site_id: 's1', dates: ['2026-11-03', '2026-11-04', '2026-11-06'], hours: 36 },
+    { employee_id: 'e9', employee_no: 'G-009', site_id: 's2', dates: ['2026-11-06'], hours: 12 }],
+  decide_duty: () => null,
+  open_cutoff_reviews: () => 1,
+  client_cutoffs: () => [{ period_id: 'p1', label: 'Nov 1 to 15, 2026', start: '2026-11-01', end: '2026-11-15', due_at: new Date(Date.now() + 2 * 86400000).toISOString(), responded_at: null, responder: null, note: null, disputed: 0, status: 'waiting' }],
+  client_cutoff_coverage: () => coverage,
+  client_dispute_duty: (b) => { coverage.find((d) => d.log_id === b.p_log_id).disputed = b.p_reason || null; return null; },
+  client_respond_cutoff: () => 'disputed',
 };
 
 // ------------------------------------------------------------------ the mock API
@@ -638,6 +658,16 @@ const payoutPeriod = requests.find((r) => r.method === 'POST' && r.path === '/re
 check('13th month: the payout is due by 24 December', payoutPeriod?.body.pay_date === '2026-12-24' && payoutPeriod?.body.period_start === '2026-01-01');
 
 await page.goto(`${BASE}/payroll/p1`);
+const tio = page.getByLabel('Time in and out');
+await tio.getByText('Disputed by Acme Mart').waitFor();
+check('cutoff: duties from time in and out, with what counts and what payroll decides', /duties logged\s*28/i.test(await tio.innerText()) && /to decide\s*2/i.test(await tio.innerText()) && (await tio.getByText('Away from the post').count()) === 1 && (await tio.getByText('No guard at the gate after 2 PM', { exact: false }).count()) === 1);
+await page.screenshot({ path: `${ROOT}tests/shots/cutoff-review.png`, fullPage: true });
+await tio.getByRole('button', { name: /^Do not count Bea Lim/ }).click();
+await page.waitForTimeout(300);
+check('cutoff: a day taken out goes with its reason (the guard is told)', JSON.stringify(rpcCalls('decide_duty').at(-1)?.body) === JSON.stringify({ p_period_id: 'p1', p_log_id: 'lg1', p_count: false, p_note: 'Typo in the name' }));
+await tio.getByRole('button', { name: /Ask the client to confirm/ }).click();
+await page.waitForTimeout(300);
+check('cutoff: clients are asked to confirm within two days', JSON.stringify(rpcCalls('open_cutoff_reviews').at(-1)?.body) === JSON.stringify({ p_period_id: 'p1', p_days: 2 }));
 await page.getByRole('button', { name: 'Work out pay' }).click();
 const work = page.locator('dialog[open]');
 await work.getByText('Payslips ready').waitFor();
@@ -647,6 +677,14 @@ const sheetDownload = page.waitForEvent('download');
 await work.getByRole('button', { name: 'Download the attendance sheet' }).click();
 const sheetCsv = readFileSync(await (await sheetDownload).path(), 'utf8');
 check('work out pay: the attendance sheet comes from the assignments', sheetCsv.includes('G-002,Bea Lim,PA,Post A · Main Gate,2026-11-01,2026-11-15,13,12,18:00') && sheetCsv.includes('G-001,Dante Cruz,PC,Post C · Lobby,2026-11-01,2026-11-15,13,12,06:00'), sheetCsv.split('\n').slice(0, 3).join(' | '));
+await work.getByRole('button', { name: 'Fill the days from time in and out' }).click();
+await work.getByText('read from the time in and out').waitFor();
+const fillDownload = page.waitForEvent('download');
+await work.getByRole('button', { name: 'Download the attendance sheet' }).click();
+const filledCsv = readFileSync(await (await fillDownload).path(), 'utf8');
+check('work out pay: the days come from the duties that count, per assignment', filledCsv.includes('G-002,Bea Lim,PA,Post A · Main Gate,2026-11-01,2026-11-15,3,12,18:00') && filledCsv.includes('G-001,Dante Cruz,PC,Post C · Lobby,2026-11-01,2026-11-15,0,12,06:00'), filledCsv.split('\n').slice(0, 3).join(' | '));
+check('work out pay: duties at a post with no assignment are pointed out', /G-009: 1 duties at a post they have no assignment for/.test(await work.innerText()));
+await work.getByRole('button', { name: 'Use the schedule instead' }).click();
 const edited = `${RUN}attendance.csv`;
 writeFileSync(edited, 'Employee number,Name,Post code,Post,From,To,Days,Duty hours,Shift start\nG-002,Bea Lim,PA,Post A · Main Gate,2026-11-01,2026-11-15,10,12,18:00\n');
 await work.getByLabel('Upload the filled sheet (CSV)').setInputFiles(edited);
@@ -985,12 +1023,21 @@ await cReq.getByRole('button', { name: 'Send the request' }).click();
 await page.getByText('Request CR-2026-000009 sent to Bannuar.').waitFor();
 const cReqBody = rpcCalls('file_client_request').at(-1)?.body;
 check('client: asks for more guards', cReqBody?.p_site_id === 's1' && cReqBody?.p_kind === 'additional_guards' && cReqBody?.p_guards_needed === 3, JSON.stringify(cReqBody));
+await page.locator('.client-tab', { hasText: 'Cutoffs to confirm (1)' }).click();
+await page.getByText('Confirm or dispute by').waitFor();
+await page.getByRole('button', { name: /^Dispute Dante Cruz/ }).click();
+await page.getByRole('button', { name: 'Send with 1 disputed' }).waitFor();
+check('client cutoff: a duty is disputed with what was wrong', JSON.stringify(rpcCalls('client_dispute_duty').at(-1)?.body) === JSON.stringify({ p_period_id: 'p1', p_log_id: 'lg2', p_reason: 'Typo in the name' }));
+await page.screenshot({ path: `${ROOT}tests/shots/client-cutoff.png` });
+await page.getByRole('button', { name: 'Send with 1 disputed' }).click();
+await page.getByText('Sent. Bannuar looks into each disputed duty.').waitFor();
+check('client cutoff: sent back with its dispute', JSON.stringify(rpcCalls('client_respond_cutoff').at(-1)?.body) === JSON.stringify({ p_period_id: 'p1', p_note: null }));
 const clientReads = requests.slice(beforeClient).filter((r) => r.path.startsWith('/rest/v1/') && !r.path.startsWith('/rest/v1/rpc/'));
 check('client: reads nothing but its own client functions (no tables)', clientReads.length === 0, clientReads.map((r) => r.path).join(', '));
 check('client: no sideways scroll on a tablet', !(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)));
 await page.setViewportSize({ width: 390, height: 844 });
 await page.locator('.client-tab', { hasText: 'Posts and guards' }).click();
-check('client: no sideways scroll on a phone either', !(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)));
+check('client: no sideways scroll on a phone either', !(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)), await page.evaluate(() => [...document.querySelectorAll('body *')].filter((e) => e.getBoundingClientRect().right > document.documentElement.clientWidth + 1 && !e.closest('.client-tabs')).slice(0, 4).map((e) => `${e.tagName}.${e.className} ${Math.round(e.getBoundingClientRect().right)} [${e.textContent.slice(0, 60)}] parent ${e.parentElement.className} ${Math.round(e.parentElement.getBoundingClientRect().width)}`).join(' | ') + ` · client ${Math.round(document.querySelector('.client').getBoundingClientRect().width)} main ${Math.round(document.querySelector('.client-main').getBoundingClientRect().width)}`));
 const manifest = await (await fetch(`${BASE}/manifest.webmanifest`)).json().catch(() => null);
 check('client: it can be added to a tablet\'s home screen (manifest, icons)', manifest?.display === 'standalone' && manifest.icons.some((i) => i.sizes === '512x512') && (await page.locator('link[rel="manifest"]').count()) === 1);
 RPC.my_access = () => access;

@@ -9,6 +9,7 @@ import { safeSearch } from '../lib/refs';
 import { Dialog, Empty, ErrorState, Loading, Search, StatusBadge, useDebounced, useToast } from '../ui/kit';
 import { PayslipView } from './EmployeeDetail';
 import ComputePay from './ComputePay';
+import { CutoffReview } from './cutoffReview';
 
 interface ImportResult { inserted: number; updated: number; errors: { row: number; employee_no?: string; message: string }[]; warnings: { row: number; employee_no?: string; message: string }[] }
 const CHUNK = 500;
@@ -88,6 +89,7 @@ export default function PayrollPeriod() {
         <div className="tile"><span className="label">Gross pay</span><span className="big" style={{ fontSize: 26 }}>{fmtMoney(totals.data?.gross ?? 0)}</span></div>
         <div className="tile night on-night"><span className="label">Net pay</span><span className="big" style={{ fontSize: 26 }}>{fmtMoney(totals.data?.net ?? 0)}</span></div>
       </div>
+      <div style={{ marginBottom: 16 }}><CutoffReview periodId={id} draft={draft} /></div>
       <div className="panel">
         <div className="toolbar"><Search value={text} onChange={setText} label="Search by name or employee number" /></div>
         {slips.isLoading ? <Loading /> : slips.error ? <ErrorState error={errorText(slips.error)} retry={() => slips.refetch()} /> : !slips.data?.rows.length ? (

@@ -4950,3 +4950,396 @@ revoke execute on function public.document_ai_context(text) from public, anon;
 grant execute on function public.document_ai_context(text) to authenticated;
 revoke execute on function public.save_document_check(text, jsonb) from public, anon, authenticated;
 grant execute on function public.save_document_check(text, jsonb) to service_role;
+
+-- -------------------------------------------------------------------------------------
+-- 19. Cutoff review: time in and out become duties; payroll decides the exceptions; clients confirm
+-- -------------------------------------------------------------------------------------
+-- A duty is a time in and the time out that follows it within 18 hours, dated by the time in (Manila).
+-- A clean duty (both logs from the guard's own phone, at the post, no mock location) counts on its own.
+-- Every other duty, and any a client disputes, is an exception payroll decides, and the guard is told
+-- when one is not counted. Logs never pay by themselves: the attendance sheet is filled from the
+-- counted duties and payroll still checks it. Clients confirm their posts' coverage each cutoff within
+-- a set time, or it counts as confirmed; payroll never waits for them (Labor Code Art. 103).
+
+create table if not exists public.duty_decisions (
+  id uuid primary key default gen_random_uuid(),
+  period_id uuid not null references public.payroll_periods (id) on delete cascade,
+  log_id uuid not null references public.attendance_logs (id) on delete cascade,   -- the duty's first log
+  employee_id uuid not null references public.employees (id) on delete cascade,
+  duty_date date not null,
+  client_reason text check (length(client_reason) <= 1000),     -- the client says the duty was not served
+  disputed_by uuid references auth.users (id) on delete set null,
+  disputed_at timestamptz,
+  decision text check (decision in ('count', 'not_count')),
+  decision_note text check (length(decision_note) <= 1000),
+  decided_by uuid references auth.users (id) on delete set null,
+  decided_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (period_id, log_id)
+);
+create index if not exists duty_decisions_employee_idx on public.duty_decisions (employee_id, duty_date);
+
+create table if not exists public.cutoff_client_reviews (
+  id uuid primary key default gen_random_uuid(),
+  period_id uuid not null references public.payroll_periods (id) on delete cascade,
+  client_id uuid not null references public.clients (id) on delete cascade,
+  opened_by uuid references auth.users (id) on delete set null,
+  opened_at timestamptz not null default now(),
+  due_at timestamptz not null,
+  response text check (response in ('confirmed', 'disputed')),
+  responded_by uuid references auth.users (id) on delete set null,
+  responder_name text,
+  responded_at timestamptz,
+  note text check (length(note) <= 1000),
+  unique (period_id, client_id)
+);
+
+-- Every duty logged between two dates (internal: the functions below check who is asking)
+create or replace function public.period_duties(p_start date, p_end date)
+returns table (log_id uuid, employee_id uuid, site_id uuid, duty_date date, time_in timestamptz, time_out timestamptz,
+               hours numeric, flags text[], clean boolean)
+language sql stable security definer set search_path = '' as $$
+  with logs as (
+    select a.id, a.employee_id, a.site_id, a.kind, a.logged_at, a.location_check, coalesce(a.mock_location, false) as mock, a.source,
+           lag(a.kind) over w as prev_kind, lag(a.logged_at) over w as prev_at,
+           lead(a.kind) over w as next_kind, lead(a.logged_at) over w as next_at,
+           lead(a.location_check) over w as next_check, coalesce(lead(a.mock_location) over w, false) as next_mock,
+           lead(a.source) over w as next_source
+    from public.attendance_logs a
+    where a.logged_at >= (p_start::timestamp at time zone 'Asia/Manila') - interval '1 day'
+      and a.logged_at < ((p_end + 1)::timestamp at time zone 'Asia/Manila') + interval '1 day'
+    window w as (partition by a.employee_id order by a.logged_at)
+  ), duties as (
+    -- a time in, and the time out that follows it within 18 hours
+    select l.id, l.employee_id, l.site_id, l.logged_at as t_in,
+           case when l.next_kind = 'time_out' and l.next_at <= l.logged_at + interval '18 hours' then l.next_at end as t_out,
+           array[l.location_check,
+                 case when l.next_kind = 'time_out' and l.next_at <= l.logged_at + interval '18 hours' then l.next_check end] as checks,
+           l.mock or (l.next_kind = 'time_out' and l.next_at <= l.logged_at + interval '18 hours' and l.next_mock) as mock,
+           array[l.source, case when l.next_kind = 'time_out' and l.next_at <= l.logged_at + interval '18 hours' then l.next_source end] as sources,
+           (l.logged_at at time zone 'Asia/Manila')::date as day
+    from logs l where l.kind = 'time_in'
+    union all
+    -- a time out with no time in before it
+    select l.id, l.employee_id, l.site_id, null, l.logged_at, array[l.location_check], l.mock, array[l.source],
+           (l.logged_at at time zone 'Asia/Manila')::date
+    from logs l
+    where l.kind = 'time_out' and not (l.prev_kind is not distinct from 'time_in' and l.prev_at >= l.logged_at - interval '18 hours')
+  )
+  select d.id, d.employee_id, d.site_id, d.day, d.t_in, d.t_out,
+         case when d.t_in is not null and d.t_out is not null then round((extract(epoch from d.t_out - d.t_in) / 3600)::numeric, 2) end,
+         f.flags, coalesce(cardinality(f.flags), 0) = 0
+  from duties d,
+  lateral (select array(select distinct x from unnest(
+      array_cat(
+        array(select c from unnest(d.checks) c where c is not null and c <> 'at_post'),
+        array[case when d.mock then 'mock' end, case when d.t_in is null then 'no_time_in' end,
+              case when d.t_out is null then 'no_time_out' end,
+              case when 'commander' = any (d.sources) then 'commander' end,
+              case when 'manual' = any (d.sources) then 'by_hand' end])) x
+      where x is not null order by x) as flags) f
+  where d.day between p_start and p_end
+$$;
+
+-- The duties a cutoff counts: clean ones payroll did not take out, and exceptions payroll counted
+create or replace function public.cutoff_counted_duties(p_period_id uuid)
+returns table (employee_id uuid, employee_no text, site_id uuid, dates date[], hours numeric)
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  p public.payroll_periods;
+begin
+  if not (public.is_payroll() or public.is_hr()) then
+    raise exception 'Only payroll and HR see this' using errcode = '42501';
+  end if;
+  select * into p from public.payroll_periods where id = p_period_id;
+  if not found then
+    raise exception 'Cutoff not found' using errcode = 'P0002';
+  end if;
+  return query
+    select d.employee_id, e.employee_no, d.site_id, array_agg(d.duty_date order by d.duty_date), coalesce(sum(d.hours), 0)
+    from public.period_duties(p.period_start, p.period_end) d
+    join public.employees e on e.id = d.employee_id
+    left join public.duty_decisions dd on dd.period_id = p.id and dd.log_id = d.log_id
+    where (d.clean and dd.decision is distinct from 'not_count') or dd.decision = 'count'
+    group by d.employee_id, e.employee_no, d.site_id;
+end $$;
+
+-- How the cutoff's time in and out stands, and the exceptions to decide (payroll and HR)
+create or replace function public.cutoff_review(p_period_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  p public.payroll_periods;
+begin
+  if not (public.is_payroll() or public.is_hr()) then
+    raise exception 'Only payroll and HR see this' using errcode = '42501';
+  end if;
+  select * into p from public.payroll_periods where id = p_period_id;
+  if not found then
+    raise exception 'Cutoff not found' using errcode = 'P0002';
+  end if;
+  return (
+    with d as (
+      select x.*, dd.client_reason, dd.disputed_at, dd.decision, dd.decision_note, dd.decided_at,
+             (select c.name from public.sites s join public.clients c on c.id = s.client_id where s.id = x.site_id) as client_name
+      from public.period_duties(p.period_start, p.period_end) x
+      left join public.duty_decisions dd on dd.period_id = p.id and dd.log_id = x.log_id
+    )
+    select jsonb_build_object(
+      'period', jsonb_build_object('id', p.id, 'label', p.label, 'start', p.period_start, 'end', p.period_end, 'status', p.status,
+                                   'ended', (now() at time zone 'Asia/Manila')::date > p.period_end),
+      'duties', (select count(*) from d),
+      'clean', (select count(*) from d where d.clean),
+      'counted', (select count(*) from d where (d.clean and d.decision is distinct from 'not_count') or d.decision = 'count'),
+      'to_decide', (select count(*) from d where (not d.clean or d.client_reason is not null) and d.decision is null),
+      'disputed', (select count(*) from d where d.client_reason is not null),
+      'exceptions', (select coalesce(jsonb_agg(jsonb_build_object(
+          'log_id', d.log_id, 'employee_id', d.employee_id, 'employee_no', e.employee_no, 'name', public.full_name(e),
+          'post', s.name, 'client', d.client_name, 'date', d.duty_date, 'time_in', d.time_in, 'time_out', d.time_out, 'hours', d.hours,
+          'flags', to_jsonb(d.flags), 'clean', d.clean, 'client_reason', d.client_reason, 'decision', d.decision,
+          'decision_note', d.decision_note, 'decided_at', d.decided_at)
+          order by d.decision is not null, d.duty_date, e.last_name), '[]'::jsonb)
+        from d join public.employees e on e.id = d.employee_id left join public.sites s on s.id = d.site_id
+        where not d.clean or d.client_reason is not null or d.decision is not null),
+      'clients', (select coalesce(jsonb_agg(jsonb_build_object(
+          'client_id', c.id, 'name', c.name, 'due_at', r.due_at, 'responded_at', r.responded_at, 'responder', r.responder_name,
+          'note', r.note,
+          'status', case when r.id is null then 'not_asked' when r.response is not null then r.response
+                         when now() > r.due_at then 'deemed_confirmed' else 'waiting' end) order by c.name), '[]'::jsonb)
+        from public.clients c
+        left join public.cutoff_client_reviews r on r.client_id = c.id and r.period_id = p.id
+        where r.id is not null or exists (select 1 from d join public.sites s on s.id = d.site_id where s.client_id = c.id))
+    ));
+end $$;
+
+-- Payroll's decision on one exception. Taking a day out, or keeping one a client disputed, needs a
+-- note; the guard is told when a day is not counted, and can answer HR before the cutoff is published.
+create or replace function public.decide_duty(p_period_id uuid, p_log_id uuid, p_count boolean, p_note text) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  p public.payroll_periods;
+  d record;
+  dd public.duty_decisions;
+begin
+  if not public.is_payroll() then
+    raise exception 'Only payroll decides what counts' using errcode = '42501';
+  end if;
+  select * into p from public.payroll_periods where id = p_period_id;
+  if not found then
+    raise exception 'Cutoff not found' using errcode = 'P0002';
+  end if;
+  if p.status <> 'draft' then
+    raise exception 'This cutoff is published. Unpublish it to change what counts.' using errcode = 'P0001';
+  end if;
+  select * into d from public.period_duties(p.period_start, p.period_end) x where x.log_id = p_log_id;
+  if not found then
+    raise exception 'That duty is not in this cutoff' using errcode = 'P0002';
+  end if;
+  select * into dd from public.duty_decisions where period_id = p.id and log_id = p_log_id;
+  if (not p_count or dd.client_reason is not null) and length(trim(coalesce(p_note, ''))) < 5 then
+    raise exception 'Say why (the guard and the client may ask)' using errcode = '22023';
+  end if;
+  insert into public.duty_decisions (period_id, log_id, employee_id, duty_date, decision, decision_note, decided_by, decided_at)
+  values (p.id, p_log_id, d.employee_id, d.duty_date, case when p_count then 'count' else 'not_count' end,
+          nullif(trim(coalesce(p_note, '')), ''), auth.uid(), now())
+  on conflict (period_id, log_id) do update
+    set decision = excluded.decision, decision_note = excluded.decision_note, decided_by = excluded.decided_by, decided_at = excluded.decided_at;
+  if not p_count and dd.decision is distinct from 'not_count' then
+    perform public.notify_employee(d.employee_id, 'A duty was not counted for pay',
+      to_char(d.duty_date, 'FMMon FMDD') || ': ' || left(trim(p_note), 120) || '. Talk to HR if this is wrong.',
+      'attendance', jsonb_build_object('screen', 'Attendance'));
+  end if;
+end $$;
+
+-- Payroll or operations asks every client with logged duties in the cutoff to confirm, within p_days
+create or replace function public.open_cutoff_reviews(p_period_id uuid, p_days integer default 2) returns integer
+language plpgsql security definer set search_path = '' as $$
+declare
+  p public.payroll_periods;
+  n integer;
+begin
+  if not (public.is_payroll() or public.is_ops()) then
+    raise exception 'Only payroll or operations asks clients' using errcode = '42501';
+  end if;
+  select * into p from public.payroll_periods where id = p_period_id;
+  if not found then
+    raise exception 'Cutoff not found' using errcode = 'P0002';
+  end if;
+  if (now() at time zone 'Asia/Manila')::date <= p.period_end then
+    raise exception 'Ask clients once the cutoff has ended' using errcode = 'P0001';
+  end if;
+  if p_days is null or p_days not between 1 and 7 then
+    raise exception 'Give clients 1 to 7 days' using errcode = '22023';
+  end if;
+  insert into public.cutoff_client_reviews (period_id, client_id, opened_by, due_at)
+  select distinct p.id, s.client_id, auth.uid(), now() + make_interval(days => p_days)
+  from public.period_duties(p.period_start, p.period_end) d
+  join public.sites s on s.id = d.site_id
+  join public.clients c on c.id = s.client_id and c.status = 'active'
+  on conflict (period_id, client_id) do nothing;
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- The client's cutoffs to confirm, with where each stands
+create or replace function public.client_cutoffs() returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_client uuid := public.my_client_id();
+begin
+  if v_client is null then
+    raise exception 'Only client users see this' using errcode = '42501';
+  end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object(
+      'period_id', p.id, 'label', p.label, 'start', p.period_start, 'end', p.period_end, 'due_at', r.due_at,
+      'responded_at', r.responded_at, 'responder', r.responder_name, 'note', r.note,
+      'disputed', (select count(*) from public.duty_decisions dd join public.attendance_logs a on a.id = dd.log_id
+                   join public.sites s on s.id = a.site_id where dd.period_id = p.id and s.client_id = v_client and dd.client_reason is not null),
+      'status', case when r.response is not null then r.response when now() > r.due_at then 'deemed_confirmed' else 'waiting' end)
+      order by p.period_start desc), '[]'::jsonb)
+    from public.cutoff_client_reviews r join public.payroll_periods p on p.id = r.period_id
+    where r.client_id = v_client);
+end $$;
+
+-- Each duty at the client's posts in a cutoff they were asked to confirm: who, when, how long, and
+-- whether the phone was at the post. No photos, locations or pay.
+create or replace function public.client_cutoff_coverage(p_period_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_client uuid := public.my_client_id();
+  p public.payroll_periods;
+begin
+  if v_client is null then
+    raise exception 'Only client users see this' using errcode = '42501';
+  end if;
+  select pp.* into p from public.payroll_periods pp
+  join public.cutoff_client_reviews r on r.period_id = pp.id and r.client_id = v_client
+  where pp.id = p_period_id;
+  if not found then
+    raise exception 'Cutoff not found' using errcode = 'P0002';
+  end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object(
+      'log_id', d.log_id, 'post', s.name, 'guard', public.client_guard_name(e), 'date', d.duty_date,
+      'time_in', d.time_in, 'time_out', d.time_out, 'hours', d.hours,
+      'at_post', not (d.flags && array['away', 'unsure', 'no_location']),
+      'complete', d.time_in is not null and d.time_out is not null,
+      'disputed', dd.client_reason) order by s.name, d.duty_date, e.last_name), '[]'::jsonb)
+    from public.period_duties(p.period_start, p.period_end) d
+    join public.sites s on s.id = d.site_id and s.client_id = v_client
+    join public.employees e on e.id = d.employee_id
+    left join public.duty_decisions dd on dd.period_id = p.id and dd.log_id = d.log_id);
+end $$;
+
+-- The client says a duty was not served (or, with no reason, takes that back), until they respond or
+-- the time runs out
+create or replace function public.client_dispute_duty(p_period_id uuid, p_log_id uuid, p_reason text) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_client uuid := public.my_client_id();
+  r public.cutoff_client_reviews;
+  p public.payroll_periods;
+  d record;
+begin
+  if v_client is null then
+    raise exception 'Only client users dispute duties' using errcode = '42501';
+  end if;
+  select * into r from public.cutoff_client_reviews where period_id = p_period_id and client_id = v_client;
+  if not found then
+    raise exception 'Cutoff not found' using errcode = 'P0002';
+  end if;
+  if r.response is not null or now() > r.due_at then
+    raise exception 'This cutoff is already confirmed' using errcode = 'P0001';
+  end if;
+  select * into p from public.payroll_periods where id = p_period_id;
+  select x.* into d from public.period_duties(p.period_start, p.period_end) x
+  join public.sites s on s.id = x.site_id and s.client_id = v_client where x.log_id = p_log_id;
+  if not found then
+    raise exception 'That duty is not at your posts in this cutoff' using errcode = 'P0002';
+  end if;
+  if p_reason is null or trim(p_reason) = '' then
+    update public.duty_decisions set client_reason = null, disputed_by = null, disputed_at = null
+    where period_id = p.id and log_id = p_log_id;
+    return;
+  end if;
+  if length(trim(p_reason)) < 5 then
+    raise exception 'Say what was wrong with this duty' using errcode = '22023';
+  end if;
+  insert into public.duty_decisions (period_id, log_id, employee_id, duty_date, client_reason, disputed_by, disputed_at)
+  values (p.id, p_log_id, d.employee_id, d.duty_date, left(trim(p_reason), 1000), auth.uid(), now())
+  on conflict (period_id, log_id) do update
+    set client_reason = excluded.client_reason, disputed_by = excluded.disputed_by, disputed_at = excluded.disputed_at;
+end $$;
+
+-- The client confirms the cutoff, or sends it back with the duties they disputed
+create or replace function public.client_respond_cutoff(p_period_id uuid, p_note text) returns text
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_client uuid := public.my_client_id();
+  r public.cutoff_client_reviews;
+  v_disputed integer;
+  v_name text;
+begin
+  if v_client is null then
+    raise exception 'Only client users confirm cutoffs' using errcode = '42501';
+  end if;
+  select * into r from public.cutoff_client_reviews where period_id = p_period_id and client_id = v_client for update;
+  if not found then
+    raise exception 'Cutoff not found' using errcode = 'P0002';
+  end if;
+  if r.response is not null or now() > r.due_at then
+    raise exception 'This cutoff is already confirmed' using errcode = 'P0001';
+  end if;
+  select count(*) into v_disputed from public.duty_decisions dd join public.attendance_logs a on a.id = dd.log_id
+  join public.sites s on s.id = a.site_id where dd.period_id = p_period_id and s.client_id = v_client and dd.client_reason is not null;
+  select cu.full_name into v_name from public.client_users cu where cu.user_id = auth.uid();
+  update public.cutoff_client_reviews
+  set response = case when v_disputed > 0 then 'disputed' else 'confirmed' end, responded_by = auth.uid(), responder_name = v_name,
+      responded_at = now(), note = nullif(left(trim(coalesce(p_note, '')), 1000), '')
+  where id = r.id;
+  if v_disputed > 0 then
+    perform public.notify_roles(array['super_admin', 'hr_admin', 'payroll', 'operations']::public.app_role[], 'A client disputed duties',
+      (select c.name from public.clients c where c.id = v_client) || ' · ' || v_disputed || ' in ' ||
+      (select p.label from public.payroll_periods p where p.id = p_period_id), 'cutoff_review',
+      jsonb_build_object('screen', 'Payroll', 'id', p_period_id));
+  end if;
+  return case when v_disputed > 0 then 'disputed' else 'confirmed' end;
+end $$;
+
+do $$
+begin
+  drop trigger if exists set_updated_at on public.duty_decisions;
+  create trigger set_updated_at before update on public.duty_decisions for each row execute function public.set_updated_at();
+  drop trigger if exists audit on public.duty_decisions;
+  create trigger audit after insert or update or delete on public.duty_decisions for each row execute function public.audit_row_change();
+  drop trigger if exists audit on public.cutoff_client_reviews;
+  create trigger audit after insert or update or delete on public.cutoff_client_reviews for each row execute function public.audit_row_change();
+end $$;
+
+do $$
+declare
+  r record;
+begin
+  for r in select policyname, tablename from pg_policies where schemaname = 'public' and tablename in ('duty_decisions', 'cutoff_client_reviews') loop
+    execute format('drop policy if exists %I on public.%I', r.policyname, r.tablename);
+  end loop;
+end $$;
+alter table public.duty_decisions enable row level security;
+alter table public.cutoff_client_reviews enable row level security;
+create policy "payroll and HR read duty decisions" on public.duty_decisions for select to authenticated
+  using ((select public.is_payroll()) or (select public.is_hr()));
+create policy "staff read cutoff reviews" on public.cutoff_client_reviews for select to authenticated using ((select public.is_staff()));
+revoke all on public.duty_decisions, public.cutoff_client_reviews from public, anon, authenticated;
+grant select on public.duty_decisions, public.cutoff_client_reviews to authenticated;
+grant select, insert, update, delete on public.duty_decisions, public.cutoff_client_reviews to service_role;
+
+revoke execute on function public.period_duties(date, date) from public, anon, authenticated;
+revoke execute on function
+  public.cutoff_counted_duties(uuid), public.cutoff_review(uuid), public.decide_duty(uuid, uuid, boolean, text),
+  public.open_cutoff_reviews(uuid, integer), public.client_cutoffs(), public.client_cutoff_coverage(uuid),
+  public.client_dispute_duty(uuid, uuid, text), public.client_respond_cutoff(uuid, text)
+from public, anon;
+grant execute on function
+  public.cutoff_counted_duties(uuid), public.cutoff_review(uuid), public.decide_duty(uuid, uuid, boolean, text),
+  public.open_cutoff_reviews(uuid, integer), public.client_cutoffs(), public.client_cutoff_coverage(uuid),
+  public.client_dispute_duty(uuid, uuid, text), public.client_respond_cutoff(uuid, text)
+to authenticated;

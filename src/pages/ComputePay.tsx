@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { supabase } from '../lib/supabase';
 import { useQuery } from '@tanstack/react-query';
 import { errorText, fmtMoney } from '../lib/format';
 import { computePay, readSheet, roundTo, scheduleSheet, SHEET_COLUMNS, toCsv, toPayrollRow, type AttendanceRow, type Person } from '../lib/pay';
@@ -45,6 +46,34 @@ export default function ComputePay({ period, onSaved, onClose }: { period: { id:
       setBusy('');
     }
   };
+  /** Days from the cutoff's counted duties (clean ones, and the exceptions payroll counted), per assignment row. */
+  const fillFromLogs = async () => {
+    setError('');
+    setSaved(null);
+    setBusy('Reading the time in and out…');
+    try {
+      const { data: counted, error: err } = await supabase.rpc('cutoff_counted_duties', { p_period_id: period.id });
+      if (err) throw err;
+      const list = (counted ?? []) as { employee_no: string; site_id: string; dates: string[] }[];
+      const used = new Set<string>();
+      const rows = schedule.map((r) => {
+        const mine = list.find((c) => c.employee_no.toUpperCase() === r.employee_no.toUpperCase() && c.site_id === r.site_id);
+        if (mine) used.add(`${mine.employee_no}|${mine.site_id}`);
+        return { ...r, days: (mine?.dates ?? []).filter((d) => d >= r.from && d <= r.to).length };
+      });
+      const unplaced = list.filter((c) => !used.has(`${c.employee_no}|${c.site_id}`));
+      setSheet({
+        rows,
+        errors: unplaced.map((c, i) => ({ row: i + 1, message: `${c.employee_no}: ${c.dates.length} duties at a post they have no assignment for in this cutoff. Add the assignment, then fill again.` })),
+        extra: [],
+        name: 'the time in and out',
+      });
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy('');
+    }
+  };
   const save = async () => {
     if (!confirm(`Save ${ready.length} payslips into ${period.label}? A payslip already in this cutoff for the same employee is replaced.`)) return;
     setError('');
@@ -68,12 +97,14 @@ export default function ComputePay({ period, onSaved, onClose }: { period: { id:
 
       <h3 style={{ margin: 0 }}>1. Attendance</h3>
       {sheet ? (
-        <p><b>{sheet.rows.length}</b> {sheet.rows.length === 1 ? 'row' : 'rows'} read from <span className="code">{sheet.name}</span>. <button className="link-btn" type="button" onClick={() => setSheet(null)}>Use the schedule instead</button></p>
+        <p><b>{sheet.rows.length}</b> {sheet.rows.length === 1 ? 'row' : 'rows'} read from <span className="code">{sheet.name}</span>. <button className="link-btn" type="button" onClick={() => setSheet(null)}>Use the schedule instead</button>
+          {sheet.name === 'the time in and out' && <span className="muted small"> Counted: clean duties and the exceptions you counted on the cutoff page. Exceptions not decided yet are left out. Change any day by downloading, editing and uploading the sheet.</span>}</p>
       ) : (
         <p><b>{schedule.length}</b> assignments at <b>{postCount}</b> posts in this cutoff, each with its rule's duty days. Change the days to the days actually worked: download the sheet, edit it, and upload it here.</p>
       )}
       <div className="row">
-        <button className="btn btn-line btn-sm" type="button" disabled={!schedule.length} onClick={() => downloadFile(`attendance ${range.start} to ${range.end}.csv`, toCsv(schedule.map((r) => ({ ...r })), SHEET_COLUMNS))}>Download the attendance sheet</button>
+        <button className="btn btn-sm" type="button" disabled={!schedule.length || Boolean(busy)} onClick={fillFromLogs}>Fill the days from time in and out</button>
+        <button className="btn btn-line btn-sm" type="button" disabled={!(sheet?.rows ?? schedule).length} onClick={() => downloadFile(`attendance ${range.start} to ${range.end}.csv`, toCsv((sheet?.rows ?? schedule).map((r) => ({ ...r })), SHEET_COLUMNS))}>Download the attendance sheet</button>
       </div>
       <div className="field" style={{ maxWidth: 440 }}>
         <label htmlFor="attendance-file">Upload the filled sheet (CSV)</label>

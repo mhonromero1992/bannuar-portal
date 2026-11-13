@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { errorText, fmtDate, fmtDateTime, todayManila } from '../lib/format';
-import { CLIENT_REPORT_STATUS, CLIENT_REQUEST_KIND, CLIENT_REQUEST_STATUS, options } from '../lib/labels';
+import { CLIENT_REPORT_STATUS, CLIENT_REQUEST_KIND, CLIENT_REQUEST_STATUS, CUTOFF_CLIENT_STATUS, options } from '../lib/labels';
 import { manilaIso } from '../lib/discipline';
 import { Badge, Dialog, Empty, ErrorState, Loading, SelectField, StatusBadge, TextArea, TextField, useToast } from '../ui/kit';
 
@@ -15,7 +15,7 @@ import { Badge, Dialog, Empty, ErrorState, Loading, SelectField, StatusBadge, Te
  * (schema.sql section 17); no pay, addresses, government numbers, photos, locations or discipline
  * records reach a client.
  */
-type View = 'posts' | 'attendance' | 'reports' | 'requests';
+type View = 'posts' | 'attendance' | 'cutoffs' | 'reports' | 'requests';
 type Guard = { id: string; name: string; position: string; on_duty_since: string | null };
 type Post = { id: string; name: string; city: string | null; guards_required: number; guards: Guard[] };
 type Overview = { client: { id: string; name: string }; posts: Post[] };
@@ -35,9 +35,12 @@ function useOverview() {
 export default function ClientApp() {
   const { access, signOut } = useAuth();
   const [params, setParams] = useSearchParams();
+  const cutoffs = useQuery({ queryKey: ['client-cutoffs'], queryFn: () => rpc<Cutoff[]>('client_cutoffs') });
+  const waiting = (cutoffs.data ?? []).filter((c) => c.status === 'waiting').length;
   const views: { id: View; label: string }[] = [
     { id: 'posts', label: 'Posts and guards' },
     { id: 'attendance', label: 'Attendance' },
+    { id: 'cutoffs', label: waiting ? `Cutoffs to confirm (${waiting})` : 'Cutoffs' },
     { id: 'reports', label: 'Incident reports' },
     { id: 'requests', label: 'Requests' },
   ];
@@ -63,6 +66,7 @@ export default function ClientApp() {
       <main className="client-main" id="content">
         {view === 'posts' && <PostsView />}
         {view === 'attendance' && <AttendanceView />}
+        {view === 'cutoffs' && <CutoffsView />}
         {view === 'reports' && <ReportsView />}
         {view === 'requests' && <RequestsView />}
       </main>
@@ -285,5 +289,105 @@ function RequestForm({ onDone }: { onDone: () => void }) {
       <TextArea label="Details" rows={5} hint="Hours, days, and anything the guards should know" value={v.details} onChange={(e) => setV({ ...v, details: e.target.value })} />
       <div className="form-foot"><button className="btn btn-lg" type="submit" aria-busy={busy}>Send the request</button></div>
     </form>
+  );
+}
+
+type Cutoff = { period_id: string; label: string; start: string; end: string; due_at: string; responded_at: string | null; responder: string | null; note: string | null; disputed: number; status: string };
+type Duty = { log_id: string; post: string; guard: string; date: string; time_in: string | null; time_out: string | null; hours: number | null; at_post: boolean; complete: boolean; disputed: string | null };
+
+/**
+ * Each cutoff, the client confirms the guards' coverage at its posts, or disputes duties it says were
+ * not served. Bannuar's payroll decides each dispute after hearing the guard; pay is never held up,
+ * and a cutoff not answered in time counts as confirmed.
+ */
+function CutoffsView() {
+  const [open, setOpen] = useState<string | null>(null);
+  const q = useQuery({ queryKey: ['client-cutoffs'], queryFn: () => rpc<Cutoff[]>('client_cutoffs') });
+  if (q.isLoading) return <Loading />;
+  if (q.error) return <ErrorState error={errorText(q.error)} retry={() => q.refetch()} />;
+  const list = q.data ?? [];
+  const shown = list.find((c) => c.period_id === open) ?? list.find((c) => c.status === 'waiting') ?? null;
+  return (
+    <div className="stack">
+      <p className="muted small">After each cutoff, check that the guards served the duties shown. Dispute any duty that was not served; confirm the rest. If you do not answer by the time shown, the cutoff counts as confirmed.</p>
+      {!list.length ? <Empty title="Nothing to confirm yet">Bannuar asks you here after each cutoff.</Empty> : (
+        <div className="row">
+          {list.map((c) => (
+            <button key={c.period_id} type="button" className={`client-tab${shown?.period_id === c.period_id ? ' on' : ''}`} onClick={() => setOpen(c.period_id)}>
+              {c.label} · {CUTOFF_CLIENT_STATUS[c.status]?.[0] ?? c.status}
+            </button>
+          ))}
+        </div>
+      )}
+      {shown && <CutoffDetail key={shown.period_id} c={shown} />}
+    </div>
+  );
+}
+
+function CutoffDetail({ c }: { c: Cutoff }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const q = useQuery({ queryKey: ['client-coverage', c.period_id], queryFn: () => rpc<Duty[]>('client_cutoff_coverage', { p_period_id: c.period_id }) });
+  const open = c.status === 'waiting';
+  const duties = q.data ?? [];
+  const disputed = duties.filter((d) => d.disputed).length;
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['client-coverage', c.period_id] });
+    qc.invalidateQueries({ queryKey: ['client-cutoffs'] });
+  };
+  const dispute = async (d: Duty, take: boolean) => {
+    const reason = take ? '' : prompt(`What was wrong with ${d.guard}'s duty on ${fmtDate(d.date)}?`);
+    if (reason === null) return;
+    try {
+      await rpc('client_dispute_duty', { p_period_id: c.period_id, p_log_id: d.log_id, p_reason: reason });
+      refresh();
+    } catch (e) {
+      toast(errorText(e), 'error');
+    }
+  };
+  const respond = async () => {
+    if (!confirm(disputed ? `Send ${c.label} back with ${disputed} disputed ${disputed === 1 ? 'duty' : 'duties'}?` : `Confirm the guards' duties in ${c.label}?`)) return;
+    setBusy(true);
+    try {
+      const r = await rpc<string>('client_respond_cutoff', { p_period_id: c.period_id, p_note: null });
+      toast(r === 'disputed' ? 'Sent. Bannuar looks into each disputed duty.' : 'Confirmed. Thank you.');
+      refresh();
+    } catch (e) {
+      toast(errorText(e), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const posts = [...new Set(duties.map((d) => d.post))];
+  return (
+    <section className="panel" aria-label={c.label}>
+      <div className="panel-head">
+        <div><b>{c.label}</b> <StatusBadge map={CUTOFF_CLIENT_STATUS} value={c.status} />
+          <div className="muted small">{open ? `Confirm or dispute by ${fmtDateTime(c.due_at)}.` : c.responded_at ? `Answered by ${c.responder ?? 'your team'} ${fmtDateTime(c.responded_at)}.` : `Not answered by ${fmtDateTime(c.due_at)}, so it counts as confirmed.`}</div>
+        </div>
+        {open && <button className="btn btn-lg" type="button" aria-busy={busy} disabled={q.isLoading} onClick={respond}>{disputed ? `Send with ${disputed} disputed` : 'Confirm the cutoff'}</button>}
+      </div>
+      {q.isLoading ? <Loading /> : q.error ? <ErrorState error={errorText(q.error)} retry={() => q.refetch()} /> : !duties.length ? <Empty title="No duties logged at your posts" /> : posts.map((post) => (
+        <div key={post} className="table-wrap">
+          <table className="table">
+            <caption className="section-title" style={{ textAlign: 'left', padding: '12px 16px' }}>{post}</caption>
+            <thead><tr><th>Day</th><th>Guard</th><th>Time</th><th>Check</th><th /></tr></thead>
+            <tbody>{duties.filter((d) => d.post === post).map((d) => (
+              <tr key={d.log_id}>
+                <td className="tabular">{fmtDate(d.date)}</td>
+                <td><b>{d.guard}</b></td>
+                <td className="tabular">{d.time_in ? time(d.time_in) : '—'} to {d.time_out ? time(d.time_out) : '—'}{d.hours ? <span className="cell-sub">{d.hours} hours</span> : null}</td>
+                <td><span className="row">{d.at_post ? <Badge tone="ok">At the post</Badge> : <Badge tone="warn">Not confirmed at the post</Badge>}{!d.complete && <Badge tone="warn">Incomplete</Badge>}</span>
+                  {d.disputed && <span className="cell-sub">You disputed: “{d.disputed}”</span>}</td>
+                <td>{open && (d.disputed
+                  ? <button className="btn btn-ghost btn-sm" type="button" onClick={() => dispute(d, true)}>Take back</button>
+                  : <button className="btn btn-line btn-sm" type="button" aria-label={`Dispute ${d.guard} on ${fmtDate(d.date)}`} onClick={() => dispute(d, false)}>Dispute</button>)}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      ))}
+    </section>
   );
 }

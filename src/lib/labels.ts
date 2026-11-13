@@ -79,6 +79,17 @@ export const ROLE_HINT: Record<string, string> = {
   supervisor: 'Detachment commanders and inspectors (in the app)',
 };
 
+// Cutoff review (schema.sql section 19): why a duty needs payroll's decision
+export const DUTY_FLAG: Map = {
+  away: ['Away from the post', 'bad'], unsure: ['GPS too rough', 'warn'], no_location: ['No location', 'warn'], post_not_set: ['Post location not set', 'neutral'],
+  no_post: ['No post', 'neutral'], mock: ['Mock location app', 'bad'], no_time_in: ['No time in', 'warn'], no_time_out: ['No time out', 'warn'],
+  commander: ['By the commander', 'info'], by_hand: ['By hand', 'warn'],
+};
+export const CUTOFF_CLIENT_STATUS: Map = {
+  not_asked: ['Not asked yet', 'neutral'], waiting: ['Waiting', 'warn'], confirmed: ['Confirmed', 'ok'], disputed: ['Disputed', 'bad'],
+  deemed_confirmed: ['Confirmed (no answer in time)', 'ok'],
+};
+
 // Client portal (schema.sql section 17)
 export const CLIENT_REQUEST_KIND: Record<string, string> = {
   additional_guards: 'More guards', replace_guard: 'Replace a guard', schedule_change: 'Change of schedule', other: 'Something else',
