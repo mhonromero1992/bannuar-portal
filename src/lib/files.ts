@@ -25,7 +25,7 @@ export const STORAGE_FOLDER: Record<string, string> = {
   lesp: 'LESP',
 };
 
-export async function post(fn: 'files' | 'payslip-pdf' | 'discipline-ai', body: FormData | string): Promise<Response> {
+export async function post(fn: 'files' | 'payslip-pdf' | 'discipline-ai' | 'document-ai', body: FormData | string): Promise<Response> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   if (!token) throw new Error('Your sign-in has expired. Sign in again.');

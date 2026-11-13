@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
-import { downloadPayslipPdf, openStoredFile, uploadFile } from '../lib/files';
+import { downloadPayslipPdf, openStoredFile, uploadFile, isS3Key } from '../lib/files';
 import { useAuth } from '../lib/auth';
 import { daysBetween, errorText, fmtDate, fmtDateTime, fmtMoney, fullName, todayManila, dateRange } from '../lib/format';
 import { COE_PURPOSE, DOC_STATUS, EMPLOYEE_STATUS, EMPLOYMENT_TYPE, LEAVE_STATUS, label } from '../lib/labels';
@@ -13,6 +13,7 @@ import { AssignmentHistory, ShiftPicker, defaultShift } from './Pay';
 import { EmployeeForm, type EmployeeRow } from './EmployeeForm';
 import { IssueCoeForm, downloadCertificate } from './coeShared';
 import { AttendanceTable, selfieLinks } from './attendanceShared';
+import { DocCheckLine, AskClaude, useDocChecks } from './documentCheck';
 import { ATTENDANCE_SELECT, type AttendanceLog } from '../lib/attendance';
 
 type Tab = 'profile' | 'deployment' | 'attendance' | 'ids' | 'pay' | 'documents' | 'leave' | 'payslips' | 'certificates' | 'account';
@@ -155,7 +156,7 @@ function Documents({ employeeId }: { employeeId: string }) {
   const q = useQuery({
     queryKey: ['documents', employeeId],
     queryFn: async () => {
-      const { data, error } = await supabase.from('employee_documents').select('*, type:document_types(name,has_expiry)').eq('employee_id', employeeId).order('created_at', { ascending: false });
+      const { data, error } = await supabase.from('employee_documents').select('*, type:document_types(name,has_expiry,ai_check)').eq('employee_id', employeeId).order('created_at', { ascending: false });
       if (error) throw error;
       return data;
     },
@@ -169,6 +170,7 @@ function Documents({ employeeId }: { employeeId: string }) {
     toast(status === 'verified' ? 'Verified.' : 'Rejected.');
   };
   const today = todayManila();
+  const checks = useDocChecks((q.data ?? []).map((d) => d.file_path as string).filter(Boolean));
   return (
     <div className="panel">
       <div className="panel-head"><h2>Licenses and documents</h2>{can.hr && <button className="btn btn-sm" type="button" onClick={() => setAdding(true)}>Add a document</button>}</div>
@@ -183,7 +185,11 @@ function Documents({ employeeId }: { employeeId: string }) {
                 const expired = d.expires_on && d.expires_on < today;
                 return (
                   <tr key={d.id}>
-                    <td><b>{(d.type as { name: string }).name}</b>{d.review_note && <span className="cell-sub">{d.review_note}</span>}</td>
+                    <td>
+                      <b>{(d.type as { name: string }).name}</b>{d.review_note && <span className="cell-sub">{d.review_note}</span>}
+                      {d.file_path && checks.data?.[d.file_path] ? <DocCheckLine c={checks.data[d.file_path]} recorded={{ document_no: d.document_no, expires_on: d.expires_on }} />
+                        : can.hr && d.file_path && isS3Key(d.file_path) && (d.type as { ai_check?: boolean }).ai_check ? <span className="cell-sub"><AskClaude fileKey={d.file_path} /></span> : null}
+                    </td>
                     <td className="tabular">{d.document_no}</td>
                     <td className="tabular">{fmtDate(d.issued_on)}</td>
                     <td className="tabular">{fmtDate(d.expires_on)} {expired && <Badge tone="bad">Expired</Badge>}</td>

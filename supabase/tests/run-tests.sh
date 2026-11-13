@@ -699,6 +699,22 @@ r=$(as_user "$CU" "select public.client_overview()"); check_has "a disabled clie
 check "not even the posts" "$(as_user "$CU" "select count(*) from public.sites")" "0"
 check "guards still see posts" "$(as_user "$BEA" "select count(*) > 0 from public.sites")" "t"
 
+echo "== Claude reads documents at upload (document-ai)"
+check "Claude reads the LESP to start with, and nothing else" "$(pg "select string_agg(code, ',') from public.document_types where ai_check")" "SECURITY_LICENSE"
+DL=$(begin "$BEA" "'document', 'image/jpeg', 200000, null, '$LESP_T'"); DLK=$(echo "$DL" | jget key)
+r=$(as_user "$BEA" "select public.document_ai_context('$DLK')"); check_has "not before S3 has the photo" "$r" "File not found"
+stored "$(echo "$DL" | jget id)" 200000
+CTX=$(as_user "$BEA" "select public.document_ai_context('$DLK')")
+check "the function gets what it needs for her own LESP" "$(echo "$CTX" | python3 -c "import json,sys; c=json.load(sys.stdin); print(c['type_code'], c['content_type'], c['first_name'], c['last_name'], c['has_expiry'])")" "SECURITY_LICENSE image/jpeg Bea Lim True"
+r=$(as_user "$CARLO" "select public.document_ai_context('$DLK')"); check_has "never another guard's" "$r" "File not found"
+check "HR may have any LESP read" "$(as_user "$HR" "select public.document_ai_context('$DLK') ->> 'type_code'")" "SECURITY_LICENSE"
+DN=$(begin "$BEA" "'document', 'application/pdf', 300000, null, '$NBI_T'"); stored "$(echo "$DN" | jget id)" 300000
+r=$(as_user "$BEA" "select public.document_ai_context('$(echo "$DN" | jget key)')"); check_has "only types HR turned on" "$r" "does not read this kind"
+r=$(as_user "$BEA" "select public.save_document_check('$DLK', '{\"expiry\":\"valid\"}')"); check_has "only the function saves Claude's check" "$r" "permission denied"
+as_service "select public.save_document_check('$DLK', '{\"expiry\":\"valid\",\"document_no\":\"R01-123\"}')" >/dev/null
+check "HR reads the check with the file" "$(as_user "$HR" "select ai_check ->> 'document_no' from public.stored_files where object_key = '$DLK'")" "R01-123"
+r=$(as_user "$HR" "update public.document_types set ai_check = true where code = 'NBI_CLEARANCE' returning code"); check_has "HR turns it on for another type" "$r" "NBI_CLEARANCE"
+
 echo "== Demo scripts still match the schema (on a second, empty database)"
 D="$(dirname "$0")/.."
 DEMO_DB="${PGDATABASE:-bannuar_test}_demo"

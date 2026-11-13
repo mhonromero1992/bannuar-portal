@@ -91,10 +91,13 @@ const T = {
   clients: [{ id: 'c1', name: 'Acme Mart', industry: 'Retail', contact_person: 'Lorna', contact_phone: '0917 555 0101', contact_email: null, address: null, contract_start: '2026-01-01', contract_end: null, status: 'active', notes: null }],
   employees: Object.values(E),
   document_types: [
-    { id: 'dt1', code: 'SECURITY_LICENSE', name: 'Security guard license (LESP)', category: 'license', has_expiry: true, required_for_deployment: true, remind_days_before: 60, visible_to_employee: true, employee_can_upload: true, sort_order: 10, is_active: true, storage_folder: 'lesp' },
-    { id: 'dt2', code: 'NBI_CLEARANCE', name: 'NBI clearance', category: 'clearance', has_expiry: true, required_for_deployment: true, remind_days_before: 30, visible_to_employee: true, employee_can_upload: true, sort_order: 20, is_active: true, storage_folder: 'work-requirements' },
+    { id: 'dt1', code: 'SECURITY_LICENSE', name: 'Security guard license (LESP)', category: 'license', has_expiry: true, required_for_deployment: true, remind_days_before: 60, visible_to_employee: true, employee_can_upload: true, sort_order: 10, is_active: true, storage_folder: 'lesp', ai_check: true },
+    { id: 'dt2', code: 'NBI_CLEARANCE', name: 'NBI clearance', category: 'clearance', has_expiry: true, required_for_deployment: true, remind_days_before: 30, visible_to_employee: true, employee_can_upload: true, sort_order: 20, is_active: true, storage_folder: 'work-requirements', ai_check: false },
   ],
-  employee_documents: [{ id: 'd1', employee_id: 'e2', document_type_id: 'dt1', document_no: 'LIC-1', issued_on: '2025-01-01', expires_on: '2026-11-28', file_path: 'e2/uploads/lic.jpg', status: 'pending_review', review_note: null, created_at: now, type: { name: 'Security guard license (LESP)', has_expiry: true } }],
+  employee_documents: [{ id: 'd1', employee_id: 'e2', document_type_id: 'dt1', document_no: 'LIC-1', issued_on: '2025-01-01', expires_on: '2026-11-28', file_path: 'e2/uploads/lic.jpg', status: 'pending_review', review_note: null, created_at: now, type: { name: 'Security guard license (LESP)', has_expiry: true, ai_check: true } },
+    // read by Claude at upload (its check is kept with the file in S3), and one uploaded before the check
+    { id: 'd2', employee_id: 'e2', document_type_id: 'dt1', document_no: 'R01-202611-000123', issued_on: '2025-03-06', expires_on: '2027-03-15', file_path: 'employees/G-002/lesp/2026-11-12_security-license_1a2b3c4d5e.jpg', status: 'verified', review_note: null, created_at: now, type: { name: 'Security guard license (LESP)', has_expiry: true, ai_check: true } },
+    { id: 'd3', employee_id: 'e2', document_type_id: 'dt1', document_no: 'R01-OLD', issued_on: '2023-03-06', expires_on: '2025-03-05', file_path: 'employees/G-002/lesp/2023-03-06_security-license_9f9f9f9f9f.jpg', status: 'verified', review_note: null, created_at: now, type: { name: 'Security guard license (LESP)', has_expiry: true, ai_check: true } }],
   leave_types: [{ id: 'lt1', code: 'SIL', name: 'Service incentive leave', description: 'Five days a year.', days_per_year: 5, max_days_per_request: null, is_paid: true, requires_attachment: false, applies_to_sex: null, min_service_months: 12, is_active: true, sort_order: 10 }],
   leave_balances: [{ employee_id: 'e2', leave_type_id: 'lt1', code: 'SIL', name: 'Service incentive leave', year: 2026, credits: 5, used: 2, pending: 1 }],
   leave_requests: [{ id: 'lr1', employee_id: 'e2', leave_type_id: 'lt1', start_date: '2026-11-20', end_date: '2026-11-21', days: 2, reason: 'Family', status: 'pending_hr', site_id: 's1', created_at: now, employee: empMini(E.e2), type: { name: 'Service incentive leave' }, reliever: null, site: { name: 'Post A · Main Gate' } }],
@@ -123,7 +126,7 @@ const T = {
   ],
   compliance_gaps: [{ employee_id: 'e3', employee_no: 'G-003', first_name: 'Carlo', last_name: 'Diaz', status: 'floating', site_id: null, site_name: null, document_type_id: 'dt2', type_code: 'NBI_CLEARANCE', type_name: 'NBI clearance', last_expiry: null }],
   stored_files: [
-    { id: 'sf1', folder: 'lesp', status: 'stored' }, { id: 'sf2', folder: 'attendance', status: 'stored' },
+    { id: 'sf1', folder: 'lesp', status: 'stored', object_key: 'employees/G-002/lesp/2026-11-12_security-license_1a2b3c4d5e.jpg', ai_check: { status: 'checked', type_ok: true, legibility: 'clear', holder_name: 'LIM, BEA', name_match: 'match', document_no: 'R01-202611-000123', issued_on: '2025-03-06', expires_on: '2027-03-05', expiry: 'valid', issuer: 'PNP SOSIA', concerns: ['Glare over the lower corner'] } }, { id: 'sf2', folder: 'attendance', status: 'stored' },
     { id: 'sf3', folder: 'attendance', status: 'stored' }, { id: 'sf4', folder: 'leave', status: 'pending' },
   ],
 };
@@ -264,6 +267,10 @@ async function api(route) {
     if (body?.action === 'sign') return json(200, { urls: Object.fromEntries(body.keys.map((k) => [k, `${MOCK}/s3-mock/${k}?X-Amz-Expires=300&download=${body.download ? 1 : 0}`])), expires_in: 300 });
     if (body?.action === 'check') return json(200, { ok: true, bucket: 'bannuar-hr-files', region: 'ap-southeast-1' });
     return json(400, { code: 'invalid_input', message: 'Something is missing from the request. Try again.' });
+  }
+  // the document-ai Edge Function (Claude reads an uploaded document)
+  if (path === '/functions/v1/document-ai') {
+    return json(200, { status: 'checked', type_ok: true, legibility: 'clear', holder_name: 'LIM, BEA', name_match: 'match', document_no: 'R01-OLD', issued_on: '2023-03-06', expires_on: '2025-03-05', expiry: 'expired', issuer: 'PNP SOSIA', concerns: [] });
   }
   // the discipline-ai Edge Function (Claude): the key is the function's; the portal sends only ids
   if (path === '/functions/v1/discipline-ai') {
@@ -441,6 +448,12 @@ const docIns = requests.filter((r) => r.method === 'POST' && r.path === '/rest/v
 const docRow = Array.isArray(docIns?.body) ? docIns.body[0] : docIns?.body;
 check('documents: the record points at the S3 key', docRow?.file_path === docUp?.key && docRow?.document_type_id === 'dt2', JSON.stringify(docRow));
 check('documents: nothing goes to Supabase Storage any more', !requests.some((r) => r.method === 'POST' && r.path.startsWith('/storage/v1/object/employee-files')));
+const claudeLine = await page.getByLabel('Claude\'s reading').first().innerText();
+check('documents: Claude\'s reading of a LESP shows beside it, with where it differs from what was entered', /valid/.test(claudeLine) && /name matches/.test(claudeLine) && /differs from what was entered/.test(claudeLine) && /Glare/.test(claudeLine), claudeLine.replace(/\s+/g, ' '));
+await page.getByRole('button', { name: 'Have Claude read it' }).click();
+await page.waitForTimeout(400);
+const askDoc = requests.filter((r) => r.path === '/functions/v1/document-ai').at(-1);
+check('documents: HR has Claude read a LESP uploaded before the check (only its key is sent)', JSON.stringify(askDoc?.body) === JSON.stringify({ action: 'check', key: 'employees/G-002/lesp/2023-03-06_security-license_9f9f9f9f9f.jpg' }));
 await page.goto(`${BASE}/employees/e2?tab=certificates`);
 await page.getByRole('button', { name: 'Issue a certificate' }).click();
 await page.getByLabel('Signed by').fill('Hector HR');
@@ -518,6 +531,10 @@ await nbiFolder.waitFor();
 await page.waitForTimeout(500); // let the tab underline finish sliding
 await page.screenshot({ path: `${ROOT}tests/shots/document-types.png` });
 check('document types: each files into its S3 folder', (await page.getByLabel('Security guard license (LESP) folder in S3').inputValue()) === 'lesp' && (await nbiFolder.inputValue()) === 'work-requirements');
+check('document types: Claude reads the LESP, and HR can switch it on for others', await page.getByLabel('Security guard license (LESP) read by Claude at upload').isChecked() && !(await page.getByLabel('NBI clearance read by Claude at upload').isChecked()));
+await page.getByLabel('NBI clearance read by Claude at upload').click();
+await page.waitForTimeout(300);
+check('document types: the switch is saved', requests.filter((r) => r.method === 'PATCH' && r.path === '/rest/v1/document_types').at(-1)?.body?.ai_check === true);
 await nbiFolder.selectOption('201-file');
 await page.waitForTimeout(300);
 const folderPatch = requests.filter((r) => r.method === 'PATCH' && r.path === '/rest/v1/document_types').at(-1);

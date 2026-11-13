@@ -769,6 +769,10 @@ alter table public.stored_files add constraint stored_files_folder_check
   check (folder in ('201-file', 'work-requirements', 'lesp', 'attendance', 'leave', 'certificates', 'code-of-discipline'));
 create index if not exists stored_files_employee_idx on public.stored_files (employee_id, folder, created_at desc);
 create index if not exists stored_files_uploader_idx on public.stored_files (uploaded_by, created_at desc);
+-- What Claude read on an uploaded document (the document-ai function, section 18), for HR's review
+alter table public.stored_files add column if not exists ai_check jsonb, add column if not exists ai_checked_at timestamptz;
+-- Which document types Claude reads at upload (set in section 14: the LESP to start with)
+alter table public.document_types add column if not exists ai_check boolean;
 
 -- Discipline (functions, rules and access in section 16). The Code of Discipline is the basis: HR
 -- uploads it, Claude reads it into offense rules, and HR approves each rule before it is used. Incident
@@ -3785,6 +3789,11 @@ insert into public.document_types (code, name, category, has_expiry, required_fo
   ('EMPLOYMENT_CONTRACT', 'Employment contract', 'contract', false, false, 30, true, false, 130, '201-file'),
   ('BIR_2316', 'BIR Form 2316', 'payroll', false, false, 30, true, false, 140, '201-file')
 on conflict (code) do nothing;
+-- Claude reads the LESP at upload; HR turns it on or off for any type in Settings. Types that existed
+-- before the setting get it once, here.
+update public.document_types set ai_check = (code = 'SECURITY_LICENSE') where ai_check is null;
+alter table public.document_types alter column ai_check set default false;
+alter table public.document_types alter column ai_check set not null;
 
 -- The agency-wide pay rule: Labor Code overtime (125%) and night differential (10%)
 insert into public.pay_rules (id, client_id, name, is_default, regular_hours, night_diff, night_diff_hours, days_per_month, formulas, notes)
@@ -4886,3 +4895,58 @@ grant execute on function
   public.client_overview(), public.client_attendance(date), public.client_reports(),
   public.file_client_request(uuid, text, text, integer, date), public.client_requests_list(), public.update_client_request(uuid, text, text)
 to authenticated;
+
+-- -------------------------------------------------------------------------------------
+-- 18. Claude reads documents at upload (the document-ai Edge Function)
+-- -------------------------------------------------------------------------------------
+-- For document types with ai_check (the LESP to start with), the app sends the photo as soon as it is
+-- chosen and document-ai has Claude read it: the holder's name, the number, the dates, how legible it is.
+-- The function compares the name with the 201 file and the expiry with today itself, so no name from
+-- the 201 file goes to Anthropic. HR still verifies the document; Claude cannot tell a genuine one.
+
+-- What document-ai may read, with the caller's own token: their own upload, or any for HR
+create or replace function public.document_ai_context(p_file_key text) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  f public.stored_files;
+  dt public.document_types;
+  e public.employees;
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in first' using errcode = '42501';
+  end if;
+  select * into f from public.stored_files where object_key = p_file_key and status = 'stored' and purpose = 'document';
+  if not found or not (f.employee_id = public.current_employee_id() or public.is_hr()) then
+    raise exception 'File not found' using errcode = 'P0002';
+  end if;
+  select * into dt from public.document_types where id = f.document_type_id;
+  if not found or not dt.ai_check then
+    raise exception 'Claude does not read this kind of document' using errcode = 'P0001';
+  end if;
+  if not public.is_hr() and (select count(*) from public.stored_files x
+                             where x.uploaded_by = auth.uid() and x.ai_checked_at > now() - interval '1 day') >= 10 then
+    raise exception 'Too many checks today. Send it to HR as it is.' using errcode = 'P0001';
+  end if;
+  select * into e from public.employees where id = f.employee_id;
+  return jsonb_build_object('key', f.object_key, 'content_type', f.content_type, 'size_bytes', f.size_bytes,
+    'type_code', dt.code, 'type_name', dt.name, 'has_expiry', dt.has_expiry,
+    'first_name', e.first_name, 'last_name', e.last_name);
+end $$;
+
+-- The discipline-ai/document-ai functions only (service role): the check, kept with the file
+create or replace function public.save_document_check(p_file_key text, p_check jsonb) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.is_trusted() then
+    raise exception 'Only the document-ai service records this' using errcode = '42501';
+  end if;
+  if jsonb_typeof(p_check) <> 'object' then
+    raise exception 'A check is an object' using errcode = '22023';
+  end if;
+  update public.stored_files set ai_check = p_check, ai_checked_at = now() where object_key = p_file_key;
+end $$;
+
+revoke execute on function public.document_ai_context(text) from public, anon;
+grant execute on function public.document_ai_context(text) to authenticated;
+revoke execute on function public.save_document_check(text, jsonb) from public, anon, authenticated;
+grant execute on function public.save_document_check(text, jsonb) to service_role;

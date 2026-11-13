@@ -35,7 +35,7 @@ export function useDocTypes() {
       return data as {
         id: string; code: string; name: string; category: string; has_expiry: boolean; required_for_deployment: boolean;
         remind_days_before: number; visible_to_employee: boolean; employee_can_upload: boolean; sort_order: number; is_active: boolean;
-        storage_folder: '201-file' | 'work-requirements' | 'lesp';
+        storage_folder: '201-file' | 'work-requirements' | 'lesp'; ai_check: boolean;
       }[];
     },
     staleTime: 60_000,

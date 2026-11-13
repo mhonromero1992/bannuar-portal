@@ -317,7 +317,7 @@ Any extra column named `earning: <label>` or `deduction: <label>` (for example
 `deduction: Cash advance`) becomes its own line on the payslip. Missing totals are computed; a net
 pay that does not equal gross minus deductions is reported as a warning, not changed.
 
-## 10. Discipline and Claude
+## 10. Discipline, document checks and Claude
 
 The Discipline page keeps the company's Code of Discipline, incident reports and discipline cases.
 Claude (Anthropic's Claude Opus 5.5) reads the uploaded code into offense rules for HR to approve,
@@ -344,18 +344,30 @@ supabase secrets set --project-ref bcynizcgdgqznlxuzwjx ANTHROPIC_API_KEY=<the k
 
 ```bash
 supabase functions deploy discipline-ai --no-verify-jwt --use-api --project-ref bcynizcgdgqznlxuzwjx
+supabase functions deploy document-ai --no-verify-jwt --use-api --project-ref bcynizcgdgqznlxuzwjx
 supabase functions deploy files --no-verify-jwt --use-api --project-ref bcynizcgdgqznlxuzwjx
 ```
 
 (`files` again, so it can also open the code's PDF.)
+
+**Document checks (`document-ai`).** When a guard chooses a photo of their LESP in the app, it is
+sent at once and Claude reads it: the holder's name, the license number, the dates and how legible it
+is. The function then compares the name with the 201 file and the expiry with today itself (the 201
+name is not sent to Anthropic). The app fills in the number and dates, and says so when the license
+has expired, expires within 60 days, or carries another name; HR sees the same reading beside the
+document on the employee's page, and can have Claude read older uploads. Settings → Document types →
+"Claude reads it" turns it on for other types (NBI clearance, drug test and so on). Claude cannot tell
+whether a license is genuine: HR still verifies it, with the PNP SOSIA when in doubt. Each reading
+costs roughly $0.01 to $0.03; a guard can have at most 10 read a day.
 
 **e. Upload the code.** Discipline → Code of Discipline → Upload the code (PDF). Claude reads it
 through Anthropic's Message Batches API, which has no time limit and costs half: most codes take a few
 minutes. Check each rule against the PDF, approve or edit it, then "Put this code in force". Claude
 also lists clauses your lawyer may want to look at against the Labor Code and DOLE rules.
 
-What reaches Anthropic: the code's PDF, and for a suggestion the facts written on the case, the
-incident report, the approved rules and the employee's earlier findings by rule. No names, employee
+What reaches Anthropic: the code's PDF; for a suggestion, the facts written on the case, the
+incident report, the approved rules and the employee's earlier findings by rule; and for a document
+check, the photo or PDF of the document itself (which shows the holder's name and number). Apart from what is printed on a document being checked, no names, employee
 numbers, government numbers, pay or addresses are sent; the draft notice uses placeholders the portal
 fills in. Anthropic does not train on API data by default. Mention Anthropic as a processor in the
 privacy notice, and have the agency's lawyer review the code and the notice template once.
@@ -384,7 +396,7 @@ and requests their company filed. Turn a login off from the same Portal access l
 
 `schema.sql` was run against Postgres 16 with stand-ins for Supabase's `auth` and `storage`
 schemas and its `anon` / `authenticated` / `authenticator` roles, connecting the way the Supabase
-API does. 362 checks passed: sign-up rules, employee activation through one-time tickets (rate
+API does. 396 checks passed: sign-up rules, employee activation through one-time tickets (rate
 limits per employee number and per IP, the facts removed from the login's metadata), who sees which
 rows for every role, payroll import and publishing, the leave and COE flows, certificate
 verification, announcements, website forms, storage folders, admin tools, push devices, attendance
@@ -394,10 +406,12 @@ data, files in S3 (the folder and name each upload gets from the employee number
 who may store or open which file, attaching only files that arrived, the 60-an-hour limit, payslips
 never stored), attendance logged by a commander or entered by HR, the discipline steps (the code read
 and approved before use, the five-day notice, the hearing before a dismissal, a reason for a penalty
-other than the code's, preventive suspension of at most 30 days, what employees and Claude may see),
+other than the code's, preventive suspension of at most 30 days, what employees and Claude may see), the client portal
+(client logins see only their own posts and what their company filed, and nothing once turned off),
+the document checks (whose files Claude may read, which types),
 and the demo scripts on an empty database. Upgrading a database built with the previous `schema.sql` was
 tested too. It has not yet been run inside a real Supabase project.
 
 The Edge Functions have their own tests (Deno, with a mocked admin client, a fake S3 and no
-network): `deno task test` in `supabase/functions` (57 passed, including discipline-ai against a fake Claude). The AWS request signing reproduces
+network): `deno task test` in `supabase/functions` (64 passed, including discipline-ai and document-ai against a fake Claude). The AWS request signing reproduces
 the worked examples in Amazon's S3 documentation exactly.
