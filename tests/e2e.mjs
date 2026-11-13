@@ -380,7 +380,8 @@ const consoleErrors = [];
 // 400 is the deliberate wrong-password sign-in; 404/406 are answers the mock gives on purpose
 page.on('console', (m) => { if (m.type() === 'error' && !/websocket|realtime|ERR_NAME_NOT_RESOLVED|status of 40[046]/i.test(m.text())) consoleErrors.push(m.text()); });
 page.on('pageerror', (e) => consoleErrors.push(e.message));
-page.on('dialog', (d) => d.accept(d.type() === 'prompt' ? 'Typo in the name' : undefined));
+let promptAnswer = 'Typo in the name';
+page.on('dialog', (d) => d.accept(d.type() === 'prompt' ? promptAnswer : undefined));
 const rpcCalls = (name) => requests.filter((r) => r.path === `/rest/v1/rpc/${name}`);
 
 console.log('Sign-in');
@@ -1025,9 +1026,11 @@ const cReqBody = rpcCalls('file_client_request').at(-1)?.body;
 check('client: asks for more guards', cReqBody?.p_site_id === 's1' && cReqBody?.p_kind === 'additional_guards' && cReqBody?.p_guards_needed === 3, JSON.stringify(cReqBody));
 await page.locator('.client-tab', { hasText: 'Cutoffs to confirm (1)' }).click();
 await page.getByText('Confirm or dispute by').waitFor();
+promptAnswer = 'No guard at the gate after 2 PM; we called your office';
 await page.getByRole('button', { name: /^Dispute Dante Cruz/ }).click();
 await page.getByRole('button', { name: 'Send with 1 disputed' }).waitFor();
-check('client cutoff: a duty is disputed with what was wrong', JSON.stringify(rpcCalls('client_dispute_duty').at(-1)?.body) === JSON.stringify({ p_period_id: 'p1', p_log_id: 'lg2', p_reason: 'Typo in the name' }));
+check('client cutoff: a duty is disputed with what was wrong', JSON.stringify(rpcCalls('client_dispute_duty').at(-1)?.body) === JSON.stringify({ p_period_id: 'p1', p_log_id: 'lg2', p_reason: 'No guard at the gate after 2 PM; we called your office' }));
+promptAnswer = 'Typo in the name';
 await page.screenshot({ path: `${ROOT}tests/shots/client-cutoff.png` });
 await page.getByRole('button', { name: 'Send with 1 disputed' }).click();
 await page.getByText('Sent. Bannuar looks into each disputed duty.').waitFor();
