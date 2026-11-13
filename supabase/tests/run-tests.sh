@@ -535,6 +535,129 @@ r=$(as_user "$HR" "select public.add_manual_attendance('$BEA_EMP', 'time_in', no
 r=$(as_user "$BEA" "insert into public.attendance_logs (employee_id, kind, location_check, source) values ('$BEA_EMP', 'time_in', 'manual', 'manual')"); check_has "nobody writes a manual log directly" "$r" "permission denied"
 check "the commander opens the photo he took" "$(nread "$DC" "'$CPK'")" "1"
 
+echo "== Discipline: the Code of Discipline, incident reports and cases with due process"
+P=$(begin "$HR" "'policy', 'application/pdf', 500000"); PK=$(echo "$P" | jget key)
+check "the Code of Discipline goes to company/code-of-discipline/" "$(echo "$PK" | grep -cE "^company/code-of-discipline/${TODAY}_code-of-discipline_[0-9a-f]{10}\.pdf$")" "1"
+r=$(begin "$BEA" "'policy', 'application/pdf', 500000"); check_has "only HR uploads it" "$r" "Only HR uploads"
+r=$(begin "$HR" "'policy', 'image/jpeg', 500000"); check_has "and only as a PDF" "$r" "cannot be uploaded"
+r=$(as_user "$HR" "select public.create_discipline_code('Code of Discipline 2026', '2026-01-01', '$PK')"); check_has "not before S3 has the PDF" "$r" "did not arrive"
+stored "$(echo "$P" | jget id)" 500000
+CODE1=$(as_user "$HR" "select public.create_discipline_code('Code of Discipline 2026', '2026-01-01', '$PK')")
+check "HR adds it as a draft, not read yet" "$(pg "select status || ':' || read_status from public.discipline_codes where id = '$CODE1'")" "draft:not_read"
+r=$(as_user "$OPS" "select public.start_code_reading('$CODE1')"); check_has "only HR has Claude read it" "$r" "Only HR"
+S=$(as_user "$HR" "select public.start_code_reading('$CODE1')"); check "reading starts, and the function gets the PDF's key" "$(echo "$S" | jget file_key)" "$PK"
+r=$(as_user "$HR" "select public.start_code_reading('$CODE1')"); check_has "not twice at once" "$r" "already reading"
+check "HR follows the reading" "$(as_user "$HR" "select public.code_reading_status('$CODE1') ->> 'read_status'")" "reading"
+r=$(as_user "$BEA" "select public.code_reading_status('$CODE1')"); check_has "nobody else does" "$r" "Only HR"
+r=$(as_user "$HR" "select public.finish_code_reading('$CODE1', '[]', 'x', '[]', 'x')"); check_has "only the discipline-ai service records what Claude found" "$r" "permission denied"
+as_service "select public.set_code_reading_job('$CODE1', 'msgbatch_test1', 'claude-opus-5-5')" >/dev/null
+check "the batch is noted while Claude reads" "$(pg "select read_job || ':' || read_model from public.discipline_codes where id = '$CODE1'")" "msgbatch_test1:claude-opus-5-5"
+NH=$(pg "select count(*) from public.notifications where user_id = '$HR'")
+RULES='[{"ref":"A-1","title":"Sleeping on post","description":"Sleeping while on duty","category":"post_duty","gravity":"grave","penalties":[{"offense":1,"action":"suspension","days":7,"text":"7 days suspension"},{"offense":2,"action":"dismissal","days":0,"text":"Dismissal"}],"just_cause":"gross_neglect","source_text":"Sleeping on post... first offense 7 days suspension; second offense dismissal","page":3},
+ {"ref":"B-2","title":"Tardiness","description":"","category":"attendance","gravity":"light","penalties":[{"offense":1,"action":"warning","days":0,"text":"Written warning"},{"offense":2,"action":"reprimand","days":0,"text":"Reprimand"},{"offense":3,"action":"suspension","days":3,"text":"3 days"}],"just_cause":"none","source_text":"Tardiness","page":0},
+ {"ref":"C-3","title":"Unlisted penalty","category":"made_up","gravity":"terrible","penalties":[{"offense":1,"action":"fine","days":0,"text":"P500 fine"}],"just_cause":"whatever","page":-4}]'
+N=$(as_service "select public.finish_code_reading('$CODE1', '$RULES', 'Covers duty, attendance and conduct; penalties rise with each offense.', '[{\"ref\":\"D-1\",\"note\":\"Fines taken from wages need the employee''s written consent (Labor Code Art. 113).\"}]', 'claude-opus-5-5')")
+check "Claude's three rules are proposed for review" "$N:$(pg "select count(*) || ':' || bool_and(from_ai) || ':' || bool_and(status = 'proposed') from public.offense_rules where code_id = '$CODE1'")" "3:3:true:true"
+check "values outside the lists are not trusted" "$(pg "select category || ':' || gravity || ':' || penalties::text || ':' || just_cause || ':' || coalesce(page::text, 'none') from public.offense_rules where ref = 'C-3'")" "other:unclassified:[]:none:none"
+check "the code is read, with Claude's summary and notes for counsel" "$(pg "select read_status || ':' || jsonb_array_length(compliance_notes) || ':' || (summary like 'Covers%') from public.discipline_codes where id = '$CODE1'")" "read:1:true"
+check "HR is told the rules are ready" "$(pg "select count(*) from public.notifications where user_id = '$HR' and kind = 'discipline_code'")" "1"
+check "employees do not read the rules" "$(as_user "$BEA" "select count(*) from public.offense_rules")" "0"
+r=$(as_user "$HR" "select public.activate_discipline_code('$CODE1')"); check_has "not in force before every rule is reviewed" "$r" "Approve or reject every rule"
+as_user "$HR" "update public.offense_rules set status = 'approved' where code_id = '$CODE1' and ref in ('A-1', 'B-2')" >/dev/null
+as_user "$HR" "update public.offense_rules set status = 'rejected' where code_id = '$CODE1' and ref = 'C-3'" >/dev/null
+check "each review is signed by who made it" "$(pg "select count(*) from public.offense_rules where code_id = '$CODE1' and reviewed_by = '$HR' and reviewed_at is not null")" "3"
+r=$(as_user "$HR" "update public.offense_rules set penalties = '[{\"offense\":1,\"action\":\"fine\"}]' where ref = 'B-2'"); check_has "a penalty is a warning, reprimand, suspension, dismissal or other" "$r" "penalties_check"
+r=$(as_user "$HR" "update public.offense_rules set penalties = '[{\"offense\":1,\"action\":\"suspension\",\"days\":120}]' where ref = 'B-2'"); check_has "a suspension is 1 to 90 days" "$r" "penalties_check"
+r=$(as_user "$HR" "update public.discipline_codes set status = 'active' where id = '$CODE1'"); check_has "a code is put in force only through activate_discipline_code" "$r" "permission denied"
+as_user "$HR" "select public.activate_discipline_code('$CODE1')" >/dev/null
+check "then it is in force" "$(pg "select status || ':' || (activated_by = '$HR') from public.discipline_codes where id = '$CODE1'")" "active:true"
+r=$(as_user "$HR" "select public.start_code_reading('$CODE1')"); check_has "a code in force is not read again" "$r" "Only a draft code"
+check "every employee can open the code in force" "$(nread "$BEA" "'$PK'")" "1"
+RULE_A=$(pg "select id from public.offense_rules where code_id = '$CODE1' and ref = 'A-1'")
+RULE_B=$(pg "select id from public.offense_rules where code_id = '$CODE1' and ref = 'B-2'")
+RULE_C=$(pg "select id from public.offense_rules where code_id = '$CODE1' and ref = 'C-3'")
+
+NH=$(pg "select count(*) from public.notifications where user_id = '$HR'")
+IR=$(as_user "$DC" "select public.file_incident_report('$SITE1', '$CARLO_EMP', now() - interval '2 hours', 'Asleep on post', 'Found asleep at the main gate at 2 AM during the inspection round.')"); IRID=$(echo "$IR" | jget id)
+check "the commander files a report about a guard of his post" "$(echo "$IR" | jget report_no | grep -cE '^IR-[0-9]{4}-[0-9]{6}$'):$(pg "select reporter_kind || ':' || status || ':' || reporter_name from public.incident_reports where id = '$IRID'")" "1:commander:received:Dante Cruz"
+check "HR is told" "$(pg "select count(*) from public.notifications where user_id = '$HR' and kind = 'incident_report'")" "1"
+r=$(as_user "$DC" "select public.file_incident_report('$SITE2', null, now(), 'Gate open', 'The gate was left open overnight.')"); check_has "not for another post" "$r" "cannot file a report"
+r=$(as_user "$BEA" "select public.file_incident_report('$SITE1', null, now(), 'Gate open', 'The gate was left open overnight.')"); check_has "a guard without a post to command cannot file one" "$r" "cannot file a report"
+r=$(as_user "$OPS" "select public.file_incident_report('$SITE2', null, now() + interval '1 day', 'Gate open', 'The gate was left open overnight.')"); check_has "not in the future" "$r" "not in the future"
+check "staff see reports; guards do not" "$(as_user "$OPS" "select count(*) from public.incident_reports"):$(as_user "$BEA" "select count(*) from public.incident_reports")" "1:0"
+
+r=$(as_user "$OPS" "select public.open_disciplinary_case('$CARLO_EMP', '$IRID', '$RULE_A', 'Found asleep at the main gate at 2 AM.')"); check_has "only HR opens a case" "$r" "Only HR"
+r=$(as_user "$HR" "select public.open_disciplinary_case('$CARLO_EMP', '$IRID', '$RULE_C', 'Found asleep at the main gate at 2 AM.')"); check_has "only on an approved rule of the code in force" "$r" "approved rule"
+C1=$(as_user "$HR" "select public.open_disciplinary_case('$CARLO_EMP', '$IRID', '$RULE_A', 'Found asleep at the main gate at 2 AM on inspection.')"); C1ID=$(echo "$C1" | jget id)
+check "a case is opened as a draft, a first offense" "$(echo "$C1" | jget case_no | grep -cE '^DC-[0-9]{4}-[0-9]{6}$'):$(pg "select status || ':' || offense_no from public.disciplinary_cases where id = '$C1ID'")" "1:draft:1"
+check "the report moves to investigating" "$(pg "select status from public.incident_reports where id = '$IRID'")" "investigating"
+check "the employee does not see a draft" "$(as_user "$CARLO" "select public.my_disciplinary_cases()")" "[]"
+NTE='This notice is about the events of 2 AM at the main gate of Post A, where you were found asleep while on duty. This may violate rule A-1, Sleeping on post, of the Code of Discipline. Explain in writing why no action should be taken.'
+r=$(as_user "$HR" "select public.issue_nte('$C1ID', '$NTE', now() + interval '3 days')"); check_has "the notice gives at least five calendar days to answer" "$r" "at least five calendar days"
+r=$(as_user "$HR" "select public.issue_nte('$C1ID', 'Dear {{employee_name}}, you were found asleep at your post at the main gate. Explain within five days.', now() + interval '6 days')"); check_has "a draft with blanks left is refused" "$r" "blanks to fill in"
+r=$(as_user "$HR" "select public.issue_nte('$C1ID', 'Explain.', now() + interval '6 days')"); check_has "and so is a notice without the facts" "$r" "Write the notice"
+NC=$(pg "select count(*) from public.notifications where user_id = '$CARLO'")
+as_user "$HR" "select public.issue_nte('$C1ID', '$NTE', now() + interval '5 days')" >/dev/null
+check "the notice is issued" "$(pg "select status || ':' || (nte_issued_by = '$HR') from public.disciplinary_cases where id = '$C1ID'")" "nte_issued:true"
+check "Carlo is told to open the app, without the details in the notification" "$(pg "select count(*) from public.notifications where user_id = '$CARLO' and title = 'You have a notice from HR' and body not ilike '%asleep%'")" "1"
+MY=$(as_user "$CARLO" "select public.my_disciplinary_cases()")
+check "he reads the notice and the rule in the app, not HR's working notes" "$(echo "$MY" | python3 -c "import json,sys; c=json.load(sys.stdin)[0]; print(c['status'], c['rule']['ref'], 'facts' in c, 'ai_suggestion' in c, 'hearing_notes' in c, c['nte_text'][:11])")" "nte_issued A-1 False False False This notice"
+check "nobody else sees it" "$(as_user "$BEA" "select public.my_disciplinary_cases()"):$(as_user "$BEA" "select count(*) from public.disciplinary_cases")" "[]:0"
+r=$(as_user "$HR" "select public.update_case_draft('$C1ID', '$RULE_B', null, 'Late by an hour.')"); check_has "once issued, the charge cannot change" "$r" "can no longer change"
+r=$(as_user "$HR" "select public.decide_case('$C1ID', 'suspension', 7, current_date, 'Found asleep; his explanation does not hold; 7 days per A-1.')"); check_has "no decision before the employee has had his five days" "$r" "Wait for the explanation"
+as_user "$CARLO" "select public.acknowledge_case_notice('$C1ID', 'nte')" >/dev/null
+check "he says he received it" "$(pg "select nte_received_at is not null from public.disciplinary_cases where id = '$C1ID'")" "t"
+NH=$(pg "select count(*) from public.notifications where user_id = '$HR'")
+as_user "$CARLO" "select public.submit_case_explanation('$C1ID', 'I was on my break and resting my eyes; I was not asleep.', true)" >/dev/null
+check "his explanation arrives from the app, with his request for a hearing" "$(pg "select status || ':' || explanation_via || ':' || wants_hearing from public.disciplinary_cases where id = '$C1ID'")" "explained:app:true"
+check "and HR is told" "$(pg "select count(*) from public.notifications where user_id = '$HR' and title = 'Explanation received'")" "1"
+r=$(as_user "$CARLO" "select public.submit_case_explanation('$C1ID', 'Another try at the explanation.', false)"); check_has "only once" "$r" "already received"
+r=$(as_user "$HR" "select public.decide_case('$C1ID', 'suspension', 7, current_date, 'Found asleep; his explanation does not hold; 7 days per A-1.')"); check_has "he asked for a hearing, so there is one before a decision" "$r" "asked for a hearing"
+r=$(as_user "$HR" "select public.set_case_hearing('$C1ID', now() + interval '2 hours', 'HR office')"); check_has "a hearing is set at least a day ahead" "$r" "at least a day ahead"
+as_user "$HR" "select public.set_case_hearing('$C1ID', now() + interval '2 days', 'HR office, Makati')" >/dev/null
+r=$(as_user "$HR" "select public.record_case_hearing('$C1ID', 'Carlo attended with a co-guard as his representative.')"); check_has "it is recorded once it has taken place" "$r" "once it has taken place"
+pg "update public.disciplinary_cases set hearing_at = now() - interval '1 hour' where id = '$C1ID'" >/dev/null
+as_user "$HR" "select public.record_case_hearing('$C1ID', 'Carlo attended with a co-guard as his representative. The inspector confirmed he was asleep.')" >/dev/null
+r=$(as_user "$HR" "select public.decide_case('$C1ID', 'suspension', 3, current_date, 'Found asleep after hearing both sides; three days suspension.')"); check_has "a penalty other than the code's needs a reason" "$r" "Say why"
+NC=$(pg "select count(*) from public.notifications where user_id = '$CARLO'")
+D1=$(as_user "$HR" "select public.decide_case('$C1ID', 'suspension', 7, current_date, 'Found asleep after hearing both sides; seven days suspension under A-1, first offense.')")
+check "the code's penalty is decided" "$(echo "$D1" | jget departs):$(pg "select status || ':' || decision || ':' || suspension_days from public.disciplinary_cases where id = '$C1ID'")" "False:decided:suspension:7"
+check "the report shows action taken, and Carlo is told" "$(pg "select status from public.incident_reports where id = '$IRID'"):$(pg "select count(*) - $NC from public.notifications where user_id = '$CARLO'")" "action_taken:1"
+as_user "$CARLO" "select public.acknowledge_case_notice('$C1ID', 'decision')" >/dev/null
+check "he acknowledges the decision" "$(pg "select decision_received_at is not null from public.disciplinary_cases where id = '$C1ID'")" "t"
+r=$(as_user "$HR" "select public.withdraw_case('$C1ID', 'Changed our mind')"); check_has "a decided case is closed" "$r" "closed"
+
+C2ID=$(as_user "$HR" "select public.open_disciplinary_case('$CARLO_EMP', null, '$RULE_A', 'Found asleep again at the main gate at 3 AM.')" | jget id)
+check "the next case of the same rule is his second offense, and the code says dismissal" "$(pg "select offense_no || ':' || (public.code_penalty(rule_id, offense_no) ->> 'action') from public.disciplinary_cases where id = '$C2ID'")" "2:dismissal"
+as_user "$HR" "select public.issue_nte('$C2ID', '$NTE', now() + interval '5 days')" >/dev/null
+pg "update public.disciplinary_cases set explain_by = now() - interval '1 minute' where id = '$C2ID'" >/dev/null
+r=$(as_user "$HR" "select public.decide_case('$C2ID', 'dismissal', null, null, 'No explanation came within the period; dismissal under A-1, second offense.')"); check_has "never a dismissal without a hearing or conference" "$r" "before a dismissal"
+r=$(as_user "$HR" "select public.decide_case('$C2ID', 'suspension', 7, current_date, 'No explanation came; a lighter penalty given his record of service.')"); check_has "a lighter penalty than the code's also needs a reason" "$r" "Say why"
+D2=$(as_user "$HR" "select public.decide_case('$C2ID', 'suspension', 7, current_date, 'No explanation came; a lighter penalty given his record of service.', 'Eight years of service with one earlier offense')")
+check "with the reason, it is decided and marked as departing from the code" "$(echo "$D2" | jget departs):$(pg "select departs_reason like 'Eight years%' from public.disciplinary_cases where id = '$C2ID'")" "True:t"
+
+C3ID=$(as_user "$HR" "select public.open_disciplinary_case('$EDU_EMP', null, '$RULE_B', 'Arrived an hour late for the 6 AM shift.')" | jget id)
+r=$(as_user "$HR" "select public.set_preventive_suspension('$C3ID', current_date, current_date + 10, 'Serious threat to the property of the client.')"); check_has "no preventive suspension before the notice" "$r" "Issue the notice"
+as_user "$HR" "select public.issue_nte('$C3ID', 'On the morning of the 10th you arrived at Post B at 7:05 AM for the 6 AM shift. This may violate rule B-2, Tardiness. Please explain.', now() + interval '6 days')" >/dev/null
+r=$(as_user "$HR" "select public.set_preventive_suspension('$C3ID', current_date, current_date + 30, 'Serious threat to the property of the client.')"); check_has "a preventive suspension lasts at most 30 days" "$r" "at most 30 days"
+r=$(as_user "$HR" "select public.set_preventive_suspension('$C3ID', current_date, current_date + 29, 'Late')"); check_has "and needs the threat it prevents" "$r" "serious and imminent threat"
+as_user "$HR" "select public.set_preventive_suspension('$C3ID', current_date, current_date + 29, 'He was seen taking the client''s fuel; his presence risks the client''s property.')" >/dev/null
+check "30 days, set" "$(pg "select preventive_to - preventive_from from public.disciplinary_cases where id = '$C3ID'")" "29"
+
+CTX=$(as_user "$HR" "select public.case_ai_context('$C3ID')")
+check "Claude gets the facts and the approved rules only, with no names" "$(echo "$CTX" | python3 -c "import json,sys; c=json.load(sys.stdin); t=json.dumps(c); print(len(c['rules']), sorted(r['ref'] for r in c['rules']), 'Edu' in t or 'Tan' in t or 'G-004' in t)")" "2 ['A-1', 'B-2'] False"
+check "and his earlier findings by rule" "$(as_user "$HR" "select jsonb_array_length(public.case_ai_context('$C2ID') -> 'earlier_findings')")" "1"
+r=$(as_user "$CARLO" "select public.case_ai_context('$C1ID')"); check_has "only HR asks Claude" "$r" "Only HR"
+r=$(as_user "$HR" "select public.save_case_suggestion('$C3ID', '{\"matches\":[]}')"); check_has "only discipline-ai saves Claude's suggestion" "$r" "permission denied"
+as_service "select public.save_case_suggestion('$C3ID', '{\"matches\":[{\"rule_id\":\"$RULE_B\",\"confidence\":\"high\"}]}')" >/dev/null
+check "the suggestion is kept on the case for HR" "$(pg "select (ai_suggestion -> 'matches' -> 0 ->> 'confidence') || ':' || (ai_suggested_at is not null) from public.disciplinary_cases where id = '$C3ID'")" "high:true"
+
+r=$(as_user "$HR" "update public.offense_rules set penalties = '[{\"offense\":1,\"action\":\"warning\",\"days\":0}]' where id = '$RULE_A'"); check_has "a rule cases rest on cannot be changed in force" "$r" "Cases already rest on this rule"
+as_user "$HR" "delete from public.offense_rules where id = '$RULE_B'" >/dev/null
+check "nor deleted" "$(pg "select count(*) from public.offense_rules where id = '$RULE_B'")" "1"
+r=$(as_user "$HR" "update public.disciplinary_cases set decision = 'warning' where id = '$C1ID'"); check_has "cases change only through the due-process functions" "$r" "permission denied"
+check "every step is in the audit log" "$(pg "select count(*) > 5 from public.audit_log where table_name = 'disciplinary_cases' and record_id = '$C1ID'")" "t"
+
 echo "== Demo scripts still match the schema (on a second, empty database)"
 D="$(dirname "$0")/.."
 DEMO_DB="${PGDATABASE:-bannuar_test}_demo"

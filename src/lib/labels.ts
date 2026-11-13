@@ -79,6 +79,33 @@ export const ROLE_HINT: Record<string, string> = {
   supervisor: 'Detachment commanders and inspectors (in the app)',
 };
 
+// Discipline (schema.sql section 16)
+export const CODE_STATUS: Map = { draft: ['Draft', 'warn'], active: ['In force', 'ok'], retired: ['Retired', 'neutral'] };
+export const READ_STATUS: Map = { not_read: ['Not read yet', 'neutral'], reading: ['Claude is reading', 'info'], read: ['Read by Claude', 'ok'], failed: ['Reading failed', 'bad'] };
+export const RULE_STATUS: Map = { proposed: ['To review', 'warn'], approved: ['Approved', 'ok'], rejected: ['Rejected', 'neutral'] };
+export const GRAVITY: Map = { light: ['Light', 'neutral'], less_serious: ['Less serious', 'info'], serious: ['Serious', 'warn'], grave: ['Grave', 'bad'], unclassified: ['Not classed', 'neutral'] };
+export const OFFENSE_CATEGORY: Record<string, string> = {
+  attendance: 'Attendance and punctuality', post_duty: 'Post and duty', conduct: 'Conduct', uniform_equipment: 'Uniform and equipment',
+  dishonesty: 'Dishonesty', safety_security: 'Safety and security', substance: 'Alcohol and drugs', insubordination: 'Insubordination', other: 'Other',
+};
+export const PENALTY_ACTION: Record<string, string> = { warning: 'Warning', reprimand: 'Reprimand', suspension: 'Suspension', dismissal: 'Dismissal', other: 'Other' };
+export const JUST_CAUSE: Record<string, string> = {
+  none: 'None', serious_misconduct: 'Serious misconduct', willful_disobedience: 'Willful disobedience', gross_neglect: 'Gross and habitual neglect',
+  fraud_breach_of_trust: 'Fraud or breach of trust', crime_against_employer: 'Crime against the employer or family', analogous: 'Analogous cause',
+};
+export const INCIDENT_STATUS: Map = {
+  received: ['Received', 'warn'], investigating: ['Under investigation', 'info'], action_taken: ['Action taken', 'ok'],
+  closed: ['Closed', 'neutral'], not_pursued: ['Not pursued', 'neutral'],
+};
+export const REPORTER_KIND: Record<string, string> = { client: 'Client', commander: 'Commander', staff: 'Staff' };
+export const CASE_STATUS: Map = {
+  draft: ['Draft', 'neutral'], nte_issued: ['Waiting for explanation', 'warn'], explained: ['Explained', 'info'],
+  hearing_set: ['Hearing set', 'info'], decided: ['Decided', 'ok'], withdrawn: ['Withdrawn', 'neutral'],
+};
+export const CASE_DECISION: Map = {
+  no_violation: ['No violation', 'ok'], warning: ['Warning', 'warn'], reprimand: ['Reprimand', 'warn'], suspension: ['Suspension', 'bad'], dismissal: ['Dismissal', 'bad'],
+};
+
 export const label = (m: Map, v?: string | null) => (v && m[v] ? m[v][0] : v ?? '');
 export const tone = (m: Map, v?: string | null): Tone => (v && m[v] ? m[v][1] : 'neutral');
 export const options = (m: Map | Record<string, string>) =>

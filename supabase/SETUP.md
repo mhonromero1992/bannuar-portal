@@ -212,6 +212,12 @@ can be deleted:
       "Resource": "arn:aws:s3:::BUCKET/employees/*"
     },
     {
+      "Sid": "CompanyFiles",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject"],
+      "Resource": "arn:aws:s3:::BUCKET/company/*"
+    },
+    {
       "Sid": "StorageCheck",
       "Effect": "Allow",
       "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
@@ -311,11 +317,59 @@ Any extra column named `earning: <label>` or `deduction: <label>` (for example
 `deduction: Cash advance`) becomes its own line on the payslip. Missing totals are computed; a net
 pay that does not equal gross minus deductions is reported as a warning, not changed.
 
+## 10. Discipline and Claude
+
+The Discipline page keeps the company's Code of Discipline, incident reports and discipline cases.
+Claude (Anthropic's Claude Opus 5.5) reads the uploaded code into offense rules for HR to approve,
+and suggests the matching rule and a draft notice to explain for a case. It only proposes: HR
+approves each rule, edits every notice and makes every decision, and the database enforces the
+steps of due process (DOLE Department Order 147-15).
+
+**a. Let the files function store the code.** The code's PDF goes to `company/code-of-discipline/`
+in the bucket, not to an employee's folder. If your IAM policy was made before this step, add the
+`CompanyFiles` statement shown in step 9b (`arn:aws:s3:::BUCKET/company/*`, put and get only).
+
+**b. Give the function the Anthropic API key.** Use the organization's existing Claude API key, or
+create one at console.anthropic.com → API keys. It goes only into the Edge Function secrets, never
+into the portal, the app or the repository:
+
+```bash
+supabase secrets set --project-ref bcynizcgdgqznlxuzwjx ANTHROPIC_API_KEY=<the key>
+```
+
+**c. Run the schema again** (step 2): it adds `discipline_codes`, `offense_rules`,
+`incident_reports` and `disciplinary_cases`, with the functions that run each step.
+
+**d. Deploy the function:**
+
+```bash
+supabase functions deploy discipline-ai --no-verify-jwt --use-api --project-ref bcynizcgdgqznlxuzwjx
+supabase functions deploy files --no-verify-jwt --use-api --project-ref bcynizcgdgqznlxuzwjx
+```
+
+(`files` again, so it can also open the code's PDF.)
+
+**e. Upload the code.** Discipline → Code of Discipline → Upload the code (PDF). Claude reads it
+through Anthropic's Message Batches API, which has no time limit and costs half: most codes take a few
+minutes. Check each rule against the PDF, approve or edit it, then "Put this code in force". Claude
+also lists clauses your lawyer may want to look at against the Labor Code and DOLE rules.
+
+What reaches Anthropic: the code's PDF, and for a suggestion the facts written on the case, the
+incident report, the approved rules and the employee's earlier findings by rule. No names, employee
+numbers, government numbers, pay or addresses are sent; the draft notice uses placeholders the portal
+fills in. Anthropic does not train on API data by default. Mention Anthropic as a processor in the
+privacy notice, and have the agency's lawyer review the code and the notice template once.
+
+Cost, at Claude Opus 5.5's prices ($4 and $20 per million input and output tokens, half for the
+reading batch): a 30-page code is roughly $0.10 to $0.40 to read; a case suggestion is roughly $0.05 to $0.15.
+Requests that Claude Opus 5.5 declines are retried on Anthropic's recommended fallback model
+(server-side fallbacks, a beta feature).
+
 ## Tested
 
 `schema.sql` was run against Postgres 16 with stand-ins for Supabase's `auth` and `storage`
 schemas and its `anon` / `authenticated` / `authenticator` roles, connecting the way the Supabase
-API does. 269 checks passed: sign-up rules, employee activation through one-time tickets (rate
+API does. 362 checks passed: sign-up rules, employee activation through one-time tickets (rate
 limits per employee number and per IP, the facts removed from the login's metadata), who sees which
 rows for every role, payroll import and publishing, the leave and COE flows, certificate
 verification, announcements, website forms, storage folders, admin tools, push devices, attendance
@@ -323,9 +377,12 @@ verification, announcements, website forms, storage folders, admin tools, push d
 upload, no direct writes, who sees which logs and photos), running the file again over existing
 data, files in S3 (the folder and name each upload gets from the employee number and document type,
 who may store or open which file, attaching only files that arrived, the 60-an-hour limit, payslips
-never stored), and the demo scripts on an empty database. Upgrading a database built with the previous `schema.sql` was
+never stored), attendance logged by a commander or entered by HR, the discipline steps (the code read
+and approved before use, the five-day notice, the hearing before a dismissal, a reason for a penalty
+other than the code's, preventive suspension of at most 30 days, what employees and Claude may see),
+and the demo scripts on an empty database. Upgrading a database built with the previous `schema.sql` was
 tested too. It has not yet been run inside a real Supabase project.
 
 The Edge Functions have their own tests (Deno, with a mocked admin client, a fake S3 and no
-network): `deno task test` in `supabase/functions` (43 passed). The AWS request signing reproduces
+network): `deno task test` in `supabase/functions` (57 passed, including discipline-ai against a fake Claude). The AWS request signing reproduces
 the worked examples in Amazon's S3 documentation exactly.

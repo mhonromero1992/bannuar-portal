@@ -519,3 +519,4 @@ a.tile:hover { box-shadow: var(--shadow-hover); transform: translateY(-2px); }
   .btn::before { display: none; }
   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
 }
+.pre { white-space: pre-wrap; overflow-wrap: anywhere; }

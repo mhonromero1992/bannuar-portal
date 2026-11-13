@@ -7,9 +7,9 @@ import { FUNCTIONS_URL, PUBLIC_KEY, openFile, supabase } from './supabase';
  * Files stored before the switch stay in Supabase Storage and still open (their paths do not start with
  * employees/). Payslips are never stored: their PDF is made on download by the payslip-pdf function.
  */
-export const isS3Key = (path: string | null | undefined): path is string => Boolean(path && path.startsWith('employees/'));
+export const isS3Key = (path: string | null | undefined): path is string => Boolean(path && /^(employees|company)\//.test(path));
 
-export type UploadPurpose = 'document' | 'leave' | 'attendance' | 'certificate';
+export type UploadPurpose = 'document' | 'leave' | 'attendance' | 'certificate' | 'policy';
 export interface StoredFile {
   id: string;
   key: string;
@@ -25,7 +25,7 @@ export const STORAGE_FOLDER: Record<string, string> = {
   lesp: 'LESP',
 };
 
-async function post(fn: 'files' | 'payslip-pdf', body: FormData | string): Promise<Response> {
+export async function post(fn: 'files' | 'payslip-pdf' | 'discipline-ai', body: FormData | string): Promise<Response> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   if (!token) throw new Error('Your sign-in has expired. Sign in again.');

@@ -127,6 +127,29 @@ const T = {
     { id: 'sf3', folder: 'attendance', status: 'stored' }, { id: 'sf4', folder: 'leave', status: 'pending' },
   ],
 };
+// discipline: a code in force, a new version Claude has read, a client's report and three cases
+const PEN_A = [{ offense: 1, action: 'suspension', days: 7, text: '7 days suspension' }, { offense: 2, action: 'dismissal', days: 0, text: 'Dismissal' }];
+const ruleRow = (id, code, ref, title, status, extra = {}) => ({ id, code_id: code, ref, title, description: '', category: 'post_duty', gravity: 'grave', penalties: PEN_A, just_cause: 'gross_neglect', source_text: `${title}: first offense 7 days suspension; second offense dismissal`, page: 3, sort: Number(id.slice(1)), status, from_ai: true, reviewed_at: null, code: { status: code === 'dc0' ? 'active' : 'draft' }, ...extra });
+T.discipline_codes = [
+  { id: 'dc1', title: 'Code of Discipline 2026', effective_on: '2026-12-01', file_key: 'company/code-of-discipline/2026-11-13_code-of-discipline_0a1b2c3d4e.pdf', status: 'draft', read_status: 'read', read_error: null, read_started_at: now, read_at: now, read_model: 'claude-opus-5-5', summary: 'Covers duty, attendance and conduct; penalties rise with each offense.', compliance_notes: [{ ref: 'D-1', note: 'Fines taken from wages need the employee\'s written consent (Labor Code Art. 113).' }], created_at: now, activated_at: null },
+  { id: 'dc0', title: 'Code of Discipline 2025', effective_on: '2025-01-01', file_key: 'company/code-of-discipline/2025-01-01_code-of-discipline_9f8e7d6c5b.pdf', status: 'active', read_status: 'read', read_error: null, read_started_at: now, read_at: now, read_model: 'claude-opus-5-5', summary: null, compliance_notes: [], created_at: now, activated_at: now },
+];
+T.offense_rules = [
+  ruleRow('r1', 'dc0', 'A-1', 'Sleeping on post', 'approved'),
+  ruleRow('r2', 'dc0', 'B-2', 'Tardiness', 'approved', { category: 'attendance', gravity: 'light', just_cause: 'none', penalties: [{ offense: 1, action: 'warning', days: 0, text: 'Written warning' }, { offense: 2, action: 'suspension', days: 3, text: '3 days' }] }),
+  ruleRow('r3', 'dc1', 'A-1', 'Sleeping on duty', 'proposed'),
+  ruleRow('r4', 'dc1', 'A-2', 'Leaving the post without relief', 'proposed'),
+];
+T.incident_reports = [{ id: 'ir1', report_no: 'IR-2026-000001', site_id: 's1', employee_id: 'e3', occurred_at: now, title: 'Guard asleep at the gate', details: 'Our store manager found the guard asleep at the main gate at 2 AM.', reporter_kind: 'client', reporter_name: 'Acme Mart · Store manager', status: 'received', client_update: null, guard_described: null, created_at: now, site: { id: 's1', name: 'Post A · Main Gate' }, client: { name: 'Acme Mart' }, employee: empMini(E.e3) }];
+const caseRow = (id, no, status, e, extra = {}) => ({ id, case_no: no, status, employee_id: e.id, incident_id: null, rule_id: null, offense_no: null, facts: 'Found asleep at the main gate at 2 AM on inspection.', nte_text: null, nte_issued_at: null, explain_by: null, nte_received_at: null, explanation: null, explanation_via: null, explained_at: null, wants_hearing: false, hearing_at: null, hearing_place: null, hearing_notes: null, hearing_held_at: null, decision: null, suspension_days: null, suspension_from: null, decision_text: null, departs_reason: null, decided_at: null, decision_received_at: null, preventive_from: null, preventive_to: null, preventive_reason: null, withdrawn_reason: null, ai_suggestion: null, ai_suggested_at: null, created_at: now, employee: { ...empMini(e), site: { name: 'Post A · Main Gate' } }, rule: null, incident: null, ...extra });
+const ruleA = { id: 'r1', ref: 'A-1', title: 'Sleeping on post', gravity: 'grave', penalties: PEN_A };
+const issued = { rule_id: 'r1', rule: ruleA, offense_no: 1, nte_text: 'This notice is about 2 AM at the main gate, where you were found asleep. This may violate A-1 Sleeping on post.', nte_issued_at: now, explain_by: new Date(Date.now() - 3600000).toISOString(), nte_received_at: now };
+T.disciplinary_cases = [
+  caseRow('case1', 'DC-2026-000001', 'draft', E.e3, { incident_id: 'ir1', incident: { report_no: 'IR-2026-000001', title: 'Guard asleep at the gate' } }),
+  caseRow('case2', 'DC-2026-000002', 'explained', E.e2, { ...issued, explanation: 'I was on my break.', explanation_via: 'app', explained_at: now, wants_hearing: true }),
+  caseRow('case3', 'DC-2026-000003', 'hearing_set', E.e1, { ...issued, explanation: 'I was resting my eyes.', explanation_via: 'paper', explained_at: now, hearing_at: now, hearing_place: 'HR office', hearing_notes: 'Attended with a co-guard. The inspector confirmed he was asleep.', hearing_held_at: now }),
+];
+const findCase = (id) => T.disciplinary_cases.find((c) => c.id === id);
 const access = { user_id: 'u-admin', roles: ['super_admin'], full_name: 'Ana Admin', email: 'ana@bannuar.test', must_change_password: false, employee: null };
 const dashboard = { employees_by_status: { active: 2, floating: 1 }, employees_current: 3, sites_active: 1, guards_required: 3, guards_deployed: 2, sites_short: 1, floating: 1, floating_over_150_days: 1, leave_pending_supervisor: 0, leave_pending_hr: 1, on_leave_today: 0, coe_pending: 1, coe_overdue: 1, profile_changes_pending: 1, payroll_concerns_open: 1, documents_expired: 0, documents_expiring: 1, compliance_gaps: 1, applications_new: 1, inquiries_new: 1, latest_period: { id: 'p1', label: 'Nov 1 to 15, 2026', status: 'draft', pay_date: '2026-11-20', payslips: 2 } };
 const certificate = { id: 'cert1', certificate_no: 'COE-2026-000001', verification_code: 'K7QM-3XPD-8RTA', employee_id: 'e2', employee_name: 'Bea Lim', position: 'Security Guard', date_hired: '2023-01-10', date_separated: null, purpose: 'bank_loan', include_compensation: true, compensation_text: '₱540.00 a day', signatory_name: 'Hector HR', signatory_title: 'HR Manager', issued_at: now, file_path: null };
@@ -156,6 +179,19 @@ const RPC = {
   mark_password_changed: () => null,
   revoke_certificate: () => null,
   set_site_pay_rule: () => null,
+  create_discipline_code: () => 'dc-new',
+  activate_discipline_code: () => null,
+  file_incident_report: () => ({ id: 'ir9', report_no: 'IR-2026-000009', status: 'received' }),
+  update_incident_report: () => null,
+  open_disciplinary_case: () => ({ id: 'case1', case_no: 'DC-2026-000001' }),
+  update_case_draft: (b) => { const c = findCase(b.p_case_id); Object.assign(c, { rule_id: b.p_rule_id, rule: T.offense_rules.find((r) => r.id === b.p_rule_id) ?? null, offense_no: b.p_offense_no ?? 1, facts: b.p_facts }); return null; },
+  issue_nte: () => null,
+  set_case_hearing: () => null,
+  record_case_hearing: () => null,
+  record_case_explanation: () => null,
+  decide_case: (b) => ({ id: b.p_case_id, decision: b.p_decision, departs: Boolean(b.p_departs_reason) }),
+  withdraw_case: () => null,
+  set_preventive_suspension: () => null,
 };
 
 // ------------------------------------------------------------------ the mock API
@@ -206,7 +242,7 @@ async function api(route) {
       const dt = T.document_types.find((d) => d.id === field('document_type_id'));
       const folder = purpose === 'document' ? dt.storage_folder : purpose === 'certificate' ? 'certificates' : purpose;
       const name = purpose === 'certificate' ? `${certificate.certificate_no}.pdf` : `2026-11-12_${(dt?.code ?? purpose).toLowerCase().replace(/_/g, '-')}_mock${requests.length}.pdf`;
-      const key = `employees/${no}/${folder}/${name}`;
+      const key = purpose === 'policy' ? `company/code-of-discipline/2026-11-13_code-of-discipline_mock${requests.length}.pdf` : `employees/${no}/${folder}/${name}`;
       const start = text.indexOf('\r\n\r\n', text.indexOf('name="file"')) + 4;
       stored.set(`s3/${key}`, raw.subarray(start, text.lastIndexOf('\r\n--')));
       uploads.push({ purpose, employee_id: field('employee_id'), document_type_id: field('document_type_id'), certificate_id: field('certificate_id'), key });
@@ -214,6 +250,20 @@ async function api(route) {
     }
     if (body?.action === 'sign') return json(200, { urls: Object.fromEntries(body.keys.map((k) => [k, `${MOCK}/s3-mock/${k}?X-Amz-Expires=300&download=${body.download ? 1 : 0}`])), expires_in: 300 });
     if (body?.action === 'check') return json(200, { ok: true, bucket: 'bannuar-hr-files', region: 'ap-southeast-1' });
+    return json(400, { code: 'invalid_input', message: 'Something is missing from the request. Try again.' });
+  }
+  // the discipline-ai Edge Function (Claude): the key is the function's; the portal sends only ids
+  if (path === '/functions/v1/discipline-ai') {
+    if (body?.action === 'read_code') return json(200, { status: 'reading' });
+    if (body?.action === 'check_code') return json(200, { status: 'read', rules: 2 });
+    if (body?.action === 'suggest') {
+      return json(200, {
+        matches: [{ rule_id: 'r1', confidence: 'high', why: 'Asleep while on duty at the gate.' }],
+        missing_facts: ['Who found him, and at what time exactly'],
+        nte_draft: 'To: {{employee_name}}\nCase: {{case_no}}\n\nOn 12 November at about 2 AM you were found asleep at the main gate of {{post}}. This may violate {{rule}} of the Code of Discipline. Explain in writing by {{explain_by}} why no action should be taken. You may ask for a conference and bring a representative. This notice is not a finding of guilt.',
+        cautions: ['The report rests on one account so far'], model: 'claude-opus-5-5',
+      });
+    }
     return json(400, { code: 'invalid_input', message: 'Something is missing from the request. Try again.' });
   }
   // the payslip-pdf Edge Function: a PDF made on request, never stored
@@ -265,6 +315,7 @@ async function api(route) {
       const out = { id: `new-${requests.length}`, ...row };
       return single ? json(201, out) : json(201, (req.headers().prefer ?? '').includes('return=representation') ? [out] : undefined);
     }
+    if (method === 'PATCH' && table === 'offense_rules') for (const r of filterRows(T.offense_rules, url)) Object.assign(r, body);
     if (method === 'PATCH') return single ? json(200, { id: url.searchParams.get('id')?.slice(3), ...body }) : json(204);
     if (method === 'DELETE') return json(204);
   }
@@ -312,7 +363,7 @@ const screens = [
   ['/requests', 'Requests'], ['/attendance', 'Attendance'], ['/announcements', 'Announcements'], ['/payroll', 'Payroll'], ['/payroll/p1', 'Nov 1 to 15, 2026'],
   ['/recruitment', 'Recruitment'], ['/inquiries', 'Proposal requests'], ['/compliance', 'Licenses and documents'], ['/users', 'Users and roles'],
   ['/audit', 'Audit log'], ['/settings', 'Settings'], ['/account', 'Change your password'], ['/nowhere', 'This page is not on the roster'],
-  ['/payroll/13th-month', '13th month pay'],
+  ['/payroll/13th-month', '13th month pay'], ['/discipline', 'Discipline'],
 ];
 for (const [path, heading] of screens) {
   await page.goto(BASE + path);
@@ -672,6 +723,98 @@ await page.getByText('Time in and out from the app').waitFor();
 const empAtt = requests.filter((r) => r.path === '/rest/v1/attendance_logs').at(-1);
 check('employee page: their own logs', /employee_id=eq\.e2/.test(empAtt?.url ?? ''), empAtt?.url);
 
+console.log('Discipline');
+await page.goto(`${BASE}/discipline?tab=code`);
+await page.getByText(/Fines taken from wages/).waitFor();
+check('code: Claude\'s summary and its notes for counsel are shown', (await page.getByText('Covers duty, attendance and conduct').count()) === 1 && (await page.getByText('For your lawyer to look at').count()) === 1);
+check('code: each proposed rule shows the code\'s own words and page', (await page.getByText(/\(page 3\)/).count()) >= 2);
+check('code: not in force while rules wait for review', await page.getByRole('button', { name: 'Put this code in force' }).isDisabled());
+await page.getByRole('button', { name: 'Edit' }).first().click();
+const ruleDlg = page.locator('dialog[open]');
+await ruleDlg.getByLabel('Days').first().fill('5');
+await ruleDlg.getByRole('button', { name: 'Save the rule' }).click();
+await page.getByText('Rule saved.').waitFor();
+const rulePatch = requests.filter((r) => r.method === 'PATCH' && r.path === '/rest/v1/offense_rules').at(-1);
+check('code: an edited rule saves its penalty for each offense count', rulePatch?.body?.penalties?.[0]?.days === 5 && rulePatch?.body?.penalties?.[1]?.action === 'dismissal' && /id=eq\.r3/.test(rulePatch?.url ?? ''), JSON.stringify(rulePatch?.body?.penalties));
+await page.getByLabel('Which rules').selectOption('proposed');
+await page.getByRole('button', { name: 'Approve all 2 shown' }).click();
+await page.getByRole('button', { name: 'Put this code in force' }).and(page.locator(':enabled')).waitFor();
+const approvePatch = requests.filter((r) => r.method === 'PATCH' && r.path === '/rest/v1/offense_rules').at(-1);
+check('code: "approve all shown" approves exactly those rules', /id=in\.\(r3,r4\)/.test(decodeURIComponent(approvePatch?.url ?? '')) && approvePatch?.body?.status === 'approved', approvePatch?.url);
+await page.getByRole('button', { name: 'Put this code in force' }).click();
+await page.getByText('The code is in force.').waitFor();
+check('code: put in force through the database', rpcCalls('activate_discipline_code').at(-1)?.body?.p_code_id === 'dc1');
+await page.getByRole('button', { name: 'Upload the code (PDF)' }).click();
+const upDlg = page.locator('dialog[open]');
+await upDlg.getByLabel('Title').fill('Code of Discipline 2027');
+await upDlg.getByLabel('The PDF').setInputFiles({ name: 'code.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.7\n% code\n%%EOF\n') });
+await upDlg.getByRole('button', { name: 'Upload and have Claude read it' }).click();
+await page.getByText(/Claude is reading it/).waitFor();
+const polUp = uploads.at(-1);
+check('code: the PDF goes to the company folder, then Claude is asked to read it', polUp?.purpose === 'policy' && /^company\/code-of-discipline\//.test(polUp.key) && rpcCalls('create_discipline_code').at(-1)?.body?.p_file_key === polUp.key && requests.some((r) => r.path === '/functions/v1/discipline-ai' && r.body?.action === 'read_code' && r.body?.code_id === 'dc-new'), JSON.stringify(polUp));
+check('code: the browser never talks to Anthropic or holds its key', !requests.some((r) => /anthropic/i.test(r.url) || 'x-api-key' in (r.headers ?? {})));
+
+await page.goto(`${BASE}/discipline?tab=reports`);
+await page.getByRole('button', { name: 'Guard asleep at the gate' }).click();
+let repDlg = page.locator('dialog[open]');
+check('report: a client\'s report shows who filed it and the guard', /Acme Mart · Store manager/.test(await repDlg.innerText()) && /Carlo Diaz/.test(await repDlg.innerText()));
+await repDlg.getByLabel('Status').selectOption('investigating');
+await repDlg.getByLabel(/Update for the client/).fill('We are looking into it with the detachment commander.');
+await repDlg.getByRole('button', { name: 'Save' }).click();
+await page.getByText('Report updated.').waitFor();
+const repUpd = rpcCalls('update_incident_report').at(-1)?.body;
+check('report: status and the client\'s update are saved', repUpd?.p_id === 'ir1' && repUpd?.p_status === 'investigating' && /looking into it/.test(repUpd?.p_client_update ?? ''), JSON.stringify(repUpd));
+await page.getByRole('button', { name: 'Guard asleep at the gate' }).click();
+repDlg = page.locator('dialog[open]');
+await repDlg.getByRole('button', { name: 'Open a case from this report' }).click();
+await page.locator('dialog[open]').last().getByRole('button', { name: 'Open the case' }).click();
+await page.waitForURL(/case=case1/);
+const opened = rpcCalls('open_disciplinary_case').at(-1)?.body;
+check('report: a case is opened from it, for the guard named, with the report\'s facts', opened?.p_employee_id === 'e3' && opened?.p_incident_id === 'ir1' && /asleep at the main gate/.test(opened?.p_facts ?? ''), JSON.stringify(opened));
+
+const caseDlg = page.locator('dialog[open]');
+await caseDlg.getByRole('button', { name: 'Ask Claude for a suggestion' }).click();
+await caseDlg.getByText('high match').waitFor();
+check('case: Claude suggests an approved rule, what to find out, and cautions', /Sleeping on post/.test(await caseDlg.innerText()) && /Who found him/.test(await caseDlg.innerText()) && /one account/.test(await caseDlg.innerText()));
+check('case: only the case id goes to the function', JSON.stringify(requests.filter((r) => r.path === '/functions/v1/discipline-ai' && r.body?.action === 'suggest').at(-1)?.body) === '{"action":"suggest","case_id":"case1"}');
+await caseDlg.getByRole('button', { name: 'Use this rule' }).click();
+await caseDlg.getByRole('button', { name: 'Put Claude\'s draft in the notice' }).click();
+const nteDraft = await caseDlg.getByLabel('The notice').inputValue();
+check('case: the draft is filled with the name, case number, post and rule', nteDraft.includes('Carlo Diaz') && nteDraft.includes('DC-2026-000001') && nteDraft.includes('Post A · Main Gate') && nteDraft.includes('A-1 Sleeping on post') && !nteDraft.includes('{{'), nteDraft.slice(0, 160));
+await caseDlg.getByRole('button', { name: 'Issue the notice' }).click();
+check('case: the charge is saved before the notice', /Save the charge first/.test(await caseDlg.innerText()));
+await caseDlg.getByRole('button', { name: 'Save the charge' }).click();
+await page.getByText('Saved.', { exact: true }).waitFor();
+check('case: the charge is the rule chosen', rpcCalls('update_case_draft').at(-1)?.body?.p_rule_id === 'r1');
+await caseDlg.getByRole('button', { name: 'Issue the notice' }).click();
+await page.getByText('Notice issued. The employee is told in the app.').waitFor();
+const nteSent = rpcCalls('issue_nte').at(-1)?.body;
+check('case: the notice goes out with at least five days to answer', nteSent?.p_case_id === 'case1' && Date.parse(nteSent.p_explain_by) - Date.now() >= 5 * 86400000 - 60000 && nteSent.p_nte_text.includes('Carlo Diaz'), nteSent?.p_explain_by);
+
+await page.goto(`${BASE}/discipline?tab=cases`);
+await page.getByText('Set the hearing the employee asked for').waitFor();
+check('cases: each says what it waits for', (await page.getByText('Issue the notice to explain').count()) === 1 && (await page.getByText('Decide', { exact: true }).count()) === 1);
+await page.goto(`${BASE}/discipline?tab=cases&case=case2`);
+const c2Dlg = page.locator('dialog[open]');
+await c2Dlg.getByText(/The employee asked for a hearing: hold one/).waitFor();
+await c2Dlg.getByLabel('When (Manila)').fill('2026-11-20T10:00');
+await c2Dlg.getByRole('button', { name: 'Set the hearing' }).click();
+await page.getByText('Hearing set. The employee is told.').waitFor();
+const hearing = rpcCalls('set_case_hearing').at(-1)?.body;
+check('case: the hearing is set in Manila time', hearing?.p_case_id === 'case2' && hearing?.p_at === '2026-11-20T02:00:00.000Z' && hearing?.p_place === 'HR office', JSON.stringify(hearing));
+await page.goto(`${BASE}/discipline?tab=cases&case=case3`);
+const c3Dlg = page.locator('dialog[open]');
+await c3Dlg.getByRole('combobox', { name: 'Decision', exact: true }).waitFor();
+check('decision: the code\'s penalty for this offense is the starting point', (await c3Dlg.getByRole('combobox', { name: 'Decision', exact: true }).inputValue()) === 'suspension' && (await c3Dlg.getByLabel('Days').inputValue()) === '7');
+await c3Dlg.getByLabel('Days').fill('3');
+await c3Dlg.getByLabel(/Why not the code's penalty/).fill('First offense in eight years of service.');
+await c3Dlg.getByLabel('The written decision').fill('After hearing both sides, he was asleep at the gate; three days suspension under A-1.');
+await page.screenshot({ path: `${ROOT}tests/shots/discipline-case.png` });
+await c3Dlg.getByRole('button', { name: 'Issue the decision' }).click();
+await page.getByText('Decision issued. The employee is told.').waitFor();
+const dec = rpcCalls('decide_case').at(-1)?.body;
+check('decision: a lighter penalty goes with its reason', dec?.p_case_id === 'case3' && dec?.p_decision === 'suspension' && dec?.p_suspension_days === 3 && /eight years/.test(dec?.p_departs_reason ?? ''), JSON.stringify(dec));
+
 console.log('Jump to, keyboard, every width, reduced motion');
 await page.goto(`${BASE}/`);
 await page.getByRole('heading', { name: /^Good/ }).waitFor();
@@ -864,6 +1007,13 @@ for (const r of requests.filter((x) => x.path.startsWith('/rest/v1/'))) {
     if (k.endsWith('or')) {
       const target = k.includes('.') ? 'employees' : table;
       for (const c of [...v.matchAll(/(\w+)\.(?:ilike|eq|is|neq|in|gte|lte|gt|lt)\./g)].map((x) => x[1])) if (!cols[target].includes(c)) problems.add(`${where}: or-filter on missing ${target}.${c}`);
+      continue;
+    }
+    if (k.includes('.')) {
+      const [alias, col] = k.split('.');
+      const sel = url.searchParams.get('select') ?? '';
+      const embedded = new RegExp(`(?:^|,)\\s*${alias}:(\\w+)`).exec(sel)?.[1] ?? (new RegExp(`(?:^|,)\\s*${alias}[!(]`).test(sel) ? alias : null);
+      if (!embedded || !cols[embedded]?.includes(col)) problems.add(`${where}: filter on missing embedded ${k}`);
       continue;
     }
     if (!cols[table].includes(k)) problems.add(`${where}: filter on missing ${table}.${k}`);

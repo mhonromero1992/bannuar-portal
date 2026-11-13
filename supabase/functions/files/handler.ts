@@ -10,7 +10,8 @@
  *   3. puts it in S3, encrypted, then finish_file_upload with the service role
  *   Answers { id, key, name, content_type, size_bytes }.
  * POST { action: 'sign', keys: [...], download?: true }
- *   authorize_file_reads with their token, then a five-minute link for each key they may open; the
+ *   authorize_file_reads with their token, then a five-minute link for each key they may open (employees/...,
+ *   or company/code-of-discipline/... for the code in force); the
  *   rest are left out. Answers { urls: { <key>: <link> }, expires_in: 300 }.
  * POST { action: 'check' } (super admins)
  *   stores, reads back and deletes healthcheck/<time>.txt, and makes sure the bucket refuses a plain
@@ -162,7 +163,7 @@ export function createFilesHandler(deps: FilesDeps) {
     const raw = Array.isArray(body.keys) ? body.keys : null;
     if (!raw || raw.length === 0 || raw.length > 200) return fail(400, 'invalid_input');
     if (!deps.s3) return fail(503, 'not_configured');
-    const keys = [...new Set(raw.filter((k): k is string => typeof k === 'string' && k.startsWith('employees/') && k.length <= 300))];
+    const keys = [...new Set(raw.filter((k): k is string => typeof k === 'string' && /^(employees|company)\//.test(k) && k.length <= 300))];
     if (keys.length === 0) return json(200, { urls: {}, expires_in: LINK_SECONDS });
     const r = await deps.userClient(jwt).rpc('authorize_file_reads', { p_keys: keys });
     if (r.error) return dbFail(r.error, log);

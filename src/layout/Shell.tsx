@@ -51,6 +51,9 @@ const SCREEN_ROUTES: Record<string, string> = {
   job_application: '/recruitment',
   inquiry: '/inquiries',
   announcement: '/announcements',
+  incident_report: '/discipline?tab=reports',
+  discipline: '/discipline?tab=cases',
+  discipline_code: '/discipline?tab=code',
 };
 
 function Bell() {
@@ -214,6 +217,7 @@ export default function Shell() {
       items: [
         { to: '/requests', label: 'Requests', show: can.hr || can.payroll || can.ops || access?.roles.includes('management') === true, count: requestsCount },
         { to: '/attendance', label: 'Attendance', show: true },
+        { to: '/discipline', label: 'Discipline', show: can.hr || can.ops },
         { to: '/announcements', label: 'Announcements', show: true },
         { to: '/payroll', label: 'Payroll', show: can.payroll },
         { to: '/recruitment', label: 'Recruitment', show: can.hr, count: d?.applications_new },

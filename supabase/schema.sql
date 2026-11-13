@@ -707,12 +707,10 @@ alter table public.attendance_logs add constraint attendance_logs_location_check
 -- Payslips are not stored: their PDF is made each time someone downloads it.
 create table if not exists public.stored_files (
   id uuid primary key default gen_random_uuid(),
-  object_key text not null unique check (
-    object_key ~ '^employees/[A-Za-z0-9][A-Za-z0-9._-]*/(201-file|work-requirements|lesp|attendance|leave|certificates)/[A-Za-z0-9][A-Za-z0-9/._-]*$'
-    and object_key !~ '/\.' and length(object_key) <= 300),
+  object_key text not null unique,
   employee_id uuid references public.employees (id) on delete set null,
-  purpose text not null check (purpose in ('document', 'leave', 'attendance', 'certificate')),
-  folder text not null check (folder in ('201-file', 'work-requirements', 'lesp', 'attendance', 'leave', 'certificates')),
+  purpose text not null,
+  folder text not null,
   document_type_id uuid references public.document_types (id) on delete set null,
   certificate_id uuid references public.certificates (id) on delete set null,
   content_type text not null check (content_type in ('application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic')),
@@ -723,8 +721,159 @@ create table if not exists public.stored_files (
   created_at timestamptz not null default now(),
   stored_at timestamptz
 );
+-- employees/<number>/<folder>/... for employee files; company/code-of-discipline/... for the company's
+-- Code of Discipline (HR uploads it; Claude reads it into offense rules, section 16)
+alter table public.stored_files drop constraint if exists stored_files_object_key_check;
+alter table public.stored_files add constraint stored_files_object_key_check check (
+  (object_key ~ '^employees/[A-Za-z0-9][A-Za-z0-9._-]*/(201-file|work-requirements|lesp|attendance|leave|certificates)/[A-Za-z0-9][A-Za-z0-9/._-]*$'
+   or object_key ~ '^company/code-of-discipline/[A-Za-z0-9][A-Za-z0-9._-]*$')
+  and object_key !~ '/\.' and length(object_key) <= 300);
+alter table public.stored_files drop constraint if exists stored_files_purpose_check;
+alter table public.stored_files add constraint stored_files_purpose_check
+  check (purpose in ('document', 'leave', 'attendance', 'certificate', 'policy'));
+alter table public.stored_files drop constraint if exists stored_files_folder_check;
+alter table public.stored_files add constraint stored_files_folder_check
+  check (folder in ('201-file', 'work-requirements', 'lesp', 'attendance', 'leave', 'certificates', 'code-of-discipline'));
 create index if not exists stored_files_employee_idx on public.stored_files (employee_id, folder, created_at desc);
 create index if not exists stored_files_uploader_idx on public.stored_files (uploaded_by, created_at desc);
+
+-- Discipline (functions, rules and access in section 16). The Code of Discipline is the basis: HR
+-- uploads it, Claude reads it into offense rules, and HR approves each rule before it is used. Incident
+-- reports (from clients, commanders or staff) can become cases, and a case follows due process under
+-- the Labor Code (Art. 292(b), 297) and DOLE Department Order 147-15: a written notice to explain with
+-- at least five calendar days to answer, a chance to be heard, and a written decision.
+create sequence if not exists public.incident_no_seq;
+create sequence if not exists public.case_no_seq;
+
+create table if not exists public.discipline_codes (
+  id uuid primary key default gen_random_uuid(),
+  title text not null check (length(trim(title)) between 3 and 200),
+  effective_on date,
+  file_key text not null unique,
+  status text not null default 'draft' check (status in ('draft', 'active', 'retired')),
+  read_status text not null default 'not_read' check (read_status in ('not_read', 'reading', 'read', 'failed')),
+  read_job text,                -- Claude's Message Batch while it reads the PDF
+  read_model text,
+  read_error text,
+  read_started_at timestamptz,
+  read_at timestamptz,
+  summary text,                 -- Claude's few sentences on what the code covers
+  compliance_notes jsonb not null default '[]'::jsonb check (jsonb_typeof(compliance_notes) = 'array'),
+  uploaded_by uuid references auth.users (id) on delete set null,
+  activated_by uuid references auth.users (id) on delete set null,
+  activated_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists discipline_codes_one_active on public.discipline_codes ((true)) where status = 'active';
+
+-- [{offense: 1, action: 'warning' | 'reprimand' | 'suspension' | 'dismissal' | 'other', days: 0, text: '...'}]
+create or replace function public.valid_penalties(p jsonb) returns boolean
+language sql immutable set search_path = '' as $$
+  select jsonb_typeof(p) = 'array' and jsonb_array_length(p) <= 10 and not exists (
+    select 1 from jsonb_array_elements(p) x
+    where jsonb_typeof(x) <> 'object'
+       or jsonb_typeof(x -> 'offense') <> 'number' or (x ->> 'offense')::numeric not between 1 and 10
+       or coalesce(x ->> 'action', '') not in ('warning', 'reprimand', 'suspension', 'dismissal', 'other')
+       or (x ->> 'action' = 'suspension' and (jsonb_typeof(x -> 'days') <> 'number' or (x ->> 'days')::numeric not between 1 and 90))
+       or length(coalesce(x ->> 'text', '')) > 500)
+$$;
+
+create table if not exists public.offense_rules (
+  id uuid primary key default gen_random_uuid(),
+  code_id uuid not null references public.discipline_codes (id) on delete cascade,
+  ref text not null default '' check (length(ref) <= 40),          -- the code's own numbering
+  title text not null check (length(trim(title)) between 2 and 300),
+  description text not null default '' check (length(description) <= 2000),
+  category text not null default 'other' check (category in (
+    'attendance', 'post_duty', 'conduct', 'uniform_equipment', 'dishonesty', 'safety_security', 'substance',
+    'insubordination', 'other')),
+  gravity text not null default 'unclassified' check (gravity in ('light', 'less_serious', 'serious', 'grave', 'unclassified')),
+  penalties jsonb not null default '[]'::jsonb check (public.valid_penalties(penalties)),
+  just_cause text not null default 'none' check (just_cause in (
+    'none', 'serious_misconduct', 'willful_disobedience', 'gross_neglect', 'fraud_breach_of_trust',
+    'crime_against_employer', 'analogous')),                     -- Labor Code Art. 297, when dismissal is a penalty
+  source_text text not null default '' check (length(source_text) <= 2000),  -- the code's words
+  page integer check (page is null or page between 1 and 2000),
+  sort integer not null default 0,
+  status text not null default 'proposed' check (status in ('proposed', 'approved', 'rejected')),
+  from_ai boolean not null default false,
+  reviewed_by uuid references auth.users (id) on delete set null,
+  reviewed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists offense_rules_code_idx on public.offense_rules (code_id, sort);
+
+create table if not exists public.incident_reports (
+  id uuid primary key default gen_random_uuid(),
+  report_no text not null unique,
+  site_id uuid references public.sites (id) on delete set null,
+  client_id uuid references public.clients (id) on delete set null,
+  employee_id uuid references public.employees (id) on delete set null,   -- the guard, when known
+  guard_described text check (length(guard_described) <= 200),          -- as the reporter put it
+  occurred_at timestamptz not null,
+  title text not null check (length(trim(title)) between 3 and 200),
+  details text not null check (length(trim(details)) between 10 and 5000),
+  reporter_kind text not null check (reporter_kind in ('client', 'commander', 'staff')),
+  reported_by uuid references auth.users (id) on delete set null,
+  reporter_name text,
+  status text not null default 'received' check (status in ('received', 'investigating', 'action_taken', 'closed', 'not_pursued')),
+  client_update text check (length(client_update) <= 1000),             -- what the client is told
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists incident_reports_status_idx on public.incident_reports (status, created_at desc);
+create index if not exists incident_reports_site_idx on public.incident_reports (site_id, created_at desc);
+
+create table if not exists public.disciplinary_cases (
+  id uuid primary key default gen_random_uuid(),
+  case_no text not null unique,
+  employee_id uuid not null references public.employees (id) on delete cascade,
+  incident_id uuid references public.incident_reports (id) on delete set null,
+  rule_id uuid references public.offense_rules (id) on delete restrict,
+  offense_no integer check (offense_no between 1 and 10),     -- first, second ... offense of this rule
+  facts text not null check (length(trim(facts)) between 10 and 5000),
+  status text not null default 'draft' check (status in ('draft', 'nte_issued', 'explained', 'hearing_set', 'decided', 'withdrawn')),
+  -- 1. notice to explain
+  nte_text text check (length(nte_text) <= 10000),
+  nte_issued_at timestamptz,
+  nte_issued_by uuid references auth.users (id) on delete set null,
+  explain_by timestamptz,
+  nte_received_at timestamptz,
+  -- 2. the employee's side
+  explanation text check (length(explanation) <= 10000),
+  explanation_via text check (explanation_via in ('app', 'paper')),
+  explained_at timestamptz,
+  wants_hearing boolean not null default false,
+  -- 3. hearing or conference
+  hearing_at timestamptz,
+  hearing_place text check (length(hearing_place) <= 200),
+  hearing_notes text check (length(hearing_notes) <= 10000),
+  hearing_held_at timestamptz,
+  -- 4. decision
+  decision text check (decision in ('no_violation', 'warning', 'reprimand', 'suspension', 'dismissal')),
+  suspension_days integer check (suspension_days between 1 and 90),
+  suspension_from date,
+  decision_text text check (length(decision_text) <= 10000),
+  departs_reason text check (length(departs_reason) <= 2000),   -- why the penalty is not the code's
+  decided_at timestamptz,
+  decided_by uuid references auth.users (id) on delete set null,
+  decision_received_at timestamptz,
+  -- preventive suspension during the investigation: at most 30 days (Omnibus Rules, Book V, Rule XIV)
+  preventive_from date,
+  preventive_to date,
+  preventive_reason text check (length(preventive_reason) <= 2000),
+  withdrawn_reason text check (length(withdrawn_reason) <= 2000),
+  ai_suggestion jsonb,
+  ai_suggested_at timestamptz,
+  created_by uuid references auth.users (id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (preventive_to is null or (preventive_from is not null and preventive_to >= preventive_from and preventive_to - preventive_from < 30))
+);
+create index if not exists disciplinary_cases_employee_idx on public.disciplinary_cases (employee_id, created_at desc);
+create index if not exists disciplinary_cases_status_idx on public.disciplinary_cases (status, created_at desc);
 
 -- Recruitment (the website's careers page)
 create table if not exists public.job_openings (
@@ -2122,6 +2271,7 @@ language sql immutable set search_path = '' as $$
     when 'leave' then '{"max_bytes": 10485760, "types": ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic"]}'
     when 'attendance' then '{"max_bytes": 3145728, "types": ["image/jpeg", "image/png", "image/webp", "image/heic"]}'
     when 'certificate' then '{"max_bytes": 5242880, "types": ["application/pdf"]}'
+    when 'policy' then '{"max_bytes": 10485760, "types": ["application/pdf"]}'
   end)::jsonb
 $$;
 
@@ -2184,6 +2334,19 @@ begin
   if not v_hr and (select count(*) from public.stored_files f
                    where f.uploaded_by = auth.uid() and f.created_at > now() - interval '1 hour') >= 60 then
     raise exception 'Too many uploads in an hour. Try again later.' using errcode = 'P0001';
+  end if;
+
+  -- the company's Code of Discipline: HR only, a PDF, not in anyone's folder
+  if p_purpose = 'policy' then
+    if not v_hr then
+      raise exception 'Only HR uploads the Code of Discipline' using errcode = '42501';
+    end if;
+    v_key := 'company/code-of-discipline/' || to_char(v_now, 'YYYY-MM-DD') || '_code-of-discipline_' || v_rand || '.pdf';
+    insert into public.stored_files (object_key, employee_id, purpose, folder, content_type, max_bytes, uploaded_by)
+    values (v_key, null, 'policy', 'code-of-discipline', p_content_type, (v_rule ->> 'max_bytes')::integer, auth.uid())
+    returning id into v_id;
+    return jsonb_build_object('id', v_id, 'key', v_key, 'content_type', p_content_type,
+                              'max_bytes', (v_rule ->> 'max_bytes')::integer);
   end if;
 
   if p_purpose = 'document' then
@@ -2299,6 +2462,9 @@ language sql stable security definer set search_path = '' as $$
       or (f.purpose = 'attendance' and exists (
             select 1 from public.attendance_logs a
             where a.photo_path = f.object_key and a.site_id = any (public.my_supervised_site_ids())))
+      -- every employee may read the Code of Discipline in force
+      or (f.purpose = 'policy' and public.current_employee_id() is not null and exists (
+            select 1 from public.discipline_codes c where c.file_key = f.object_key and c.status = 'active'))
     )
 $$;
 
@@ -3594,3 +3760,801 @@ begin
 end $$;
 
 -- Done. Next: supabase/SETUP.md
+
+-- -------------------------------------------------------------------------------------
+-- 16. Discipline: the Code of Discipline, incident reports and cases with due process
+-- -------------------------------------------------------------------------------------
+-- Claude (the Anthropic API, called only from the discipline-ai Edge Function, which holds the key)
+-- reads the uploaded code into offense rules and suggests matching rules and a draft notice for a case.
+-- Everything it writes is a proposal: HR approves each rule, and HR decides every case. These functions
+-- enforce the steps; they do not judge.
+
+create or replace function public.hr_roles() returns public.app_role[]
+language sql immutable set search_path = '' as $$
+  select array['super_admin', 'hr_admin', 'hr_staff']::public.app_role[]
+$$;
+
+-- Step 1 (HR): a new code from a PDF the files function stored (purpose 'policy')
+create or replace function public.create_discipline_code(p_title text, p_effective_on date, p_file_key text)
+returns uuid language plpgsql security definer set search_path = '' as $$
+declare
+  v_id uuid;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR adds the Code of Discipline' using errcode = '42501';
+  end if;
+  if length(trim(coalesce(p_title, ''))) < 3 then
+    raise exception 'Give the code a title' using errcode = '22023';
+  end if;
+  if not exists (select 1 from public.stored_files f where f.object_key = p_file_key and f.purpose = 'policy'
+                 and f.status = 'stored' and f.uploaded_by = auth.uid()) then
+    raise exception 'The PDF did not arrive. Upload it again.' using errcode = 'P0001';
+  end if;
+  insert into public.discipline_codes (title, effective_on, file_key, uploaded_by)
+  values (trim(p_title), p_effective_on, p_file_key, auth.uid())
+  returning id into v_id;
+  return v_id;
+end $$;
+
+-- Step 2 (HR, through discipline-ai): Claude starts reading. A code is read before any of its rules is
+-- approved; after that, HR edits rules by hand. A read that has run over two hours may be started again.
+create or replace function public.start_code_reading(p_code_id uuid) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  c public.discipline_codes;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR can have the code read' using errcode = '42501';
+  end if;
+  select * into c from public.discipline_codes where id = p_code_id for update;
+  if not found then
+    raise exception 'Code not found' using errcode = 'P0002';
+  end if;
+  if c.status <> 'draft' then
+    raise exception 'Only a draft code is read. This one is already in use or retired.' using errcode = 'P0001';
+  end if;
+  if c.read_status = 'reading' and c.read_started_at > now() - interval '2 hours' then
+    raise exception 'Claude is already reading this code' using errcode = 'P0001';
+  end if;
+  if exists (select 1 from public.offense_rules r where r.code_id = c.id and r.status <> 'proposed') then
+    raise exception 'Rules of this code were already reviewed. Edit them by hand instead.' using errcode = 'P0001';
+  end if;
+  update public.discipline_codes
+  set read_status = 'reading', read_started_at = now(), read_error = null, read_job = null
+  where id = c.id;
+  return jsonb_build_object('id', c.id, 'title', c.title, 'file_key', c.file_key);
+end $$;
+
+-- Where Claude's reading stands (HR, through discipline-ai, which then asks Anthropic about the batch)
+create or replace function public.code_reading_status(p_code_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  c public.discipline_codes;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR follows the reading' using errcode = '42501';
+  end if;
+  select * into c from public.discipline_codes where id = p_code_id;
+  if not found then
+    raise exception 'Code not found' using errcode = 'P0002';
+  end if;
+  return jsonb_build_object('read_status', c.read_status, 'read_job', c.read_job, 'read_started_at', c.read_started_at,
+                            'read_error', c.read_error);
+end $$;
+
+-- The discipline-ai function only (service role)
+create or replace function public.set_code_reading_job(p_code_id uuid, p_job text, p_model text) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.is_trusted() then
+    raise exception 'Only the discipline-ai service records this' using errcode = '42501';
+  end if;
+  update public.discipline_codes set read_job = p_job, read_model = p_model
+  where id = p_code_id and read_status = 'reading';
+end $$;
+
+create or replace function public.fail_code_reading(p_code_id uuid, p_error text) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.is_trusted() then
+    raise exception 'Only the discipline-ai service records this' using errcode = '42501';
+  end if;
+  update public.discipline_codes set read_status = 'failed', read_error = left(coalesce(p_error, 'Reading failed'), 500), read_job = null
+  where id = p_code_id and read_status = 'reading';
+end $$;
+
+-- What Claude found: the proposed rules replace earlier proposals (nothing was reviewed yet)
+create or replace function public.finish_code_reading(p_code_id uuid, p_rules jsonb, p_summary text, p_notes jsonb, p_model text)
+returns integer language plpgsql security definer set search_path = '' as $$
+declare
+  x jsonb;
+  n integer := 0;
+begin
+  if not public.is_trusted() then
+    raise exception 'Only the discipline-ai service records this' using errcode = '42501';
+  end if;
+  if not exists (select 1 from public.discipline_codes where id = p_code_id and read_status = 'reading') then
+    raise exception 'This code is not being read' using errcode = 'P0001';
+  end if;
+  if jsonb_typeof(p_rules) <> 'array' or jsonb_typeof(coalesce(p_notes, '[]'::jsonb)) <> 'array' then
+    raise exception 'Rules must be a list' using errcode = '22023';
+  end if;
+  delete from public.offense_rules where code_id = p_code_id and status = 'proposed';
+  for x in select value from jsonb_array_elements(p_rules) loop
+    n := n + 1;
+    insert into public.offense_rules (code_id, ref, title, description, category, gravity, penalties, just_cause,
+                                      source_text, page, sort, from_ai)
+    values (p_code_id, left(coalesce(x ->> 'ref', ''), 40), left(coalesce(nullif(trim(x ->> 'title'), ''), 'Untitled offense'), 300),
+            left(coalesce(x ->> 'description', ''), 2000),
+            case when x ->> 'category' in ('attendance', 'post_duty', 'conduct', 'uniform_equipment', 'dishonesty',
+                                           'safety_security', 'substance', 'insubordination') then x ->> 'category' else 'other' end,
+            case when x ->> 'gravity' in ('light', 'less_serious', 'serious', 'grave') then x ->> 'gravity' else 'unclassified' end,
+            case when public.valid_penalties(coalesce(x -> 'penalties', '[]'::jsonb)) then x -> 'penalties' else '[]'::jsonb end,
+            case when x ->> 'just_cause' in ('serious_misconduct', 'willful_disobedience', 'gross_neglect', 'fraud_breach_of_trust',
+                                             'crime_against_employer', 'analogous') then x ->> 'just_cause' else 'none' end,
+            left(coalesce(x ->> 'source_text', ''), 2000),
+            case when jsonb_typeof(x -> 'page') = 'number' and (x ->> 'page')::numeric between 1 and 2000 then (x ->> 'page')::numeric::integer end,
+            n, true);
+  end loop;
+  update public.discipline_codes
+  set read_status = 'read', read_at = now(), read_job = null, read_error = null, read_model = p_model,
+      summary = left(p_summary, 2000), compliance_notes = coalesce(p_notes, '[]'::jsonb)
+  where id = p_code_id;
+  perform public.notify_roles(public.hr_roles(), 'Claude finished reading the Code of Discipline',
+    n || ' offense rules to review', 'discipline_code', jsonb_build_object('screen', 'Discipline', 'tab', 'code'));
+  return n;
+end $$;
+
+-- Rules HR edits: validated, and every change of status is signed
+create or replace function public.offense_rules_before_write() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if (select c.status from public.discipline_codes c where c.id = new.code_id) = 'retired' then
+    raise exception 'This code is retired. Its rules can no longer change.' using errcode = 'P0001';
+  end if;
+  if tg_op = 'INSERT' or new.status is distinct from old.status then
+    if new.status <> 'proposed' then
+      new.reviewed_by := auth.uid();
+      new.reviewed_at := now();
+    end if;
+  end if;
+  if tg_op = 'UPDATE' and old.status = 'approved' and new.status = 'approved' and new.code_id = old.code_id
+     and (select c.status from public.discipline_codes c where c.id = new.code_id) = 'active'
+     and exists (select 1 from public.disciplinary_cases dc where dc.rule_id = new.id and dc.status <> 'draft')
+     and (new.penalties is distinct from old.penalties or new.title is distinct from old.title) then
+    raise exception 'Cases already rest on this rule. Upload a new version of the code to change it.' using errcode = 'P0001';
+  end if;
+  return new;
+end $$;
+drop trigger if exists offense_rules_before_write on public.offense_rules;
+create trigger offense_rules_before_write before insert or update on public.offense_rules
+  for each row execute function public.offense_rules_before_write();
+
+create or replace function public.offense_rules_before_delete() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if exists (select 1 from public.disciplinary_cases dc where dc.rule_id = old.id) then
+    raise exception 'A case uses this rule. Reject it instead of deleting it.' using errcode = 'P0001';
+  end if;
+  return old;
+end $$;
+drop trigger if exists offense_rules_before_delete on public.offense_rules;
+create trigger offense_rules_before_delete before delete on public.offense_rules
+  for each row execute function public.offense_rules_before_delete();
+
+-- Step 3 (HR): this version becomes the basis of new cases; the one before is retired
+create or replace function public.activate_discipline_code(p_code_id uuid) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  c public.discipline_codes;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR puts a code in force' using errcode = '42501';
+  end if;
+  select * into c from public.discipline_codes where id = p_code_id for update;
+  if not found or c.status <> 'draft' then
+    raise exception 'Only a draft code can be put in force' using errcode = 'P0001';
+  end if;
+  if exists (select 1 from public.offense_rules where code_id = c.id and status = 'proposed') then
+    raise exception 'Approve or reject every rule first' using errcode = 'P0001';
+  end if;
+  if not exists (select 1 from public.offense_rules where code_id = c.id and status = 'approved') then
+    raise exception 'Approve at least one rule first' using errcode = 'P0001';
+  end if;
+  update public.discipline_codes set status = 'retired' where status = 'active';
+  update public.discipline_codes set status = 'active', activated_by = auth.uid(), activated_at = now() where id = c.id;
+end $$;
+
+-- Incident reports: from staff (HR or operations), a commander for their post, or a client (section 17)
+create or replace function public.file_incident_report(
+  p_site_id uuid, p_employee_id uuid, p_occurred_at timestamptz, p_title text, p_details text,
+  p_guard_described text default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_kind text;
+  v_client uuid;
+  v_name text;
+  v_no text;
+  v_id uuid;
+  me public.employees;
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in first' using errcode = '42501';
+  end if;
+  if public.is_hr() or public.is_ops() then
+    v_kind := 'staff';
+    select coalesce(p.full_name, 'Bannuar staff') into v_name from public.profiles p where p.id = auth.uid();
+  elsif p_site_id is not null and p_site_id = any (public.my_supervised_site_ids()) then
+    v_kind := 'commander';
+    select * into me from public.employees where user_id = auth.uid();
+    v_name := public.full_name(me);
+  else
+    raise exception 'You cannot file a report for this post' using errcode = '42501';
+  end if;
+  if p_site_id is not null and not exists (select 1 from public.sites where id = p_site_id) then
+    raise exception 'Post not found' using errcode = 'P0002';
+  end if;
+  if p_employee_id is not null and v_kind = 'commander' and not public.supervises(p_employee_id) then
+    raise exception 'Choose a guard of your post' using errcode = '42501';
+  end if;
+  if p_occurred_at is null or p_occurred_at > now() + interval '5 minutes' or p_occurred_at < now() - interval '1 year' then
+    raise exception 'Give when it happened (not in the future, within a year)' using errcode = '22023';
+  end if;
+  if length(trim(coalesce(p_title, ''))) < 3 then
+    raise exception 'Give the report a short title' using errcode = '22023';
+  end if;
+  if length(trim(coalesce(p_details, ''))) < 10 then
+    raise exception 'Say what happened' using errcode = '22023';
+  end if;
+  select s.client_id into v_client from public.sites s where s.id = p_site_id;
+  v_no := 'IR-' || to_char(now() at time zone 'Asia/Manila', 'YYYY') || '-' || lpad(nextval('public.incident_no_seq')::text, 6, '0');
+  insert into public.incident_reports (report_no, site_id, client_id, employee_id, guard_described, occurred_at, title, details,
+                                       reporter_kind, reported_by, reporter_name)
+  values (v_no, p_site_id, v_client, p_employee_id, nullif(left(trim(coalesce(p_guard_described, '')), 200), ''), p_occurred_at,
+          left(trim(p_title), 200), left(trim(p_details), 5000), v_kind, auth.uid(), v_name)
+  returning id into v_id;
+  perform public.notify_roles(public.hr_roles(), 'New incident report', v_no || ' · ' || left(trim(p_title), 80),
+    'incident_report', jsonb_build_object('screen', 'Discipline', 'tab', 'reports', 'id', v_id));
+  return jsonb_build_object('id', v_id, 'report_no', v_no, 'status', 'received');
+end $$;
+
+create or replace function public.update_incident_report(p_id uuid, p_status text, p_client_update text) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not (public.is_hr() or public.is_ops()) then
+    raise exception 'Only HR or operations update reports' using errcode = '42501';
+  end if;
+  if p_status not in ('received', 'investigating', 'action_taken', 'closed', 'not_pursued') then
+    raise exception 'Choose a status' using errcode = '22023';
+  end if;
+  update public.incident_reports
+  set status = p_status, client_update = nullif(left(trim(coalesce(p_client_update, '')), 1000), '')
+  where id = p_id;
+  if not found then
+    raise exception 'Report not found' using errcode = 'P0002';
+  end if;
+end $$;
+
+-- How many times before this employee was found to have broken this rule (or the same-numbered rule
+-- of an earlier version of the code)
+create or replace function public.prior_offense_count(p_employee_id uuid, p_rule_id uuid, p_except uuid default null)
+returns integer language sql stable security definer set search_path = '' as $$
+  select count(*)::integer
+  from public.disciplinary_cases dc
+  join public.offense_rules r on r.id = dc.rule_id
+  join public.offense_rules this on this.id = p_rule_id
+  where dc.employee_id = p_employee_id and dc.status = 'decided' and dc.decision <> 'no_violation'
+    and dc.id is distinct from p_except
+    and (r.id = this.id or (this.ref <> '' and r.ref = this.ref and lower(r.title) = lower(this.title)))
+$$;
+
+-- The rule must be an approved rule of the code in force
+create or replace function public.check_case_rule(p_rule_id uuid) returns void
+language plpgsql stable security definer set search_path = '' as $$
+begin
+  if p_rule_id is not null and not exists (
+      select 1 from public.offense_rules r join public.discipline_codes c on c.id = r.code_id
+      where r.id = p_rule_id and r.status = 'approved' and c.status = 'active') then
+    raise exception 'Choose an approved rule of the Code of Discipline in force' using errcode = '22023';
+  end if;
+end $$;
+
+-- A case (HR). It stays a draft, unseen by the employee, until the notice to explain is issued.
+create or replace function public.open_disciplinary_case(p_employee_id uuid, p_incident_id uuid, p_rule_id uuid, p_facts text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_no text;
+  v_id uuid;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR opens discipline cases' using errcode = '42501';
+  end if;
+  if not exists (select 1 from public.employees where id = p_employee_id) then
+    raise exception 'Employee not found' using errcode = 'P0002';
+  end if;
+  if p_incident_id is not null and not exists (select 1 from public.incident_reports where id = p_incident_id) then
+    raise exception 'Report not found' using errcode = 'P0002';
+  end if;
+  perform public.check_case_rule(p_rule_id);
+  if length(trim(coalesce(p_facts, ''))) < 10 then
+    raise exception 'Write down the facts: what, when and where' using errcode = '22023';
+  end if;
+  v_no := 'DC-' || to_char(now() at time zone 'Asia/Manila', 'YYYY') || '-' || lpad(nextval('public.case_no_seq')::text, 6, '0');
+  insert into public.disciplinary_cases (case_no, employee_id, incident_id, rule_id, offense_no, facts, created_by)
+  values (v_no, p_employee_id, p_incident_id, p_rule_id,
+          case when p_rule_id is not null then least(public.prior_offense_count(p_employee_id, p_rule_id) + 1, 10) end,
+          trim(p_facts), auth.uid())
+  returning id into v_id;
+  update public.incident_reports set status = 'investigating' where id = p_incident_id and status = 'received';
+  return jsonb_build_object('id', v_id, 'case_no', v_no);
+end $$;
+
+create or replace function public.update_case_draft(p_case_id uuid, p_rule_id uuid, p_offense_no integer, p_facts text)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+  dc public.disciplinary_cases;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR edits discipline cases' using errcode = '42501';
+  end if;
+  select * into dc from public.disciplinary_cases where id = p_case_id for update;
+  if not found then
+    raise exception 'Case not found' using errcode = 'P0002';
+  end if;
+  if dc.status <> 'draft' then
+    raise exception 'The notice was issued. The charge can no longer change; withdraw the case and open a new one.' using errcode = 'P0001';
+  end if;
+  perform public.check_case_rule(p_rule_id);
+  if p_offense_no is not null and p_offense_no not between 1 and 10 then
+    raise exception 'The offense count is from 1 to 10' using errcode = '22023';
+  end if;
+  if length(trim(coalesce(p_facts, ''))) < 10 then
+    raise exception 'Write down the facts: what, when and where' using errcode = '22023';
+  end if;
+  update public.disciplinary_cases
+  set rule_id = p_rule_id,
+      offense_no = case when p_rule_id is null then null
+                        else coalesce(p_offense_no, least(public.prior_offense_count(dc.employee_id, p_rule_id, dc.id) + 1, 10)) end,
+      facts = trim(p_facts)
+  where id = dc.id;
+end $$;
+
+-- Notice to explain: the charge (an approved rule), the facts, and at least five calendar days to answer
+create or replace function public.issue_nte(p_case_id uuid, p_nte_text text, p_explain_by timestamptz) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  dc public.disciplinary_cases;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR issues notices' using errcode = '42501';
+  end if;
+  select * into dc from public.disciplinary_cases where id = p_case_id for update;
+  if not found then
+    raise exception 'Case not found' using errcode = 'P0002';
+  end if;
+  if dc.status <> 'draft' then
+    raise exception 'The notice was already issued' using errcode = 'P0001';
+  end if;
+  if dc.rule_id is null then
+    raise exception 'Choose the rule the employee may have broken first' using errcode = 'P0001';
+  end if;
+  perform public.check_case_rule(dc.rule_id);
+  if length(trim(coalesce(p_nte_text, ''))) < 50 then
+    raise exception 'Write the notice: the acts, when and where, and the rule' using errcode = '22023';
+  end if;
+  if p_nte_text ~ '\{\{|\[to fill in\]' then
+    raise exception 'The notice still has blanks to fill in' using errcode = '22023';
+  end if;
+  if p_explain_by is null or p_explain_by < now() + interval '5 days' - interval '1 minute' then
+    raise exception 'Give the employee at least five calendar days to answer (DOLE D.O. 147-15)' using errcode = '22023';
+  end if;
+  update public.disciplinary_cases
+  set status = 'nte_issued', nte_text = trim(p_nte_text), nte_issued_at = now(), nte_issued_by = auth.uid(), explain_by = p_explain_by
+  where id = dc.id;
+  perform public.notify_employee(dc.employee_id, 'You have a notice from HR',
+    'Open the app to read it. You can answer until ' || to_char(p_explain_by at time zone 'Asia/Manila', 'FMMon FMDD') || '.',
+    'discipline', jsonb_build_object('screen', 'Notices'));
+end $$;
+
+-- The employee, in the app: "I received this" (the notice or the decision)
+create or replace function public.acknowledge_case_notice(p_case_id uuid, p_which text) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  dc public.disciplinary_cases;
+begin
+  select * into dc from public.disciplinary_cases where id = p_case_id and employee_id = public.current_employee_id();
+  if not found or dc.status = 'draft' then
+    raise exception 'Notice not found' using errcode = 'P0002';
+  end if;
+  if p_which = 'nte' then
+    update public.disciplinary_cases set nte_received_at = coalesce(nte_received_at, now()) where id = dc.id;
+  elsif p_which = 'decision' and dc.status = 'decided' then
+    update public.disciplinary_cases set decision_received_at = coalesce(decision_received_at, now()) where id = dc.id;
+  else
+    raise exception 'Nothing to acknowledge' using errcode = '22023';
+  end if;
+end $$;
+
+-- The employee's written explanation, from the app, until HR decides (a late answer is still heard)
+create or replace function public.submit_case_explanation(p_case_id uuid, p_text text, p_wants_hearing boolean)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+  dc public.disciplinary_cases;
+begin
+  select * into dc from public.disciplinary_cases where id = p_case_id and employee_id = public.current_employee_id() for update;
+  if not found or dc.status = 'draft' then
+    raise exception 'Notice not found' using errcode = 'P0002';
+  end if;
+  if dc.status <> 'nte_issued' then
+    raise exception 'Your explanation was already received' using errcode = 'P0001';
+  end if;
+  if length(trim(coalesce(p_text, ''))) < 10 then
+    raise exception 'Write your explanation' using errcode = '22023';
+  end if;
+  update public.disciplinary_cases
+  set status = 'explained', explanation = left(trim(p_text), 10000), explanation_via = 'app', explained_at = now(),
+      wants_hearing = coalesce(p_wants_hearing, false), nte_received_at = coalesce(nte_received_at, now())
+  where id = dc.id;
+  perform public.notify_roles(public.hr_roles(), 'Explanation received', dc.case_no, 'discipline',
+    jsonb_build_object('screen', 'Discipline', 'tab', 'cases', 'id', dc.id));
+end $$;
+
+-- HR records a written explanation handed in on paper (the signed copy goes to the 201 file)
+create or replace function public.record_case_explanation(p_case_id uuid, p_text text, p_wants_hearing boolean)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+  dc public.disciplinary_cases;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR records explanations' using errcode = '42501';
+  end if;
+  select * into dc from public.disciplinary_cases where id = p_case_id for update;
+  if not found then
+    raise exception 'Case not found' using errcode = 'P0002';
+  end if;
+  if dc.status <> 'nte_issued' then
+    raise exception 'The explanation can be recorded only while the notice waits for one' using errcode = 'P0001';
+  end if;
+  if length(trim(coalesce(p_text, ''))) < 10 then
+    raise exception 'Copy the explanation as written' using errcode = '22023';
+  end if;
+  update public.disciplinary_cases
+  set status = 'explained', explanation = left(trim(p_text), 10000), explanation_via = 'paper', explained_at = now(),
+      wants_hearing = coalesce(p_wants_hearing, false), nte_received_at = coalesce(nte_received_at, now())
+  where id = dc.id;
+end $$;
+
+-- A hearing or conference, where the employee may answer with a representative
+create or replace function public.set_case_hearing(p_case_id uuid, p_at timestamptz, p_place text) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  dc public.disciplinary_cases;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR sets hearings' using errcode = '42501';
+  end if;
+  select * into dc from public.disciplinary_cases where id = p_case_id for update;
+  if not found then
+    raise exception 'Case not found' using errcode = 'P0002';
+  end if;
+  if dc.status not in ('nte_issued', 'explained', 'hearing_set') then
+    raise exception 'A hearing is set after the notice and before the decision' using errcode = 'P0001';
+  end if;
+  if p_at is null or p_at < now() + interval '1 day' - interval '1 minute' then
+    raise exception 'Set it at least a day ahead, so the employee can come and bring a representative' using errcode = '22023';
+  end if;
+  if length(trim(coalesce(p_place, ''))) < 3 then
+    raise exception 'Say where it will be' using errcode = '22023';
+  end if;
+  update public.disciplinary_cases set status = 'hearing_set', hearing_at = p_at, hearing_place = trim(p_place), hearing_held_at = null
+  where id = dc.id;
+  perform public.notify_employee(dc.employee_id, 'HR set a meeting about your notice',
+    to_char(p_at at time zone 'Asia/Manila', 'FMMon FMDD, FMHH12:MI AM') || ' · ' || left(trim(p_place), 80) ||
+    '. You may bring a representative.', 'discipline', jsonb_build_object('screen', 'Notices'));
+end $$;
+
+create or replace function public.record_case_hearing(p_case_id uuid, p_notes text) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  dc public.disciplinary_cases;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR records hearings' using errcode = '42501';
+  end if;
+  select * into dc from public.disciplinary_cases where id = p_case_id for update;
+  if not found then
+    raise exception 'Case not found' using errcode = 'P0002';
+  end if;
+  if dc.status <> 'hearing_set' or dc.hearing_at > now() + interval '1 hour' then
+    raise exception 'Record the hearing once it has taken place' using errcode = 'P0001';
+  end if;
+  if length(trim(coalesce(p_notes, ''))) < 20 then
+    raise exception 'Write what was said, who attended, and what the employee answered' using errcode = '22023';
+  end if;
+  update public.disciplinary_cases set hearing_notes = trim(p_notes), hearing_held_at = now() where id = dc.id;
+end $$;
+
+-- The code's penalty for this offense count: the last one listed applies to later offenses
+create or replace function public.code_penalty(p_rule_id uuid, p_offense_no integer) returns jsonb
+language sql stable security definer set search_path = '' as $$
+  select x
+  from public.offense_rules r, jsonb_array_elements(r.penalties) x
+  where r.id = p_rule_id and (x ->> 'offense')::integer <= greatest(coalesce(p_offense_no, 1), 1)
+  order by (x ->> 'offense')::integer desc
+  limit 1
+$$;
+
+-- The written decision. The employee must have been heard: an explanation (or the deadline passed with
+-- none), a hearing when they asked for one, and always a hearing or conference before a dismissal. A
+-- penalty other than the code's for this offense count needs a reason.
+create or replace function public.decide_case(
+  p_case_id uuid, p_decision text, p_suspension_days integer, p_suspension_from date, p_decision_text text,
+  p_departs_reason text default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  dc public.disciplinary_cases;
+  v_pen jsonb;
+  v_departs boolean := false;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR decides discipline cases' using errcode = '42501';
+  end if;
+  select * into dc from public.disciplinary_cases where id = p_case_id for update;
+  if not found then
+    raise exception 'Case not found' using errcode = 'P0002';
+  end if;
+  if dc.status not in ('nte_issued', 'explained', 'hearing_set') then
+    raise exception 'This case cannot be decided now' using errcode = 'P0001';
+  end if;
+  if dc.status = 'nte_issued' and now() < dc.explain_by then
+    raise exception 'Wait for the explanation: the employee has until %', to_char(dc.explain_by at time zone 'Asia/Manila', 'FMMon FMDD, FMHH12:MI AM')
+      using errcode = 'P0001';
+  end if;
+  if dc.status = 'hearing_set' and dc.hearing_held_at is null then
+    raise exception 'Record the hearing first' using errcode = 'P0001';
+  end if;
+  if dc.wants_hearing and dc.hearing_held_at is null then
+    raise exception 'The employee asked for a hearing. Hold it before deciding.' using errcode = 'P0001';
+  end if;
+  if p_decision not in ('no_violation', 'warning', 'reprimand', 'suspension', 'dismissal') then
+    raise exception 'Choose the decision' using errcode = '22023';
+  end if;
+  if p_decision = 'dismissal' and dc.hearing_held_at is null then
+    raise exception 'Hold a hearing or conference before a dismissal (DOLE D.O. 147-15)' using errcode = 'P0001';
+  end if;
+  if p_decision = 'suspension' and (p_suspension_days is null or p_suspension_days not between 1 and 90 or p_suspension_from is null
+                                    or p_suspension_from < (now() at time zone 'Asia/Manila')::date) then
+    raise exception 'Give the suspension''s days (1 to 90) and a start date from today' using errcode = '22023';
+  end if;
+  if length(trim(coalesce(p_decision_text, ''))) < 30 then
+    raise exception 'Write the decision: the facts found, the employee''s side, the rule, and the penalty' using errcode = '22023';
+  end if;
+  if p_decision <> 'no_violation' then
+    v_pen := public.code_penalty(dc.rule_id, dc.offense_no);
+    v_departs := v_pen is null or v_pen ->> 'action' <> p_decision
+                 or (p_decision = 'suspension' and (v_pen ->> 'days')::integer is distinct from p_suspension_days);
+    if v_departs and length(trim(coalesce(p_departs_reason, ''))) < 10 then
+      raise exception 'This is not the code''s penalty for this offense. Say why.' using errcode = '22023';
+    end if;
+  end if;
+  update public.disciplinary_cases
+  set status = 'decided', decision = p_decision,
+      suspension_days = case when p_decision = 'suspension' then p_suspension_days end,
+      suspension_from = case when p_decision = 'suspension' then p_suspension_from end,
+      decision_text = trim(p_decision_text),
+      departs_reason = case when v_departs then nullif(trim(coalesce(p_departs_reason, '')), '') end,
+      decided_at = now(), decided_by = auth.uid()
+  where id = dc.id;
+  update public.incident_reports set status = case when p_decision = 'no_violation' then 'closed' else 'action_taken' end
+  where id = dc.incident_id and status in ('received', 'investigating');
+  perform public.notify_employee(dc.employee_id, 'HR decided on your notice', 'Open the app to read the decision.',
+    'discipline', jsonb_build_object('screen', 'Notices'));
+  return jsonb_build_object('id', dc.id, 'decision', p_decision, 'departs', v_departs);
+end $$;
+
+create or replace function public.withdraw_case(p_case_id uuid, p_reason text) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  dc public.disciplinary_cases;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR withdraws cases' using errcode = '42501';
+  end if;
+  select * into dc from public.disciplinary_cases where id = p_case_id for update;
+  if not found then
+    raise exception 'Case not found' using errcode = 'P0002';
+  end if;
+  if dc.status in ('decided', 'withdrawn') then
+    raise exception 'This case is closed' using errcode = 'P0001';
+  end if;
+  if length(trim(coalesce(p_reason, ''))) < 5 then
+    raise exception 'Say why it is withdrawn' using errcode = '22023';
+  end if;
+  update public.disciplinary_cases set status = 'withdrawn', withdrawn_reason = trim(p_reason) where id = dc.id;
+  if dc.status <> 'draft' then
+    perform public.notify_employee(dc.employee_id, 'A notice to you was withdrawn', 'Open the app for details.',
+      'discipline', jsonb_build_object('screen', 'Notices'));
+  end if;
+end $$;
+
+-- Preventive suspension: only while the case is open, only for a serious and imminent threat to life or
+-- property, and at most 30 days (the employee is paid if it runs longer, Omnibus Rules Book V Rule XIV)
+create or replace function public.set_preventive_suspension(p_case_id uuid, p_from date, p_to date, p_reason text)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+  dc public.disciplinary_cases;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR sets a preventive suspension' using errcode = '42501';
+  end if;
+  select * into dc from public.disciplinary_cases where id = p_case_id for update;
+  if not found then
+    raise exception 'Case not found' using errcode = 'P0002';
+  end if;
+  if dc.status not in ('nte_issued', 'explained', 'hearing_set') then
+    raise exception 'Issue the notice to explain first' using errcode = 'P0001';
+  end if;
+  if p_from is null or p_to is null or p_to < p_from or p_to - p_from >= 30 then
+    raise exception 'A preventive suspension lasts at most 30 days' using errcode = '22023';
+  end if;
+  if length(trim(coalesce(p_reason, ''))) < 20 then
+    raise exception 'Say what serious and imminent threat to life or property the employee''s presence poses' using errcode = '22023';
+  end if;
+  update public.disciplinary_cases set preventive_from = p_from, preventive_to = p_to, preventive_reason = trim(p_reason)
+  where id = dc.id;
+  perform public.notify_employee(dc.employee_id, 'You are on preventive suspension',
+    public.date_range_label(p_from, p_to) || '. Open the app for details.', 'discipline', jsonb_build_object('screen', 'Notices'));
+end $$;
+
+-- The employee's notices, in the app: what was issued to them, never HR's working notes
+create or replace function public.my_disciplinary_cases() returns jsonb
+language sql stable security definer set search_path = '' as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'id', dc.id, 'case_no', dc.case_no, 'status', dc.status,
+      'rule', case when r.id is not null then jsonb_build_object('ref', r.ref, 'title', r.title) end,
+      'offense_no', dc.offense_no,
+      'nte_text', dc.nte_text, 'nte_issued_at', dc.nte_issued_at, 'explain_by', dc.explain_by,
+      'nte_received_at', dc.nte_received_at,
+      'explanation', dc.explanation, 'explained_at', dc.explained_at, 'wants_hearing', dc.wants_hearing,
+      'hearing_at', dc.hearing_at, 'hearing_place', dc.hearing_place, 'hearing_held_at', dc.hearing_held_at,
+      'decision', dc.decision, 'suspension_days', dc.suspension_days, 'suspension_from', dc.suspension_from,
+      'decision_text', dc.decision_text, 'decided_at', dc.decided_at, 'decision_received_at', dc.decision_received_at,
+      'preventive_from', dc.preventive_from, 'preventive_to', dc.preventive_to, 'preventive_reason', dc.preventive_reason,
+      'withdrawn_reason', case when dc.nte_issued_at is not null then dc.withdrawn_reason end)
+    order by dc.nte_issued_at desc), '[]'::jsonb)
+  from public.disciplinary_cases dc
+  left join public.offense_rules r on r.id = dc.rule_id
+  where dc.employee_id = public.current_employee_id() and dc.nte_issued_at is not null
+$$;
+
+-- What discipline-ai sends Claude for a suggestion (HR only): the facts and the approved rules, and the
+-- employee's earlier findings by rule. No names, numbers or personal details.
+create or replace function public.case_ai_context(p_case_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  dc public.disciplinary_cases;
+  ir public.incident_reports;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR asks for suggestions' using errcode = '42501';
+  end if;
+  select * into dc from public.disciplinary_cases where id = p_case_id;
+  if not found then
+    raise exception 'Case not found' using errcode = 'P0002';
+  end if;
+  if not exists (select 1 from public.discipline_codes where status = 'active') then
+    raise exception 'Put a Code of Discipline in force first' using errcode = 'P0001';
+  end if;
+  select * into ir from public.incident_reports where id = dc.incident_id;
+  return jsonb_build_object(
+    'case_id', dc.id,
+    'facts', dc.facts,
+    'report', case when ir.id is not null then jsonb_build_object(
+      'title', ir.title, 'details', ir.details, 'reported_by', ir.reporter_kind,
+      'occurred_at', to_char(ir.occurred_at at time zone 'Asia/Manila', 'YYYY-MM-DD HH24:MI')) end,
+    'rules', (select coalesce(jsonb_agg(jsonb_build_object(
+                'id', r.id, 'ref', r.ref, 'title', r.title, 'description', r.description, 'gravity', r.gravity,
+                'penalties', r.penalties, 'source_text', r.source_text) order by r.sort), '[]'::jsonb)
+              from public.offense_rules r join public.discipline_codes c on c.id = r.code_id
+              where c.status = 'active' and r.status = 'approved'),
+    'earlier_findings', (select coalesce(jsonb_agg(jsonb_build_object(
+                'rule', r.ref || ' ' || r.title, 'decision', p.decision,
+                'decided', to_char(p.decided_at at time zone 'Asia/Manila', 'YYYY-MM-DD')) order by p.decided_at), '[]'::jsonb)
+              from public.disciplinary_cases p join public.offense_rules r on r.id = p.rule_id
+              where p.employee_id = dc.employee_id and p.status = 'decided' and p.decision <> 'no_violation' and p.id <> dc.id));
+end $$;
+
+create or replace function public.save_case_suggestion(p_case_id uuid, p_suggestion jsonb) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.is_trusted() then
+    raise exception 'Only the discipline-ai service records this' using errcode = '42501';
+  end if;
+  if jsonb_typeof(p_suggestion) <> 'object' then
+    raise exception 'A suggestion is an object' using errcode = '22023';
+  end if;
+  update public.disciplinary_cases set ai_suggestion = p_suggestion, ai_suggested_at = now() where id = p_case_id;
+end $$;
+
+-- updated_at and the audit trail
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['discipline_codes', 'offense_rules', 'incident_reports', 'disciplinary_cases'] loop
+    execute format('drop trigger if exists set_updated_at on public.%I', t);
+    execute format('create trigger set_updated_at before update on public.%I for each row execute function public.set_updated_at()', t);
+    execute format('drop trigger if exists audit on public.%I', t);
+    execute format('create trigger audit after insert or update or delete on public.%I for each row execute function public.audit_row_change()', t);
+  end loop;
+end $$;
+
+-- Row level security: HR keeps the code and the cases; staff see incident reports; employees read their
+-- own notices only through my_disciplinary_cases()
+do $$
+declare
+  r record;
+begin
+  for r in select policyname, tablename from pg_policies where schemaname = 'public'
+           and tablename in ('discipline_codes', 'offense_rules', 'incident_reports', 'disciplinary_cases') loop
+    execute format('drop policy if exists %I on public.%I', r.policyname, r.tablename);
+  end loop;
+end $$;
+alter table public.discipline_codes enable row level security;
+alter table public.offense_rules enable row level security;
+alter table public.incident_reports enable row level security;
+alter table public.disciplinary_cases enable row level security;
+
+create policy "HR reads codes" on public.discipline_codes for select to authenticated using ((select public.is_hr()));
+create policy "HR edits code titles" on public.discipline_codes for update to authenticated
+  using ((select public.is_hr())) with check ((select public.is_hr()));
+create policy "HR reads rules" on public.offense_rules for select to authenticated using ((select public.is_hr()));
+create policy "HR adds rules" on public.offense_rules for insert to authenticated with check ((select public.is_hr()));
+create policy "HR edits rules" on public.offense_rules for update to authenticated
+  using ((select public.is_hr())) with check ((select public.is_hr()));
+create policy "HR deletes draft rules" on public.offense_rules for delete to authenticated
+  using ((select public.is_hr()) and exists (select 1 from public.discipline_codes c where c.id = code_id and c.status = 'draft'));
+create policy "staff read incident reports" on public.incident_reports for select to authenticated
+  using ((select public.is_staff()) or reported_by = (select auth.uid()));
+create policy "HR reads cases" on public.disciplinary_cases for select to authenticated using ((select public.is_hr()));
+
+revoke all on public.discipline_codes, public.offense_rules, public.incident_reports, public.disciplinary_cases
+  from public, anon, authenticated;
+grant select on public.discipline_codes, public.offense_rules, public.incident_reports, public.disciplinary_cases to authenticated;
+grant update (title, effective_on) on public.discipline_codes to authenticated;
+grant insert, update, delete on public.offense_rules to authenticated;
+revoke update (code_id, from_ai, reviewed_by, reviewed_at, created_at) on public.offense_rules from authenticated;
+grant select, insert, update, delete on public.discipline_codes, public.offense_rules, public.incident_reports,
+  public.disciplinary_cases to service_role;
+
+revoke execute on function
+  public.hr_roles(), public.valid_penalties(jsonb), public.prior_offense_count(uuid, uuid, uuid),
+  public.check_case_rule(uuid), public.code_penalty(uuid, integer),
+  public.set_code_reading_job(uuid, text, text), public.fail_code_reading(uuid, text),
+  public.finish_code_reading(uuid, jsonb, text, jsonb, text), public.save_case_suggestion(uuid, jsonb)
+from public, anon, authenticated;
+grant execute on function public.valid_penalties(jsonb) to authenticated;
+grant execute on function
+  public.set_code_reading_job(uuid, text, text), public.fail_code_reading(uuid, text),
+  public.finish_code_reading(uuid, jsonb, text, jsonb, text), public.save_case_suggestion(uuid, jsonb)
+to service_role;
+revoke execute on function
+  public.create_discipline_code(text, date, text), public.start_code_reading(uuid), public.code_reading_status(uuid),
+  public.activate_discipline_code(uuid), public.file_incident_report(uuid, uuid, timestamptz, text, text, text), public.update_incident_report(uuid, text, text),
+  public.open_disciplinary_case(uuid, uuid, uuid, text), public.update_case_draft(uuid, uuid, integer, text),
+  public.issue_nte(uuid, text, timestamptz), public.acknowledge_case_notice(uuid, text),
+  public.submit_case_explanation(uuid, text, boolean), public.record_case_explanation(uuid, text, boolean),
+  public.set_case_hearing(uuid, timestamptz, text), public.record_case_hearing(uuid, text),
+  public.decide_case(uuid, text, integer, date, text, text), public.withdraw_case(uuid, text),
+  public.set_preventive_suspension(uuid, date, date, text), public.my_disciplinary_cases(), public.case_ai_context(uuid)
+from public, anon;
+grant execute on function
+  public.create_discipline_code(text, date, text), public.start_code_reading(uuid), public.code_reading_status(uuid),
+  public.activate_discipline_code(uuid), public.file_incident_report(uuid, uuid, timestamptz, text, text, text), public.update_incident_report(uuid, text, text),
+  public.open_disciplinary_case(uuid, uuid, uuid, text), public.update_case_draft(uuid, uuid, integer, text),
+  public.issue_nte(uuid, text, timestamptz), public.acknowledge_case_notice(uuid, text),
+  public.submit_case_explanation(uuid, text, boolean), public.record_case_explanation(uuid, text, boolean),
+  public.set_case_hearing(uuid, timestamptz, text), public.record_case_hearing(uuid, text),
+  public.decide_case(uuid, text, integer, date, text, text), public.withdraw_case(uuid, text),
+  public.set_preventive_suspension(uuid, date, date, text), public.my_disciplinary_cases(), public.case_ai_context(uuid)
+to authenticated;
