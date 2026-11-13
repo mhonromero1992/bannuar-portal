@@ -91,10 +91,13 @@ const T = {
   clients: [{ id: 'c1', name: 'Acme Mart', industry: 'Retail', contact_person: 'Lorna', contact_phone: '0917 555 0101', contact_email: null, address: null, contract_start: '2026-01-01', contract_end: null, status: 'active', notes: null }],
   employees: Object.values(E),
   document_types: [
-    { id: 'dt1', code: 'SECURITY_LICENSE', name: 'Security guard license (LESP)', category: 'license', has_expiry: true, required_for_deployment: true, remind_days_before: 60, visible_to_employee: true, employee_can_upload: true, sort_order: 10, is_active: true, storage_folder: 'lesp' },
-    { id: 'dt2', code: 'NBI_CLEARANCE', name: 'NBI clearance', category: 'clearance', has_expiry: true, required_for_deployment: true, remind_days_before: 30, visible_to_employee: true, employee_can_upload: true, sort_order: 20, is_active: true, storage_folder: 'work-requirements' },
+    { id: 'dt1', code: 'SECURITY_LICENSE', name: 'Security guard license (LESP)', category: 'license', has_expiry: true, required_for_deployment: true, remind_days_before: 60, visible_to_employee: true, employee_can_upload: true, sort_order: 10, is_active: true, storage_folder: 'lesp', ai_check: true },
+    { id: 'dt2', code: 'NBI_CLEARANCE', name: 'NBI clearance', category: 'clearance', has_expiry: true, required_for_deployment: true, remind_days_before: 30, visible_to_employee: true, employee_can_upload: true, sort_order: 20, is_active: true, storage_folder: 'work-requirements', ai_check: false },
   ],
-  employee_documents: [{ id: 'd1', employee_id: 'e2', document_type_id: 'dt1', document_no: 'LIC-1', issued_on: '2025-01-01', expires_on: '2026-11-28', file_path: 'e2/uploads/lic.jpg', status: 'pending_review', review_note: null, created_at: now, type: { name: 'Security guard license (LESP)', has_expiry: true } }],
+  employee_documents: [{ id: 'd1', employee_id: 'e2', document_type_id: 'dt1', document_no: 'LIC-1', issued_on: '2025-01-01', expires_on: '2026-11-28', file_path: 'e2/uploads/lic.jpg', status: 'pending_review', review_note: null, created_at: now, type: { name: 'Security guard license (LESP)', has_expiry: true, ai_check: true } },
+    // read by Claude at upload (its check is kept with the file in S3), and one uploaded before the check
+    { id: 'd2', employee_id: 'e2', document_type_id: 'dt1', document_no: 'R01-202611-000123', issued_on: '2025-03-06', expires_on: '2027-03-15', file_path: 'employees/G-002/lesp/2026-11-12_security-license_1a2b3c4d5e.jpg', status: 'verified', review_note: null, created_at: now, type: { name: 'Security guard license (LESP)', has_expiry: true, ai_check: true } },
+    { id: 'd3', employee_id: 'e2', document_type_id: 'dt1', document_no: 'R01-OLD', issued_on: '2023-03-06', expires_on: '2025-03-05', file_path: 'employees/G-002/lesp/2023-03-06_security-license_9f9f9f9f9f.jpg', status: 'verified', review_note: null, created_at: now, type: { name: 'Security guard license (LESP)', has_expiry: true, ai_check: true } }],
   leave_types: [{ id: 'lt1', code: 'SIL', name: 'Service incentive leave', description: 'Five days a year.', days_per_year: 5, max_days_per_request: null, is_paid: true, requires_attachment: false, applies_to_sex: null, min_service_months: 12, is_active: true, sort_order: 10 }],
   leave_balances: [{ employee_id: 'e2', leave_type_id: 'lt1', code: 'SIL', name: 'Service incentive leave', year: 2026, credits: 5, used: 2, pending: 1 }],
   leave_requests: [{ id: 'lr1', employee_id: 'e2', leave_type_id: 'lt1', start_date: '2026-11-20', end_date: '2026-11-21', days: 2, reason: 'Family', status: 'pending_hr', site_id: 's1', created_at: now, employee: empMini(E.e2), type: { name: 'Service incentive leave' }, reliever: null, site: { name: 'Post A · Main Gate' } }],
@@ -117,15 +120,42 @@ const T = {
   notifications: [{ id: 'n1', title: 'New COE request', body: 'Bea Lim · due Nov 11', kind: 'coe_request', read_at: null, created_at: now }],
   document_alerts: [{ id: 'd1', employee_id: 'e2', employee_no: 'G-002', first_name: 'Bea', last_name: 'Lim', site_id: 's1', site_name: 'Post A', type_code: 'SECURITY_LICENSE', type_name: 'Security guard license (LESP)', document_no: 'LIC-1', expires_on: '2026-11-28', days_left: 20, state: 'expiring' }],
   attendance_logs: [
-    { id: 'at1', employee_id: 'e2', site_id: 's1', kind: 'time_in', logged_at: now, photo_path: S3_SELFIE, latitude: 14.5552, longitude: 121.0244, accuracy_m: 12, distance_m: 56, radius_m: 150, location_check: 'at_post', mock_location: false, employee: empMini(E.e2), site: { id: 's1', name: 'Post A · Main Gate' } },
-    { id: 'at2', employee_id: 'e1', site_id: 's1', kind: 'time_in', logged_at: now, photo_path: 'e1/selfie-2.jpg', latitude: 14.5647, longitude: 121.0244, accuracy_m: 20, distance_m: 1112, radius_m: 150, location_check: 'away', mock_location: true, employee: empMini(E.e1), site: { id: 's1', name: 'Post A · Main Gate' } },
+    { id: 'at1', employee_id: 'e2', site_id: 's1', kind: 'time_in', logged_at: now, photo_path: S3_SELFIE, latitude: 14.5552, longitude: 121.0244, accuracy_m: 12, distance_m: 56, radius_m: 150, location_check: 'at_post', mock_location: false, source: 'self', manual_reason: null, logger: null, employee: empMini(E.e2), site: { id: 's1', name: 'Post A · Main Gate' } },
+    { id: 'at2', employee_id: 'e1', site_id: 's1', kind: 'time_in', logged_at: now, photo_path: 'e1/selfie-2.jpg', latitude: 14.5647, longitude: 121.0244, accuracy_m: 20, distance_m: 1112, radius_m: 150, location_check: 'away', mock_location: true, source: 'self', manual_reason: null, logger: null, employee: empMini(E.e1), site: { id: 's1', name: 'Post A · Main Gate' } },
+    { id: 'at3', employee_id: 'e3', site_id: null, kind: 'time_out', logged_at: now, photo_path: null, latitude: null, longitude: null, accuracy_m: null, distance_m: null, radius_m: null, location_check: 'manual', mock_location: null, source: 'manual', manual_reason: 'Phone lost; from the post logbook', logger: null, employee: empMini(E.e3), site: null },
   ],
   compliance_gaps: [{ employee_id: 'e3', employee_no: 'G-003', first_name: 'Carlo', last_name: 'Diaz', status: 'floating', site_id: null, site_name: null, document_type_id: 'dt2', type_code: 'NBI_CLEARANCE', type_name: 'NBI clearance', last_expiry: null }],
   stored_files: [
-    { id: 'sf1', folder: 'lesp', status: 'stored' }, { id: 'sf2', folder: 'attendance', status: 'stored' },
+    { id: 'sf1', folder: 'lesp', status: 'stored', object_key: 'employees/G-002/lesp/2026-11-12_security-license_1a2b3c4d5e.jpg', ai_check: { status: 'checked', type_ok: true, legibility: 'clear', holder_name: 'LIM, BEA', name_match: 'match', document_no: 'R01-202611-000123', issued_on: '2025-03-06', expires_on: '2027-03-05', expiry: 'valid', issuer: 'PNP SOSIA', concerns: ['Glare over the lower corner'] } }, { id: 'sf2', folder: 'attendance', status: 'stored' },
     { id: 'sf3', folder: 'attendance', status: 'stored' }, { id: 'sf4', folder: 'leave', status: 'pending' },
   ],
 };
+// discipline: a code in force, a new version Claude has read, a client's report and three cases
+const PEN_A = [{ offense: 1, action: 'suspension', days: 7, text: '7 days suspension' }, { offense: 2, action: 'dismissal', days: 0, text: 'Dismissal' }];
+const ruleRow = (id, code, ref, title, status, extra = {}) => ({ id, code_id: code, ref, title, description: '', category: 'post_duty', gravity: 'grave', penalties: PEN_A, just_cause: 'gross_neglect', source_text: `${title}: first offense 7 days suspension; second offense dismissal`, page: 3, sort: Number(id.slice(1)), status, from_ai: true, reviewed_at: null, code: { status: code === 'dc0' ? 'active' : 'draft' }, ...extra });
+T.discipline_codes = [
+  { id: 'dc1', title: 'Code of Discipline 2026', effective_on: '2026-12-01', file_key: 'company/code-of-discipline/2026-11-13_code-of-discipline_0a1b2c3d4e.pdf', status: 'draft', read_status: 'read', read_error: null, read_started_at: now, read_at: now, read_model: 'claude-opus-5-5', summary: 'Covers duty, attendance and conduct; penalties rise with each offense.', compliance_notes: [{ ref: 'D-1', note: 'Fines taken from wages need the employee\'s written consent (Labor Code Art. 113).' }], created_at: now, activated_at: null },
+  { id: 'dc0', title: 'Code of Discipline 2025', effective_on: '2025-01-01', file_key: 'company/code-of-discipline/2025-01-01_code-of-discipline_9f8e7d6c5b.pdf', status: 'active', read_status: 'read', read_error: null, read_started_at: now, read_at: now, read_model: 'claude-opus-5-5', summary: null, compliance_notes: [], created_at: now, activated_at: now },
+];
+T.offense_rules = [
+  ruleRow('r1', 'dc0', 'A-1', 'Sleeping on post', 'approved'),
+  ruleRow('r2', 'dc0', 'B-2', 'Tardiness', 'approved', { category: 'attendance', gravity: 'light', just_cause: 'none', penalties: [{ offense: 1, action: 'warning', days: 0, text: 'Written warning' }, { offense: 2, action: 'suspension', days: 3, text: '3 days' }] }),
+  ruleRow('r3', 'dc1', 'A-1', 'Sleeping on duty', 'proposed'),
+  ruleRow('r4', 'dc1', 'A-2', 'Leaving the post without relief', 'proposed'),
+];
+T.incident_reports = [{ id: 'ir1', report_no: 'IR-2026-000001', site_id: 's1', employee_id: 'e3', occurred_at: now, title: 'Guard asleep at the gate', details: 'Our store manager found the guard asleep at the main gate at 2 AM.', reporter_kind: 'client', reporter_name: 'Acme Mart · Store manager', status: 'received', client_update: null, guard_described: null, created_at: now, site: { id: 's1', name: 'Post A · Main Gate' }, client: { name: 'Acme Mart' }, employee: empMini(E.e3) }];
+const caseRow = (id, no, status, e, extra = {}) => ({ id, case_no: no, status, employee_id: e.id, incident_id: null, rule_id: null, offense_no: null, facts: 'Found asleep at the main gate at 2 AM on inspection.', nte_text: null, nte_issued_at: null, explain_by: null, nte_received_at: null, explanation: null, explanation_via: null, explained_at: null, wants_hearing: false, hearing_at: null, hearing_place: null, hearing_notes: null, hearing_held_at: null, decision: null, suspension_days: null, suspension_from: null, decision_text: null, departs_reason: null, decided_at: null, decision_received_at: null, preventive_from: null, preventive_to: null, preventive_reason: null, withdrawn_reason: null, ai_suggestion: null, ai_suggested_at: null, created_at: now, employee: { ...empMini(e), site: { name: 'Post A · Main Gate' } }, rule: null, incident: null, ...extra });
+const ruleA = { id: 'r1', ref: 'A-1', title: 'Sleeping on post', gravity: 'grave', penalties: PEN_A };
+const issued = { rule_id: 'r1', rule: ruleA, offense_no: 1, nte_text: 'This notice is about 2 AM at the main gate, where you were found asleep. This may violate A-1 Sleeping on post.', nte_issued_at: now, explain_by: new Date(Date.now() - 3600000).toISOString(), nte_received_at: now };
+T.disciplinary_cases = [
+  caseRow('case1', 'DC-2026-000001', 'draft', E.e3, { incident_id: 'ir1', incident: { report_no: 'IR-2026-000001', title: 'Guard asleep at the gate' } }),
+  caseRow('case2', 'DC-2026-000002', 'explained', E.e2, { ...issued, explanation: 'I was on my break.', explanation_via: 'app', explained_at: now, wants_hearing: true }),
+  caseRow('case3', 'DC-2026-000003', 'hearing_set', E.e1, { ...issued, explanation: 'I was resting my eyes.', explanation_via: 'paper', explained_at: now, hearing_at: now, hearing_place: 'HR office', hearing_notes: 'Attended with a co-guard. The inspector confirmed he was asleep.', hearing_held_at: now }),
+];
+const findCase = (id) => T.disciplinary_cases.find((c) => c.id === id);
+// the client portal: Acme Mart's request, and what its people see
+T.client_requests = [{ id: 'cr1', request_no: 'CR-2026-000001', client_id: 'c1', site_id: 's1', kind: 'additional_guards', details: 'Two more guards for the holiday rush, 6 AM to 6 PM.', guards_needed: 2, needed_from: '2026-12-01', status: 'received', reply: null, requester_name: 'Mia Manager', created_at: now, client: { name: 'Acme Mart' }, site: { name: 'Post A · Main Gate' } }];
+const clientAccess = { user_id: 'u-mia', roles: [], full_name: 'Mia Manager', email: 'mia@acme.test', must_change_password: false, employee: null, client: { id: 'c1', name: 'Acme Mart' } };
 const access = { user_id: 'u-admin', roles: ['super_admin'], full_name: 'Ana Admin', email: 'ana@bannuar.test', must_change_password: false, employee: null };
 const dashboard = { employees_by_status: { active: 2, floating: 1 }, employees_current: 3, sites_active: 1, guards_required: 3, guards_deployed: 2, sites_short: 1, floating: 1, floating_over_150_days: 1, leave_pending_supervisor: 0, leave_pending_hr: 1, on_leave_today: 0, coe_pending: 1, coe_overdue: 1, profile_changes_pending: 1, payroll_concerns_open: 1, documents_expired: 0, documents_expiring: 1, compliance_gaps: 1, applications_new: 1, inquiries_new: 1, latest_period: { id: 'p1', label: 'Nov 1 to 15, 2026', status: 'draft', pay_date: '2026-11-20', payslips: 2 } };
 const certificate = { id: 'cert1', certificate_no: 'COE-2026-000001', verification_code: 'K7QM-3XPD-8RTA', employee_id: 'e2', employee_name: 'Bea Lim', position: 'Security Guard', date_hired: '2023-01-10', date_separated: null, purpose: 'bank_loan', include_compensation: true, compensation_text: '₱540.00 a day', signatory_name: 'Hector HR', signatory_title: 'HR Manager', issued_at: now, file_path: null };
@@ -151,9 +181,33 @@ const RPC = {
   admin_reset_password: () => null,
   deploy_employees: () => 1,
   hire_applicant: () => 'e3',
+  add_manual_attendance: () => ({ id: 'at9', kind: 'time_in', logged_at: now, location_check: 'manual', source: 'manual' }),
   mark_password_changed: () => null,
   revoke_certificate: () => null,
   set_site_pay_rule: () => null,
+  create_discipline_code: () => 'dc-new',
+  activate_discipline_code: () => null,
+  file_incident_report: () => ({ id: 'ir9', report_no: 'IR-2026-000009', status: 'received' }),
+  update_incident_report: () => null,
+  open_disciplinary_case: () => ({ id: 'case1', case_no: 'DC-2026-000001' }),
+  update_case_draft: (b) => { const c = findCase(b.p_case_id); Object.assign(c, { rule_id: b.p_rule_id, rule: T.offense_rules.find((r) => r.id === b.p_rule_id) ?? null, offense_no: b.p_offense_no ?? 1, facts: b.p_facts }); return null; },
+  issue_nte: () => null,
+  set_case_hearing: () => null,
+  record_case_hearing: () => null,
+  record_case_explanation: () => null,
+  decide_case: (b) => ({ id: b.p_case_id, decision: b.p_decision, departs: Boolean(b.p_departs_reason) }),
+  withdraw_case: () => null,
+  set_preventive_suspension: () => null,
+  list_client_users: () => [{ user_id: 'u-mia', full_name: 'Mia Manager', email: 'mia@acme.test', state: 'active', since: now }],
+  invite_client_user: () => 'Q4RT-7XWD',
+  set_client_user_active: () => null,
+  update_client_request: () => null,
+  client_overview: () => ({ client: { id: 'c1', name: 'Acme Mart' }, posts: [{ id: 's1', name: 'Post A · Main Gate', city: 'San Fernando', guards_required: 3, guards: [
+    { id: 'e2', name: 'Bea Lim', position: 'Lady Guard', on_duty_since: now }, { id: 'e1', name: 'Dante Cruz', position: 'Detachment Commander', on_duty_since: null }] }] }),
+  client_attendance: () => [{ post: 'Post A · Main Gate', guard: 'Bea Lim', kind: 'time_in', logged_at: now, at_post: true, by: 'self' }, { post: 'Post A · Main Gate', guard: 'Dante Cruz', kind: 'time_in', logged_at: now, at_post: false, by: 'commander' }],
+  client_reports: () => [{ id: 'ir1', report_no: 'IR-2026-000001', post: 'Post A · Main Gate', occurred_at: now, title: 'Guard asleep at the gate', details: 'Our store manager found the guard asleep at the main gate at 2 AM.', guard: 'Carlo Diaz', status: 'investigating', update: 'We are looking into it with the detachment commander.', filed_by: 'Mia Manager · Acme Mart', created_at: now, updated_at: now }],
+  client_requests_list: () => [{ id: 'cr1', request_no: 'CR-2026-000001', post: 'Post A · Main Gate', kind: 'additional_guards', details: 'Two more guards for the holiday rush.', guards_needed: 2, needed_from: '2026-12-01', status: 'in_progress', reply: 'Two guards from December 1.', requested_by: 'Mia Manager', created_at: now }],
+  file_client_request: () => ({ id: 'cr9', request_no: 'CR-2026-000009', status: 'received' }),
 };
 
 // ------------------------------------------------------------------ the mock API
@@ -204,7 +258,7 @@ async function api(route) {
       const dt = T.document_types.find((d) => d.id === field('document_type_id'));
       const folder = purpose === 'document' ? dt.storage_folder : purpose === 'certificate' ? 'certificates' : purpose;
       const name = purpose === 'certificate' ? `${certificate.certificate_no}.pdf` : `2026-11-12_${(dt?.code ?? purpose).toLowerCase().replace(/_/g, '-')}_mock${requests.length}.pdf`;
-      const key = `employees/${no}/${folder}/${name}`;
+      const key = purpose === 'policy' ? `company/code-of-discipline/2026-11-13_code-of-discipline_mock${requests.length}.pdf` : `employees/${no}/${folder}/${name}`;
       const start = text.indexOf('\r\n\r\n', text.indexOf('name="file"')) + 4;
       stored.set(`s3/${key}`, raw.subarray(start, text.lastIndexOf('\r\n--')));
       uploads.push({ purpose, employee_id: field('employee_id'), document_type_id: field('document_type_id'), certificate_id: field('certificate_id'), key });
@@ -212,6 +266,24 @@ async function api(route) {
     }
     if (body?.action === 'sign') return json(200, { urls: Object.fromEntries(body.keys.map((k) => [k, `${MOCK}/s3-mock/${k}?X-Amz-Expires=300&download=${body.download ? 1 : 0}`])), expires_in: 300 });
     if (body?.action === 'check') return json(200, { ok: true, bucket: 'bannuar-hr-files', region: 'ap-southeast-1' });
+    return json(400, { code: 'invalid_input', message: 'Something is missing from the request. Try again.' });
+  }
+  // the document-ai Edge Function (Claude reads an uploaded document)
+  if (path === '/functions/v1/document-ai') {
+    return json(200, { status: 'checked', type_ok: true, legibility: 'clear', holder_name: 'LIM, BEA', name_match: 'match', document_no: 'R01-OLD', issued_on: '2023-03-06', expires_on: '2025-03-05', expiry: 'expired', issuer: 'PNP SOSIA', concerns: [] });
+  }
+  // the discipline-ai Edge Function (Claude): the key is the function's; the portal sends only ids
+  if (path === '/functions/v1/discipline-ai') {
+    if (body?.action === 'read_code') return json(200, { status: 'reading' });
+    if (body?.action === 'check_code') return json(200, { status: 'read', rules: 2 });
+    if (body?.action === 'suggest') {
+      return json(200, {
+        matches: [{ rule_id: 'r1', confidence: 'high', why: 'Asleep while on duty at the gate.' }],
+        missing_facts: ['Who found him, and at what time exactly'],
+        nte_draft: 'To: {{employee_name}}\nCase: {{case_no}}\n\nOn 12 November at about 2 AM you were found asleep at the main gate of {{post}}. This may violate {{rule}} of the Code of Discipline. Explain in writing by {{explain_by}} why no action should be taken. You may ask for a conference and bring a representative. This notice is not a finding of guilt.',
+        cautions: ['The report rests on one account so far'], model: 'claude-opus-5-5',
+      });
+    }
     return json(400, { code: 'invalid_input', message: 'Something is missing from the request. Try again.' });
   }
   // the payslip-pdf Edge Function: a PDF made on request, never stored
@@ -263,6 +335,7 @@ async function api(route) {
       const out = { id: `new-${requests.length}`, ...row };
       return single ? json(201, out) : json(201, (req.headers().prefer ?? '').includes('return=representation') ? [out] : undefined);
     }
+    if (method === 'PATCH' && table === 'offense_rules') for (const r of filterRows(T.offense_rules, url)) Object.assign(r, body);
     if (method === 'PATCH') return single ? json(200, { id: url.searchParams.get('id')?.slice(3), ...body }) : json(204);
     if (method === 'DELETE') return json(204);
   }
@@ -310,7 +383,7 @@ const screens = [
   ['/requests', 'Requests'], ['/attendance', 'Attendance'], ['/announcements', 'Announcements'], ['/payroll', 'Payroll'], ['/payroll/p1', 'Nov 1 to 15, 2026'],
   ['/recruitment', 'Recruitment'], ['/inquiries', 'Proposal requests'], ['/compliance', 'Licenses and documents'], ['/users', 'Users and roles'],
   ['/audit', 'Audit log'], ['/settings', 'Settings'], ['/account', 'Change your password'], ['/nowhere', 'This page is not on the roster'],
-  ['/payroll/13th-month', '13th month pay'],
+  ['/payroll/13th-month', '13th month pay'], ['/discipline', 'Discipline'],
 ];
 for (const [path, heading] of screens) {
   await page.goto(BASE + path);
@@ -328,7 +401,7 @@ check('dashboard: overdue COE flagged', (await page.getByText('1 past the three-
 await page.getByText(/need a look: away from the post/).waitFor();
 const todayTile = await page.locator('.tile', { hasText: 'Time in and out today' }).innerText();
 const todayReqs = requests.filter((r) => r.method === 'HEAD' && r.path === '/rest/v1/attendance_logs');
-check('dashboard: today\'s time in and out is counted by the database, with those needing a look', /\b2\b/.test(todayTile) && todayReqs.length >= 2 && todayReqs.every((r) => /logged_at=gte\./.test(r.url) && /logged_at=lt\./.test(r.url)) && todayReqs.some((r) => /or=/.test(r.url)), todayTile.replace(/\s+/g, ' '));
+check('dashboard: today\'s time in and out is counted by the database, with those needing a look', /\b3\b/.test(todayTile) && todayReqs.length >= 2 && todayReqs.every((r) => /logged_at=gte\./.test(r.url) && /logged_at=lt\./.test(r.url)) && todayReqs.some((r) => /or=/.test(r.url)), todayTile.replace(/\s+/g, ' '));
 const meterRow = await page.locator('.meters li').first().innerText();
 check('dashboard: each post shows its guards against the number needed, short posts first', /Post A · Main Gate/.test(meterRow) && /2 of 3/.test(meterRow) && /1 short/.test(meterRow), meterRow.replace(/\s+/g, ' '));
 check('dashboard: the roll by status adds up to the employees on the roll', /Active\s*2/.test(await page.locator('.legend').innerText()) && /Floating\s*1/.test(await page.locator('.legend').innerText()));
@@ -375,6 +448,12 @@ const docIns = requests.filter((r) => r.method === 'POST' && r.path === '/rest/v
 const docRow = Array.isArray(docIns?.body) ? docIns.body[0] : docIns?.body;
 check('documents: the record points at the S3 key', docRow?.file_path === docUp?.key && docRow?.document_type_id === 'dt2', JSON.stringify(docRow));
 check('documents: nothing goes to Supabase Storage any more', !requests.some((r) => r.method === 'POST' && r.path.startsWith('/storage/v1/object/employee-files')));
+const claudeLine = await page.getByLabel('Claude\'s reading').first().innerText();
+check('documents: Claude\'s reading of a LESP shows beside it, with where it differs from what was entered', /valid/.test(claudeLine) && /name matches/.test(claudeLine) && /differs from what was entered/.test(claudeLine) && /Glare/.test(claudeLine), claudeLine.replace(/\s+/g, ' '));
+await page.getByRole('button', { name: 'Have Claude read it' }).click();
+await page.waitForTimeout(400);
+const askDoc = requests.filter((r) => r.path === '/functions/v1/document-ai').at(-1);
+check('documents: HR has Claude read a LESP uploaded before the check (only its key is sent)', JSON.stringify(askDoc?.body) === JSON.stringify({ action: 'check', key: 'employees/G-002/lesp/2023-03-06_security-license_9f9f9f9f9f.jpg' }));
 await page.goto(`${BASE}/employees/e2?tab=certificates`);
 await page.getByRole('button', { name: 'Issue a certificate' }).click();
 await page.getByLabel('Signed by').fill('Hector HR');
@@ -452,6 +531,10 @@ await nbiFolder.waitFor();
 await page.waitForTimeout(500); // let the tab underline finish sliding
 await page.screenshot({ path: `${ROOT}tests/shots/document-types.png` });
 check('document types: each files into its S3 folder', (await page.getByLabel('Security guard license (LESP) folder in S3').inputValue()) === 'lesp' && (await nbiFolder.inputValue()) === 'work-requirements');
+check('document types: Claude reads the LESP, and HR can switch it on for others', await page.getByLabel('Security guard license (LESP) read by Claude at upload').isChecked() && !(await page.getByLabel('NBI clearance read by Claude at upload').isChecked()));
+await page.getByLabel('NBI clearance read by Claude at upload').click();
+await page.waitForTimeout(300);
+check('document types: the switch is saved', requests.filter((r) => r.method === 'PATCH' && r.path === '/rest/v1/document_types').at(-1)?.body?.ai_check === true);
 await nbiFolder.selectOption('201-file');
 await page.waitForTimeout(300);
 const folderPatch = requests.filter((r) => r.method === 'PATCH' && r.path === '/rest/v1/document_types').at(-1);
@@ -648,10 +731,120 @@ await page.locator('.thumb').nth(1).click();
 const attDialog = page.locator('dialog[open]');
 check('attendance: the photo opens with the place and a caution', await attDialog.locator('img.photo-large').isVisible() && /Open in Google Maps/.test(await attDialog.innerText()) && /mock location app on/.test(await attDialog.innerText()));
 await attDialog.getByRole('button', { name: 'Close' }).click();
+check('attendance: a log entered by hand shows its reason, with no photo', (await page.getByText('Reason: Phone lost; from the post logbook').count()) === 1 && (await page.getByText('By hand', { exact: true }).count()) >= 1);
+await page.getByLabel('Which logs').selectOption('other');
+await page.waitForTimeout(400);
+check('attendance: "By the commander or by hand" asks for logs not from the own phone', /source=neq\.self/.test(requests.filter((r) => r.path === '/rest/v1/attendance_logs').at(-1)?.url ?? ''));
+await page.getByRole('button', { name: 'Add a manual log' }).click();
+const manual = page.locator('dialog[open]');
+await manual.getByLabel('Find the employee').fill('Lim');
+await manual.getByLabel('Employee', { exact: true }).selectOption('e2');
+await manual.getByLabel('Date').fill('2026-11-10');
+await manual.getByLabel('Time (Manila)').fill('07:05');
+await manual.getByRole('button', { name: 'Add the log' }).click();
+check('manual log: a reason is required', /Say why/.test(await manual.innerText()));
+await manual.getByLabel('Reason').fill('Phone lost; time from the post logbook');
+await manual.getByRole('button', { name: 'Add the log' }).click();
+await page.getByText('Manual log added. The employee is told.').waitFor();
+const ml = rpcCalls('add_manual_attendance').at(-1)?.body;
+check('manual log: sent to the database with Manila time and the reason', ml?.p_employee_id === 'e2' && ml?.p_kind === 'time_in' && ml?.p_logged_at === '2026-11-09T23:05:00.000Z' && ml?.p_reason === 'Phone lost; time from the post logbook', JSON.stringify(ml));
 await page.goto(`${BASE}/employees/e2?tab=attendance`);
 await page.getByText('Time in and out from the app').waitFor();
 const empAtt = requests.filter((r) => r.path === '/rest/v1/attendance_logs').at(-1);
 check('employee page: their own logs', /employee_id=eq\.e2/.test(empAtt?.url ?? ''), empAtt?.url);
+
+console.log('Discipline');
+await page.goto(`${BASE}/discipline?tab=code`);
+await page.getByText(/Fines taken from wages/).waitFor();
+check('code: Claude\'s summary and its notes for counsel are shown', (await page.getByText('Covers duty, attendance and conduct').count()) === 1 && (await page.getByText('For your lawyer to look at').count()) === 1);
+check('code: each proposed rule shows the code\'s own words and page', (await page.getByText(/\(page 3\)/).count()) >= 2);
+check('code: not in force while rules wait for review', await page.getByRole('button', { name: 'Put this code in force' }).isDisabled());
+await page.screenshot({ path: `${ROOT}tests/shots/discipline-code.png`, fullPage: true });
+await page.getByRole('button', { name: 'Edit' }).first().click();
+const ruleDlg = page.locator('dialog[open]');
+await ruleDlg.getByLabel('Days').first().fill('5');
+await ruleDlg.getByRole('button', { name: 'Save the rule' }).click();
+await page.getByText('Rule saved.').waitFor();
+const rulePatch = requests.filter((r) => r.method === 'PATCH' && r.path === '/rest/v1/offense_rules').at(-1);
+check('code: an edited rule saves its penalty for each offense count', rulePatch?.body?.penalties?.[0]?.days === 5 && rulePatch?.body?.penalties?.[1]?.action === 'dismissal' && /id=eq\.r3/.test(rulePatch?.url ?? ''), JSON.stringify(rulePatch?.body?.penalties));
+await page.getByLabel('Which rules').selectOption('proposed');
+await page.getByRole('button', { name: 'Approve all 2 shown' }).click();
+await page.getByRole('button', { name: 'Put this code in force' }).and(page.locator(':enabled')).waitFor();
+const approvePatch = requests.filter((r) => r.method === 'PATCH' && r.path === '/rest/v1/offense_rules').at(-1);
+check('code: "approve all shown" approves exactly those rules', /id=in\.\(r3,r4\)/.test(decodeURIComponent(approvePatch?.url ?? '')) && approvePatch?.body?.status === 'approved', approvePatch?.url);
+await page.getByRole('button', { name: 'Put this code in force' }).click();
+await page.getByText('The code is in force.').waitFor();
+check('code: put in force through the database', rpcCalls('activate_discipline_code').at(-1)?.body?.p_code_id === 'dc1');
+await page.getByRole('button', { name: 'Upload the code (PDF)' }).click();
+const upDlg = page.locator('dialog[open]');
+await upDlg.getByLabel('Title').fill('Code of Discipline 2027');
+await upDlg.getByLabel('The PDF').setInputFiles({ name: 'code.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.7\n% code\n%%EOF\n') });
+await upDlg.getByRole('button', { name: 'Upload and have Claude read it' }).click();
+await page.getByText(/Claude is reading it/).waitFor();
+const polUp = uploads.at(-1);
+check('code: the PDF goes to the company folder, then Claude is asked to read it', polUp?.purpose === 'policy' && /^company\/code-of-discipline\//.test(polUp.key) && rpcCalls('create_discipline_code').at(-1)?.body?.p_file_key === polUp.key && requests.some((r) => r.path === '/functions/v1/discipline-ai' && r.body?.action === 'read_code' && r.body?.code_id === 'dc-new'), JSON.stringify(polUp));
+check('code: the browser never talks to Anthropic or holds its key', !requests.some((r) => /anthropic/i.test(r.url) || 'x-api-key' in (r.headers ?? {})));
+
+await page.goto(`${BASE}/discipline?tab=reports`);
+await page.getByRole('button', { name: 'Guard asleep at the gate' }).click();
+let repDlg = page.locator('dialog[open]');
+check('report: a client\'s report shows who filed it and the guard', /Acme Mart · Store manager/.test(await repDlg.innerText()) && /Carlo Diaz/.test(await repDlg.innerText()));
+await repDlg.getByLabel('Status').selectOption('investigating');
+await repDlg.getByLabel(/Update for the client/).fill('We are looking into it with the detachment commander.');
+await repDlg.getByRole('button', { name: 'Save' }).click();
+await page.getByText('Report updated.').waitFor();
+const repUpd = rpcCalls('update_incident_report').at(-1)?.body;
+check('report: status and the client\'s update are saved', repUpd?.p_id === 'ir1' && repUpd?.p_status === 'investigating' && /looking into it/.test(repUpd?.p_client_update ?? ''), JSON.stringify(repUpd));
+await page.getByRole('button', { name: 'Guard asleep at the gate' }).click();
+repDlg = page.locator('dialog[open]');
+await repDlg.getByRole('button', { name: 'Open a case from this report' }).click();
+await page.locator('dialog[open]').last().getByRole('button', { name: 'Open the case' }).click();
+await page.waitForURL(/case=case1/);
+const opened = rpcCalls('open_disciplinary_case').at(-1)?.body;
+check('report: a case is opened from it, for the guard named, with the report\'s facts', opened?.p_employee_id === 'e3' && opened?.p_incident_id === 'ir1' && /asleep at the main gate/.test(opened?.p_facts ?? ''), JSON.stringify(opened));
+
+const caseDlg = page.locator('dialog[open]');
+await caseDlg.getByRole('button', { name: 'Ask Claude for a suggestion' }).click();
+await caseDlg.getByText('high match').waitFor();
+check('case: Claude suggests an approved rule, what to find out, and cautions', /Sleeping on post/.test(await caseDlg.innerText()) && /Who found him/.test(await caseDlg.innerText()) && /one account/.test(await caseDlg.innerText()));
+check('case: only the case id goes to the function', JSON.stringify(requests.filter((r) => r.path === '/functions/v1/discipline-ai' && r.body?.action === 'suggest').at(-1)?.body) === '{"action":"suggest","case_id":"case1"}');
+await caseDlg.getByRole('button', { name: 'Use this rule' }).click();
+await caseDlg.getByRole('button', { name: 'Put Claude\'s draft in the notice' }).click();
+const nteDraft = await caseDlg.getByLabel('The notice').inputValue();
+check('case: the draft is filled with the name, case number, post and rule', nteDraft.includes('Carlo Diaz') && nteDraft.includes('DC-2026-000001') && nteDraft.includes('Post A · Main Gate') && nteDraft.includes('A-1 Sleeping on post') && !nteDraft.includes('{{'), nteDraft.slice(0, 160));
+await caseDlg.getByRole('button', { name: 'Issue the notice' }).click();
+check('case: the charge is saved before the notice', /Save the charge first/.test(await caseDlg.innerText()));
+await caseDlg.getByRole('button', { name: 'Save the charge' }).click();
+await page.getByText('Saved.', { exact: true }).waitFor();
+check('case: the charge is the rule chosen', rpcCalls('update_case_draft').at(-1)?.body?.p_rule_id === 'r1');
+await caseDlg.getByRole('button', { name: 'Issue the notice' }).click();
+await page.getByText('Notice issued. The employee is told in the app.').waitFor();
+const nteSent = rpcCalls('issue_nte').at(-1)?.body;
+check('case: the notice goes out with at least five days to answer', nteSent?.p_case_id === 'case1' && Date.parse(nteSent.p_explain_by) - Date.now() >= 5 * 86400000 - 60000 && nteSent.p_nte_text.includes('Carlo Diaz'), nteSent?.p_explain_by);
+
+await page.goto(`${BASE}/discipline?tab=cases`);
+await page.getByText('Set the hearing the employee asked for').waitFor();
+check('cases: each says what it waits for', (await page.getByText('Issue the notice to explain').count()) === 1 && (await page.getByText('Decide', { exact: true }).count()) === 1);
+await page.goto(`${BASE}/discipline?tab=cases&case=case2`);
+const c2Dlg = page.locator('dialog[open]');
+await c2Dlg.getByText(/The employee asked for a hearing: hold one/).waitFor();
+await c2Dlg.getByLabel('When (Manila)').fill('2026-11-20T10:00');
+await c2Dlg.getByRole('button', { name: 'Set the hearing' }).click();
+await page.getByText('Hearing set. The employee is told.').waitFor();
+const hearing = rpcCalls('set_case_hearing').at(-1)?.body;
+check('case: the hearing is set in Manila time', hearing?.p_case_id === 'case2' && hearing?.p_at === '2026-11-20T02:00:00.000Z' && hearing?.p_place === 'HR office', JSON.stringify(hearing));
+await page.goto(`${BASE}/discipline?tab=cases&case=case3`);
+const c3Dlg = page.locator('dialog[open]');
+await c3Dlg.getByRole('combobox', { name: 'Decision', exact: true }).waitFor();
+check('decision: the code\'s penalty for this offense is the starting point', (await c3Dlg.getByRole('combobox', { name: 'Decision', exact: true }).inputValue()) === 'suspension' && (await c3Dlg.getByLabel('Days').inputValue()) === '7');
+await c3Dlg.getByLabel('Days').fill('3');
+await c3Dlg.getByLabel(/Why not the code's penalty/).fill('First offense in eight years of service.');
+await c3Dlg.getByLabel('The written decision').fill('After hearing both sides, he was asleep at the gate; three days suspension under A-1.');
+await page.screenshot({ path: `${ROOT}tests/shots/discipline-case.png` });
+await c3Dlg.getByRole('button', { name: 'Issue the decision' }).click();
+await page.getByText('Decision issued. The employee is told.').waitFor();
+const dec = rpcCalls('decide_case').at(-1)?.body;
+check('decision: a lighter penalty goes with its reason', dec?.p_case_id === 'case3' && dec?.p_decision === 'suspension' && dec?.p_suspension_days === 3 && /eight years/.test(dec?.p_departs_reason ?? ''), JSON.stringify(dec));
 
 console.log('Jump to, keyboard, every width, reduced motion');
 await page.goto(`${BASE}/`);
@@ -731,6 +924,79 @@ check('reduced motion: figures show at once, no count-up', /^3$/.test((await p4.
 await p4.goto(`${BASE}/sign-in?next=/`);
 check('reduced motion: the duty clock stays flat', await p4.evaluate(() => { const s = document.querySelector('.clock__stage'); return !s || getComputedStyle(s).transform === 'none'; }));
 await calm.close();
+
+console.log('Client portal: staff invite and answer, then a client on a tablet');
+await page.goto(`${BASE}/posts`);
+await page.getByRole('tab', { name: 'Clients' }).click();
+await page.getByRole('button', { name: 'Portal access' }).first().click();
+const paDlg = page.locator('dialog[open]');
+await paDlg.getByText('Mia Manager').waitFor();
+await paDlg.getByLabel('Name').fill('Jun Desk');
+await paDlg.getByLabel('Email').fill('desk@acme.test');
+await paDlg.getByRole('button', { name: 'Invite to the client portal' }).click();
+await paDlg.getByText('Q4RT-7XWD').waitFor();
+const inv = rpcCalls('invite_client_user').at(-1)?.body;
+check('client access: operations invites someone at the client, and gets the code to give them', inv?.p_client_id === 'c1' && inv?.p_email === 'desk@acme.test' && inv?.p_full_name === 'Jun Desk' && /\/setup/.test(await paDlg.innerText()), JSON.stringify(inv));
+await paDlg.getByRole('button', { name: 'Turn off' }).click();
+await page.waitForTimeout(300);
+check('client access: a client login can be turned off', JSON.stringify(rpcCalls('set_client_user_active').at(-1)?.body) === '{"p_user_id":"u-mia","p_active":false}');
+await page.keyboard.press('Escape');
+await page.goto(`${BASE}/requests?tab=clients`);
+await page.getByRole('button', { name: 'More guards: 2' }).click();
+const crDlg = page.locator('dialog[open]');
+await crDlg.getByLabel('Status').selectOption('in_progress');
+await crDlg.getByLabel(/Answer for the client/).fill('Two guards from December 1.');
+await crDlg.getByRole('button', { name: 'Save' }).click();
+await page.getByText('Answer saved. The client sees it in their portal.').waitFor();
+const crUpd = rpcCalls('update_client_request').at(-1)?.body;
+check('client requests: operations answers, and the client sees it', crUpd?.p_id === 'cr1' && crUpd?.p_status === 'in_progress' && crUpd?.p_reply === 'Two guards from December 1.', JSON.stringify(crUpd));
+
+RPC.my_access = () => clientAccess;
+const beforeClient = requests.length;
+await page.setViewportSize({ width: 820, height: 1180 });
+await page.goto(`${BASE}/`);
+await page.locator('.client').waitFor();
+await page.getByText('On duty since').first().waitFor();
+check('client: a client login gets the client portal, not the staff portal', (await page.locator('.side').count()) === 0 && /Acme Mart/.test(await page.locator('.client-top').innerText()));
+check('client: its post, the guards assigned, and who is on duty', (await page.getByText('2 of 3 guards assigned').count()) === 1 && (await page.getByText('Off duty').count()) === 1);
+await page.screenshot({ path: `${ROOT}tests/shots/client-tablet.png` });
+await page.locator('.client-tab', { hasText: 'Attendance' }).click();
+await page.getByText('At the post').waitFor();
+check('client: attendance of the day, with who logged it', JSON.stringify(rpcCalls('client_attendance').at(-1)?.body) === JSON.stringify({ p_day: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date()) }) && (await page.getByText('Logged by the commander').count()) === 1 && (await page.getByText('Not confirmed').count()) === 1);
+await page.locator('.client-tab', { hasText: 'Incident reports' }).click();
+await page.getByText('We are looking into it').waitFor();
+await page.screenshot({ path: `${ROOT}tests/shots/client-reports.png` });
+await page.getByRole('button', { name: 'Report an incident' }).click();
+const crf = page.locator('dialog[open]');
+await crf.getByLabel(/^Guard/).selectOption('e2');
+await crf.getByLabel('What it is about').fill('Guard on her phone');
+await crf.getByLabel('What happened').fill('The guard at the gate was on her phone for an hour.');
+await crf.getByRole('button', { name: 'Send the report' }).click();
+await page.getByText('Report IR-2026-000009 sent to Bannuar.').waitFor();
+const cRep = rpcCalls('file_incident_report').at(-1)?.body;
+check('client: a report about a guard of its post goes to Bannuar', cRep?.p_site_id === 's1' && cRep?.p_employee_id === 'e2' && cRep?.p_guard_described === null && cRep?.p_title === 'Guard on her phone', JSON.stringify(cRep));
+await page.locator('.client-tab', { hasText: 'Requests' }).click();
+await page.getByText('Two guards from December 1.').waitFor();
+await page.getByRole('button', { name: 'Ask for something' }).click();
+const cReq = page.locator('dialog[open]');
+await cReq.getByLabel('How many guards').fill('3');
+await cReq.getByLabel('Details').fill('Three more guards for the Christmas sale, 8 AM to 10 PM.');
+await cReq.getByRole('button', { name: 'Send the request' }).click();
+await page.getByText('Request CR-2026-000009 sent to Bannuar.').waitFor();
+const cReqBody = rpcCalls('file_client_request').at(-1)?.body;
+check('client: asks for more guards', cReqBody?.p_site_id === 's1' && cReqBody?.p_kind === 'additional_guards' && cReqBody?.p_guards_needed === 3, JSON.stringify(cReqBody));
+const clientReads = requests.slice(beforeClient).filter((r) => r.path.startsWith('/rest/v1/') && !r.path.startsWith('/rest/v1/rpc/'));
+check('client: reads nothing but its own client functions (no tables)', clientReads.length === 0, clientReads.map((r) => r.path).join(', '));
+check('client: no sideways scroll on a tablet', !(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)));
+await page.setViewportSize({ width: 390, height: 844 });
+await page.locator('.client-tab', { hasText: 'Posts and guards' }).click();
+check('client: no sideways scroll on a phone either', !(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)));
+const manifest = await (await fetch(`${BASE}/manifest.webmanifest`)).json().catch(() => null);
+check('client: it can be added to a tablet\'s home screen (manifest, icons)', manifest?.display === 'standalone' && manifest.icons.some((i) => i.sizes === '512x512') && (await page.locator('link[rel="manifest"]').count()) === 1);
+RPC.my_access = () => access;
+await page.setViewportSize({ width: 1280, height: 860 });
+await page.goto(`${BASE}/`);
+await page.locator('.side').waitFor();
 
 console.log('Sign-up, phone width, sign-out');
 const p2 = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();
@@ -845,6 +1111,13 @@ for (const r of requests.filter((x) => x.path.startsWith('/rest/v1/'))) {
     if (k.endsWith('or')) {
       const target = k.includes('.') ? 'employees' : table;
       for (const c of [...v.matchAll(/(\w+)\.(?:ilike|eq|is|neq|in|gte|lte|gt|lt)\./g)].map((x) => x[1])) if (!cols[target].includes(c)) problems.add(`${where}: or-filter on missing ${target}.${c}`);
+      continue;
+    }
+    if (k.includes('.')) {
+      const [alias, col] = k.split('.');
+      const sel = url.searchParams.get('select') ?? '';
+      const embedded = new RegExp(`(?:^|,)\\s*${alias}:(\\w+)`).exec(sel)?.[1] ?? (new RegExp(`(?:^|,)\\s*${alias}[!(]`).test(sel) ? alias : null);
+      if (!embedded || !cols[embedded]?.includes(col)) problems.add(`${where}: filter on missing embedded ${k}`);
       continue;
     }
     if (!cols[table].includes(k)) problems.add(`${where}: filter on missing ${table}.${k}`);

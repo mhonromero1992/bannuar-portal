@@ -1,7 +1,7 @@
 {
   "tasks": {
-    "test": "deno test --allow-env --allow-read=.,../../tests/schema-snapshot.json _shared activate-employee send-push files payslip-pdf",
-    "check": "deno check activate-employee/index.ts send-push/index.ts files/index.ts payslip-pdf/index.ts && deno lint"
+    "test": "deno test --allow-env --allow-read=.,../../tests/schema-snapshot.json _shared activate-employee send-push files payslip-pdf discipline-ai document-ai",
+    "check": "deno check activate-employee/index.ts send-push/index.ts files/index.ts payslip-pdf/index.ts discipline-ai/index.ts document-ai/index.ts && deno lint"
   },
   "lint": {
     "rules": {

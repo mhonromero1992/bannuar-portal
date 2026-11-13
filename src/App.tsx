@@ -12,6 +12,8 @@ import Posts from './pages/Posts';
 import PostDetail from './pages/PostDetail';
 import Requests from './pages/Requests';
 import Attendance from './pages/Attendance';
+import Discipline from './pages/Discipline';
+import ClientApp from './pages/ClientApp';
 import Announcements from './pages/Announcements';
 import Payroll from './pages/Payroll';
 import PayrollPeriod from './pages/PayrollPeriod';
@@ -33,7 +35,7 @@ function Protected({ children }: { children: ReactNode }) {
   if (!session) return <Navigate to={`/sign-in?next=${encodeURIComponent(location.pathname + location.search)}`} replace />;
   if (!access) return <Loading what="Checking your access" />;
   if (access.must_change_password) return <ChangePassword forced />;
-  if (!can.staff) return <NoAccess />;
+  if (!can.staff) return access.client ? <ClientApp /> : <NoAccess />;
   return <>{children}</>;
 }
 
@@ -57,6 +59,7 @@ const router = createBrowserRouter([
       { path: 'posts/:id', element: <PostDetail /> },
       { path: 'requests', element: <Requests /> },
       { path: 'attendance', element: <Attendance /> },
+      { path: 'discipline', element: <Discipline /> },
       { path: 'announcements', element: <Announcements /> },
       { path: 'payroll', element: <Payroll /> },
       { path: 'payroll/13th-month', element: <ThirteenthMonth /> },

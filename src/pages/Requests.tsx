@@ -4,11 +4,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { dateRange, errorText, fmtDate, fmtDateTime, fullName } from '../lib/format';
-import { COE_PURPOSE, COE_STATUS, CONCERN_CATEGORY, CONCERN_STATUS, LEAVE_STATUS, REQUEST_STATUS, options } from '../lib/labels';
+import { CLIENT_REQUEST_KIND, CLIENT_REQUEST_STATUS, COE_PURPOSE, COE_STATUS, CONCERN_CATEGORY, CONCERN_STATUS, LEAVE_STATUS, REQUEST_STATUS, options } from '../lib/labels';
 import { Badge, Dialog, Empty, ErrorState, Loading, PageHead, SelectField, StatusBadge, Tabs, TextArea, useToast } from '../ui/kit';
 import { IssueCoeForm } from './coeShared';
 
-type Tab = 'leave' | 'coe' | 'changes' | 'concerns';
+type Tab = 'leave' | 'coe' | 'changes' | 'concerns' | 'clients';
 const EMP = 'employee:employees!inner(id,employee_no,first_name,middle_name,last_name,suffix,site_id)';
 // leave_requests points at employees twice (the employee and the reliever): name the foreign key
 const LEAVE_EMP = 'employee:employees!leave_requests_employee_id_fkey(id,employee_no,first_name,middle_name,last_name,suffix,site_id)';
@@ -26,6 +26,7 @@ export default function Requests() {
     { id: 'coe', label: 'Certificates of employment', show: can.hr },
     { id: 'changes', label: 'Contact detail changes', show: can.hr },
     { id: 'concerns', label: 'Payroll concerns', show: can.payroll },
+    { id: 'clients', label: 'Client requests', show: can.ops },
   ];
   const tabs = all.filter((t) => t.show);
   const tab = (tabs.find((t) => t.id === params.get('tab'))?.id ?? tabs[0]?.id ?? 'leave') as Tab;
@@ -37,6 +38,7 @@ export default function Requests() {
       {tab === 'coe' && <CoeTab />}
       {tab === 'changes' && <ChangesTab />}
       {tab === 'concerns' && <ConcernsTab />}
+      {tab === 'clients' && <ClientRequestsTab />}
     </>
   );
 }
@@ -333,6 +335,81 @@ function ConcernsTab() {
             <p><b>{fullName(open.employee as Emp)}</b>: {open.description as string}</p>
             <SelectField label="Status" name="status" defaultValue={open.status as string} options={options(CONCERN_STATUS)} />
             <TextArea label="Answer to the employee" name="resolution" optional defaultValue={(open.resolution as string) ?? ''} rows={4} />
+            <div className="form-foot"><button className="btn" type="submit">Save</button></div>
+          </form>
+        )}
+      </Dialog>
+    </div>
+  );
+}
+
+type ClientRequest = {
+  id: string; request_no: string; kind: string; details: string; guards_needed: number | null; needed_from: string | null; status: string;
+  reply: string | null; requester_name: string | null; created_at: string; client: { name: string } | null; site: { name: string } | null;
+};
+
+/** What clients asked for in the client portal: more guards, a replacement, a schedule change. */
+function ClientRequestsTab() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [filter, setFilter] = useState('open');
+  const [open, setOpen] = useState<ClientRequest | null>(null);
+  const [v, setV] = useState({ status: '', reply: '' });
+  const [error, setError] = useState('');
+  const q = useQuery({
+    queryKey: ['client-requests-staff', filter],
+    queryFn: async () => {
+      let req = supabase.from('client_requests').select('id,request_no,kind,details,guards_needed,needed_from,status,reply,requester_name,created_at,client:clients(name),site:sites(name)')
+        .order('created_at', { ascending: false }).limit(200);
+      if (filter === 'open') req = req.in('status', ['received', 'in_progress']);
+      else if (filter) req = req.eq('status', filter);
+      const { data, error } = await req;
+      if (error) throw error;
+      return data as unknown as ClientRequest[];
+    },
+  });
+  const show = (r: ClientRequest) => { setOpen(r); setV({ status: r.status, reply: r.reply ?? '' }); setError(''); };
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!open) return;
+    const { error: err } = await supabase.rpc('update_client_request', { p_id: open.id, p_status: v.status, p_reply: v.reply });
+    if (err) return setError(errorText(err));
+    qc.invalidateQueries({ queryKey: ['client-requests-staff'] });
+    toast('Answer saved. The client sees it in their portal.');
+    setOpen(null);
+  };
+  return (
+    <div className="panel">
+      <div className="toolbar">
+        <select className="select" style={{ width: 'auto' }} aria-label="Which client requests" value={filter} onChange={(e) => setFilter(e.target.value)}>
+          <option value="open">Open</option>
+          {options(CLIENT_REQUEST_STATUS).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          <option value="">Every request</option>
+        </select>
+        <span className="muted small">From the client portal. Your answer shows to the client.</span>
+      </div>
+      {q.isLoading ? <Loading /> : q.error ? <ErrorState error={errorText(q.error)} retry={() => q.refetch()} /> : !q.data?.length ? <Empty title="No client requests here" /> : (
+        <div className="table-wrap">
+          <table className="table">
+            <thead><tr><th>Request</th><th>Client</th><th>Post</th><th>Status</th></tr></thead>
+            <tbody>{q.data.map((r) => (
+              <tr key={r.id}>
+                <td><button className="link-btn cell-main" type="button" onClick={() => show(r)}>{CLIENT_REQUEST_KIND[r.kind]}{r.guards_needed ? `: ${r.guards_needed}` : ''}</button><span className="cell-sub tabular">{r.request_no} · {fmtDateTime(r.created_at)}</span></td>
+                <td>{r.client?.name}<span className="cell-sub">{r.requester_name}</span></td>
+                <td>{r.site?.name ?? 'All posts'}{r.needed_from && <span className="cell-sub">from {fmtDate(r.needed_from)}</span>}</td>
+                <td><StatusBadge map={CLIENT_REQUEST_STATUS} value={r.status} /></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+      <Dialog open={open !== null} title={open ? `${open.request_no}: ${CLIENT_REQUEST_KIND[open.kind]}` : ''} onClose={() => setOpen(null)}>
+        {open && (
+          <form className="form" onSubmit={save} noValidate>
+            {error && <p className="form-error" role="alert">{error}</p>}
+            <p className="pre">{open.details}</p>
+            <SelectField label="Status" value={v.status} onChange={(e) => setV({ ...v, status: e.target.value })} options={options(CLIENT_REQUEST_STATUS)} />
+            <TextArea label="Answer for the client" optional value={v.reply} onChange={(e) => setV({ ...v, reply: e.target.value })} />
             <div className="form-foot"><button className="btn" type="submit">Save</button></div>
           </form>
         )}

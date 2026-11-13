@@ -32,6 +32,7 @@ export const CONCERN_CATEGORY: Record<string, string> = {
   deduction: 'Deduction', contribution: 'Contribution', tax: 'Tax', other: 'Other',
 };
 export const ATTENDANCE_KIND: Record<string, string> = { time_in: 'Time in', time_out: 'Time out' };
+export const ATTENDANCE_SOURCE: Map = { self: ['Own phone', 'neutral'], commander: ['By the commander', 'info'], manual: ['By hand', 'warn'] };
 /** log_attendance's check of the phone's location against the post (schema.sql explains each). */
 export const LOCATION_CHECK: Map = {
   at_post: ['At the post', 'ok'],
@@ -40,6 +41,7 @@ export const LOCATION_CHECK: Map = {
   no_location: ['No location', 'warn'],
   post_not_set: ['Post location not set', 'neutral'],
   no_post: ['No post assigned', 'neutral'],
+  manual: ['Entered by hand', 'info'],
 };
 export const DOC_STATUS: Map = { pending_review: ['To review', 'warn'], verified: ['Verified', 'ok'], rejected: ['Rejected', 'bad'] };
 export const PERIOD_STATUS: Map = { draft: ['Draft', 'warn'], published: ['Published', 'ok'] };
@@ -75,6 +77,44 @@ export const ROLE_HINT: Record<string, string> = {
   operations: 'Posts, clients, deployment, announcements, proposal requests',
   management: 'Read-only dashboard and lists',
   supervisor: 'Detachment commanders and inspectors (in the app)',
+};
+
+// Client portal (schema.sql section 17)
+export const CLIENT_REQUEST_KIND: Record<string, string> = {
+  additional_guards: 'More guards', replace_guard: 'Replace a guard', schedule_change: 'Change of schedule', other: 'Something else',
+};
+export const CLIENT_REQUEST_STATUS: Map = { received: ['Received', 'warn'], in_progress: ['In progress', 'info'], done: ['Done', 'ok'], declined: ['Declined', 'neutral'] };
+/** How a client reads an incident report's status (the case behind it stays internal). */
+export const CLIENT_REPORT_STATUS: Map = {
+  received: ['Received', 'warn'], investigating: ['Under investigation', 'info'], action_taken: ['Action taken', 'ok'],
+  closed: ['Closed', 'neutral'], not_pursued: ['Closed', 'neutral'],
+};
+
+// Discipline (schema.sql section 16)
+export const CODE_STATUS: Map = { draft: ['Draft', 'warn'], active: ['In force', 'ok'], retired: ['Retired', 'neutral'] };
+export const READ_STATUS: Map = { not_read: ['Not read yet', 'neutral'], reading: ['Claude is reading', 'info'], read: ['Read by Claude', 'ok'], failed: ['Reading failed', 'bad'] };
+export const RULE_STATUS: Map = { proposed: ['To review', 'warn'], approved: ['Approved', 'ok'], rejected: ['Rejected', 'neutral'] };
+export const GRAVITY: Map = { light: ['Light', 'neutral'], less_serious: ['Less serious', 'info'], serious: ['Serious', 'warn'], grave: ['Grave', 'bad'], unclassified: ['Not classed', 'neutral'] };
+export const OFFENSE_CATEGORY: Record<string, string> = {
+  attendance: 'Attendance and punctuality', post_duty: 'Post and duty', conduct: 'Conduct', uniform_equipment: 'Uniform and equipment',
+  dishonesty: 'Dishonesty', safety_security: 'Safety and security', substance: 'Alcohol and drugs', insubordination: 'Insubordination', other: 'Other',
+};
+export const PENALTY_ACTION: Record<string, string> = { warning: 'Warning', reprimand: 'Reprimand', suspension: 'Suspension', dismissal: 'Dismissal', other: 'Other' };
+export const JUST_CAUSE: Record<string, string> = {
+  none: 'None', serious_misconduct: 'Serious misconduct', willful_disobedience: 'Willful disobedience', gross_neglect: 'Gross and habitual neglect',
+  fraud_breach_of_trust: 'Fraud or breach of trust', crime_against_employer: 'Crime against the employer or family', analogous: 'Analogous cause',
+};
+export const INCIDENT_STATUS: Map = {
+  received: ['Received', 'warn'], investigating: ['Under investigation', 'info'], action_taken: ['Action taken', 'ok'],
+  closed: ['Closed', 'neutral'], not_pursued: ['Not pursued', 'neutral'],
+};
+export const REPORTER_KIND: Record<string, string> = { client: 'Client', commander: 'Commander', staff: 'Staff' };
+export const CASE_STATUS: Map = {
+  draft: ['Draft', 'neutral'], nte_issued: ['Waiting for explanation', 'warn'], explained: ['Explained', 'info'],
+  hearing_set: ['Hearing set', 'info'], decided: ['Decided', 'ok'], withdrawn: ['Withdrawn', 'neutral'],
+};
+export const CASE_DECISION: Map = {
+  no_violation: ['No violation', 'ok'], warning: ['Warning', 'warn'], reprimand: ['Reprimand', 'warn'], suspension: ['Suspension', 'bad'], dismissal: ['Dismissal', 'bad'],
 };
 
 export const label = (m: Map, v?: string | null) => (v && m[v] ? m[v][0] : v ?? '');

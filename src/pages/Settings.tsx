@@ -165,7 +165,7 @@ function DocTypes() {
     <div className="panel">
       <div className="table-wrap">
         <table className="table">
-          <thead><tr><th>Document</th><th>Folder in S3</th><th>Expires</th><th>Needed for deployment</th><th>Remind days before</th><th>Employee may upload</th><th>Shown to employee</th><th>In use</th></tr></thead>
+          <thead><tr><th>Document</th><th>Folder in S3</th><th>Expires</th><th>Needed for deployment</th><th>Remind days before</th><th>Employee may upload</th><th>Shown to employee</th><th>Claude reads it</th><th>In use</th></tr></thead>
           <tbody>{(q.data ?? []).map((d) => (
             <tr key={d.id}>
               <td><b>{d.name}</b><span className="cell-sub">{d.category}</span></td>
@@ -179,6 +179,7 @@ function DocTypes() {
               <td><input className="input" style={{ width: 90 }} type="number" min="0" max="365" aria-label={`${d.name} reminder days`} defaultValue={d.remind_days_before} onBlur={(e) => Number(e.target.value) !== d.remind_days_before && update(d.id, { remind_days_before: Number(e.target.value) })} /></td>
               <td><input type="checkbox" aria-label={`${d.name} employee may upload`} checked={d.employee_can_upload} onChange={(e) => update(d.id, { employee_can_upload: e.target.checked })} /></td>
               <td><input type="checkbox" aria-label={`${d.name} shown to employee`} checked={d.visible_to_employee} onChange={(e) => update(d.id, { visible_to_employee: e.target.checked })} /></td>
+              <td><input type="checkbox" aria-label={`${d.name} read by Claude at upload`} checked={d.ai_check} onChange={(e) => update(d.id, { ai_check: e.target.checked })} /></td>
               <td><input type="checkbox" aria-label={`${d.name} in use`} checked={d.is_active} onChange={(e) => update(d.id, { is_active: e.target.checked })} /></td>
             </tr>
           ))}</tbody>
