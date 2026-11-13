@@ -4427,6 +4427,14 @@ language sql stable security definer set search_path = '' as $$
   where dc.employee_id = public.current_employee_id() and dc.nte_issued_at is not null
 $$;
 
+-- The code in force, for every signed-in employee to read (the PDF opens through authorize_file_reads)
+create or replace function public.active_discipline_code() returns jsonb
+language sql stable security definer set search_path = '' as $$
+  select jsonb_build_object('title', c.title, 'effective_on', c.effective_on, 'file_key', c.file_key)
+  from public.discipline_codes c
+  where c.status = 'active' and auth.uid() is not null
+$$;
+
 -- What discipline-ai sends Claude for a suggestion (HR only): the facts and the approved rules, and the
 -- employee's earlier findings by rule. No names, numbers or personal details.
 create or replace function public.case_ai_context(p_case_id uuid) returns jsonb
@@ -4546,7 +4554,8 @@ revoke execute on function
   public.submit_case_explanation(uuid, text, boolean), public.record_case_explanation(uuid, text, boolean),
   public.set_case_hearing(uuid, timestamptz, text), public.record_case_hearing(uuid, text),
   public.decide_case(uuid, text, integer, date, text, text), public.withdraw_case(uuid, text),
-  public.set_preventive_suspension(uuid, date, date, text), public.my_disciplinary_cases(), public.case_ai_context(uuid)
+  public.set_preventive_suspension(uuid, date, date, text), public.my_disciplinary_cases(), public.case_ai_context(uuid),
+  public.active_discipline_code()
 from public, anon;
 grant execute on function
   public.create_discipline_code(text, date, text), public.start_code_reading(uuid), public.code_reading_status(uuid),
@@ -4556,5 +4565,6 @@ grant execute on function
   public.submit_case_explanation(uuid, text, boolean), public.record_case_explanation(uuid, text, boolean),
   public.set_case_hearing(uuid, timestamptz, text), public.record_case_hearing(uuid, text),
   public.decide_case(uuid, text, integer, date, text, text), public.withdraw_case(uuid, text),
-  public.set_preventive_suspension(uuid, date, date, text), public.my_disciplinary_cases(), public.case_ai_context(uuid)
+  public.set_preventive_suspension(uuid, date, date, text), public.my_disciplinary_cases(), public.case_ai_context(uuid),
+  public.active_discipline_code()
 to authenticated;

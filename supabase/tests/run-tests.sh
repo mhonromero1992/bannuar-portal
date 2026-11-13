@@ -573,6 +573,8 @@ as_user "$HR" "select public.activate_discipline_code('$CODE1')" >/dev/null
 check "then it is in force" "$(pg "select status || ':' || (activated_by = '$HR') from public.discipline_codes where id = '$CODE1'")" "active:true"
 r=$(as_user "$HR" "select public.start_code_reading('$CODE1')"); check_has "a code in force is not read again" "$r" "Only a draft code"
 check "every employee can open the code in force" "$(nread "$BEA" "'$PK'")" "1"
+check "and finds it" "$(as_user "$BEA" "select public.active_discipline_code() ->> 'file_key'")" "$PK"
+check "anon does not" "$(as_anon "select public.active_discipline_code()" | grep -c 'permission denied')" "1"
 RULE_A=$(pg "select id from public.offense_rules where code_id = '$CODE1' and ref = 'A-1'")
 RULE_B=$(pg "select id from public.offense_rules where code_id = '$CODE1' and ref = 'B-2'")
 RULE_C=$(pg "select id from public.offense_rules where code_id = '$CODE1' and ref = 'C-3'")
