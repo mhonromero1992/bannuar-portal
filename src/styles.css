@@ -520,3 +520,20 @@ a.tile:hover { box-shadow: var(--shadow-hover); transform: translateY(-2px); }
   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
 }
 .pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Client portal (pages/ClientApp.tsx): a tablet at the client's desk, so big targets and two columns */
+.client { min-height: 100vh; background: var(--paper, #efe9dc); display: flex; flex-direction: column; }
+.client-top { display: flex; align-items: center; gap: 14px; padding: 14px 20px; background: #0b1626; color: #eef2f7; }
+.client-top .muted { color: #aebccf; }
+.client-top .btn-line { margin-left: auto; }
+.client-who { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.client-who b { font-size: 18px; }
+.client-tabs { display: flex; gap: 8px; padding: 12px 20px; overflow-x: auto; background: var(--panel); border-bottom: 1px solid var(--line); }
+.client-tab { min-height: 48px; padding: 0 18px; border-radius: 999px; border: 1px solid var(--line-strong, rgba(13, 26, 43, 0.25)); background: var(--panel); color: var(--ink); font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.client-tab.on { background: #0b1626; color: #fff; border-color: #0b1626; }
+.client-main { flex: 1; width: 100%; max-width: 1180px; margin: 0 auto; padding: 20px 16px 32px; }
+.client-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 16px; }
+.client-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.client-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; min-height: 52px; border-top: 1px solid var(--line); }
+.client-foot { padding: 14px 20px 20px; text-align: center; }
+.btn-lg { min-height: 52px; padding: 0 22px; font-size: 16px; }

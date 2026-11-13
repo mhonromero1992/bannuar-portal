@@ -79,6 +79,17 @@ export const ROLE_HINT: Record<string, string> = {
   supervisor: 'Detachment commanders and inspectors (in the app)',
 };
 
+// Client portal (schema.sql section 17)
+export const CLIENT_REQUEST_KIND: Record<string, string> = {
+  additional_guards: 'More guards', replace_guard: 'Replace a guard', schedule_change: 'Change of schedule', other: 'Something else',
+};
+export const CLIENT_REQUEST_STATUS: Map = { received: ['Received', 'warn'], in_progress: ['In progress', 'info'], done: ['Done', 'ok'], declined: ['Declined', 'neutral'] };
+/** How a client reads an incident report's status (the case behind it stays internal). */
+export const CLIENT_REPORT_STATUS: Map = {
+  received: ['Received', 'warn'], investigating: ['Under investigation', 'info'], action_taken: ['Action taken', 'ok'],
+  closed: ['Closed', 'neutral'], not_pursued: ['Closed', 'neutral'],
+};
+
 // Discipline (schema.sql section 16)
 export const CODE_STATUS: Map = { draft: ['Draft', 'warn'], active: ['In force', 'ok'], retired: ['Retired', 'neutral'] };
 export const READ_STATUS: Map = { not_read: ['Not read yet', 'neutral'], reading: ['Claude is reading', 'info'], read: ['Read by Claude', 'ok'], failed: ['Reading failed', 'bad'] };

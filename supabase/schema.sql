@@ -325,6 +325,39 @@ create table if not exists public.staff_invitations (
   accepted_user_id uuid references auth.users (id) on delete set null
 );
 
+-- Client portal (section 17): people at a client company sign in with an invitation tied to the client,
+-- and see their own posts, the guards on duty, attendance by day, and the reports and requests they file
+alter table public.staff_invitations add column if not exists client_id uuid references public.clients (id) on delete cascade;
+create table if not exists public.client_users (
+  user_id uuid primary key references auth.users (id) on delete cascade,
+  client_id uuid not null references public.clients (id) on delete cascade,
+  full_name text not null,
+  email text not null,
+  invited_by uuid references auth.users (id) on delete set null,
+  disabled_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists client_users_client_idx on public.client_users (client_id);
+
+create sequence if not exists public.client_request_no_seq;
+create table if not exists public.client_requests (
+  id uuid primary key default gen_random_uuid(),
+  request_no text not null unique,
+  client_id uuid not null references public.clients (id) on delete cascade,
+  site_id uuid references public.sites (id) on delete set null,
+  kind text not null check (kind in ('additional_guards', 'replace_guard', 'schedule_change', 'other')),
+  details text not null check (length(trim(details)) between 10 and 3000),
+  guards_needed integer check (guards_needed between 1 and 50),
+  needed_from date,
+  status text not null default 'received' check (status in ('received', 'in_progress', 'done', 'declined')),
+  reply text check (length(reply) <= 1000),
+  requested_by uuid references auth.users (id) on delete set null,
+  requester_name text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists client_requests_client_idx on public.client_requests (client_id, created_at desc);
+
 -- Employee app activation. The activate-employee Edge Function checks the employee number,
 -- birthdate and mobile number (begin_employee_activation), which writes a one-time ticket here;
 -- handle_new_user accepts an employee login only with that ticket. Only the hash is stored.
@@ -1012,6 +1045,18 @@ $$;
 create or replace function public.can_publish() returns boolean
 language sql stable security definer set search_path = '' as $$
   select public.has_any_role(array['super_admin', 'hr_admin', 'hr_staff', 'operations']::public.app_role[])
+$$;
+
+-- The client company of a signed-in client user (null for staff and employees)
+create or replace function public.my_client_id() returns uuid
+language sql stable security definer set search_path = '' as $$
+  select cu.client_id from public.client_users cu where cu.user_id = auth.uid() and cu.disabled_at is null
+$$;
+
+-- Any client login, active or disabled: reference data stays closed to them either way
+create or replace function public.is_client_login() returns boolean
+language sql stable security definer set search_path = '' as $$
+  select exists (select 1 from public.client_users cu where cu.user_id = auth.uid())
 $$;
 
 create or replace function public.current_employee_id() returns uuid
@@ -1706,6 +1751,12 @@ begin
     update public.employees set user_id = new.id where id = inv.employee_id and user_id is null;
     insert into public.user_roles (user_id, role) values (new.id, 'employee') on conflict do nothing;
   end if;
+  -- someone at a client company: no staff role, only their company's view (section 17)
+  if inv.client_id is not null then
+    insert into public.client_users (user_id, client_id, full_name, email, invited_by)
+    values (new.id, inv.client_id, coalesce(nullif(trim(meta ->> 'full_name'), ''), inv.full_name), v_email, inv.invited_by)
+    on conflict (user_id) do nothing;
+  end if;
   update public.staff_invitations set accepted_at = now(), accepted_user_id = new.id where email = inv.email;
   return new;
 end $$;
@@ -1905,7 +1956,10 @@ language sql stable security definer set search_path = '' as $$
     'must_change_password', coalesce((select p.must_change_password from public.profiles p where p.id = auth.uid()), false),
     'employee', (select jsonb_build_object('id', e.id, 'employee_no', e.employee_no, 'full_name', public.full_name(e),
                                            'position', e.position, 'status', e.status, 'site_id', e.site_id)
-                 from public.employees e where e.user_id = auth.uid())
+                 from public.employees e where e.user_id = auth.uid()),
+    'client', (select jsonb_build_object('id', c.id, 'name', c.name)
+               from public.client_users cu join public.clients c on c.id = cu.client_id
+               where cu.user_id = auth.uid() and cu.disabled_at is null)
   )
 $$;
 
@@ -3307,7 +3361,7 @@ begin
 end $$;
 
 -- Reference data everyone signed in can read; HR or operations maintain it
-create policy "read areas" on public.areas for select to authenticated using (true);
+create policy "read areas" on public.areas for select to authenticated using (not (select public.is_client_login()));
 create policy "manage areas" on public.areas for all to authenticated
   using ((select public.is_ops())) with check ((select public.is_ops()));
 
@@ -3315,7 +3369,8 @@ create policy "staff read clients" on public.clients for select to authenticated
 create policy "manage clients" on public.clients for all to authenticated
   using ((select public.is_ops())) with check ((select public.is_ops()));
 
-create policy "read sites" on public.sites for select to authenticated using (true);
+create policy "read sites" on public.sites for select to authenticated
+  using (not (select public.is_client_login()) or client_id = (select public.my_client_id()));
 create policy "manage sites" on public.sites for all to authenticated
   using ((select public.is_ops())) with check ((select public.is_ops()));
 
@@ -3337,15 +3392,15 @@ create policy "read assignments" on public.employee_assignments for select to au
 create policy "hr and operations manage assignments" on public.employee_assignments for all to authenticated
   using ((select public.is_hr()) or (select public.is_ops())) with check ((select public.is_hr()) or (select public.is_ops()));
 
-create policy "read site supervisors" on public.site_supervisors for select to authenticated using (true);
+create policy "read site supervisors" on public.site_supervisors for select to authenticated using (not (select public.is_client_login()));
 create policy "manage site supervisors" on public.site_supervisors for all to authenticated
   using ((select public.is_ops())) with check ((select public.is_ops()));
 
-create policy "read document types" on public.document_types for select to authenticated using (true);
+create policy "read document types" on public.document_types for select to authenticated using (not (select public.is_client_login()));
 create policy "manage document types" on public.document_types for all to authenticated
   using ((select public.is_hr())) with check ((select public.is_hr()));
 
-create policy "read leave types" on public.leave_types for select to authenticated using (true);
+create policy "read leave types" on public.leave_types for select to authenticated using (not (select public.is_client_login()));
 create policy "manage leave types" on public.leave_types for all to authenticated
   using ((select public.is_hr())) with check ((select public.is_hr()));
 
@@ -3984,6 +4039,20 @@ begin
   if public.is_hr() or public.is_ops() then
     v_kind := 'staff';
     select coalesce(p.full_name, 'Bannuar staff') into v_name from public.profiles p where p.id = auth.uid();
+  elsif public.my_client_id() is not null then
+    -- someone at the client company, about one of its posts and a guard of that post
+    if p_site_id is null or not exists (select 1 from public.sites s where s.id = p_site_id and s.client_id = public.my_client_id()) then
+      raise exception 'Choose one of your posts' using errcode = '42501';
+    end if;
+    if p_employee_id is not null and not exists (select 1 from public.employees e where e.id = p_employee_id and e.site_id = p_site_id) then
+      raise exception 'Choose a guard of that post' using errcode = '42501';
+    end if;
+    if (select count(*) from public.incident_reports r where r.reported_by = auth.uid() and r.created_at > now() - interval '1 day') >= 20 then
+      raise exception 'Too many reports today. Call Bannuar instead.' using errcode = 'P0001';
+    end if;
+    v_kind := 'client';
+    select cu.full_name || ' · ' || c.name into v_name
+    from public.client_users cu join public.clients c on c.id = cu.client_id where cu.user_id = auth.uid();
   elsif p_site_id is not null and p_site_id = any (public.my_supervised_site_ids()) then
     v_kind := 'commander';
     select * into me from public.employees where user_id = auth.uid();
@@ -4013,7 +4082,8 @@ begin
   values (v_no, p_site_id, v_client, p_employee_id, nullif(left(trim(coalesce(p_guard_described, '')), 200), ''), p_occurred_at,
           left(trim(p_title), 200), left(trim(p_details), 5000), v_kind, auth.uid(), v_name)
   returning id into v_id;
-  perform public.notify_roles(public.hr_roles(), 'New incident report', v_no || ' · ' || left(trim(p_title), 80),
+  perform public.notify_roles(case when v_kind = 'client' then public.hr_roles() || array['operations']::public.app_role[] else public.hr_roles() end,
+    case when v_kind = 'client' then 'A client reported an incident' else 'New incident report' end, v_no || ' · ' || left(trim(p_title), 80),
     'incident_report', jsonb_build_object('screen', 'Discipline', 'tab', 'reports', 'id', v_id));
   return jsonb_build_object('id', v_id, 'report_no', v_no, 'status', 'received');
 end $$;
@@ -4567,4 +4637,252 @@ grant execute on function
   public.decide_case(uuid, text, integer, date, text, text), public.withdraw_case(uuid, text),
   public.set_preventive_suspension(uuid, date, date, text), public.my_disciplinary_cases(), public.case_ai_context(uuid),
   public.active_discipline_code()
+to authenticated;
+
+-- -------------------------------------------------------------------------------------
+-- 17. Client portal: client companies see their posts, guards on duty and attendance, and file
+-- incident reports and requests. Read through these functions only; no pay, addresses, government
+-- numbers, photos, locations or discipline records ever reach a client.
+-- -------------------------------------------------------------------------------------
+
+-- Operations (or a super admin) invites someone at a client company. They sign up at /setup with the
+-- code, like staff, and get no staff role.
+create or replace function public.invite_client_user(p_client_id uuid, p_email text, p_full_name text) returns text
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_email text := lower(trim(p_email));
+  v_code text := public.random_code(4) || '-' || public.random_code(4);
+begin
+  if not public.is_ops() then
+    raise exception 'Only operations invites client users' using errcode = '42501';
+  end if;
+  if not exists (select 1 from public.clients where id = p_client_id and status <> 'ended') then
+    raise exception 'Client not found, or the contract has ended' using errcode = 'P0002';
+  end if;
+  if v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
+    raise exception 'Enter a valid email address' using errcode = '22023';
+  end if;
+  if length(trim(coalesce(p_full_name, ''))) < 2 then
+    raise exception 'Enter the person''s name' using errcode = '22023';
+  end if;
+  if exists (select 1 from auth.users where lower(email) = v_email) then
+    raise exception 'This email already has an account' using errcode = 'P0001';
+  end if;
+  insert into public.staff_invitations (email, full_name, roles, code, client_id, invited_by, expires_at)
+  values (v_email, trim(p_full_name), '{}', v_code, p_client_id, auth.uid(), now() + interval '14 days')
+  on conflict (email) do update
+    set full_name = excluded.full_name, roles = '{}', code = excluded.code, client_id = excluded.client_id, employee_id = null,
+        invited_by = excluded.invited_by, expires_at = excluded.expires_at, accepted_at = null, accepted_user_id = null;
+  return v_code;
+end $$;
+
+-- Who can sign in for a client: people with an account and open invitations (staff only)
+create or replace function public.list_client_users(p_client_id uuid)
+returns table (user_id uuid, full_name text, email text, state text, since timestamptz)
+language sql stable security definer set search_path = '' as $$
+  select cu.user_id, cu.full_name, cu.email, case when cu.disabled_at is null then 'active' else 'disabled' end, cu.created_at
+  from public.client_users cu where cu.client_id = p_client_id and public.is_staff()
+  union all
+  select null, i.full_name, i.email, case when i.expires_at > now() then 'invited' else 'expired' end, i.created_at
+  from public.staff_invitations i where i.client_id = p_client_id and i.accepted_at is null and public.is_staff()
+  order by 5 desc
+$$;
+
+create or replace function public.set_client_user_active(p_user_id uuid, p_active boolean) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.is_ops() then
+    raise exception 'Only operations changes client access' using errcode = '42501';
+  end if;
+  update public.client_users set disabled_at = case when p_active then null else now() end where user_id = p_user_id;
+  if not found then
+    raise exception 'Client user not found' using errcode = 'P0002';
+  end if;
+end $$;
+
+-- A guard's name as the client sees it: first name and surname only
+create or replace function public.client_guard_name(e public.employees) returns text
+language sql immutable set search_path = '' as $$
+  select trim(e.first_name || ' ' || e.last_name)
+$$;
+
+-- The client's posts, with the guards assigned and who is on duty now (a time in within 18 hours with no
+-- time out after it)
+create or replace function public.client_overview() returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_client uuid := public.my_client_id();
+begin
+  if v_client is null then
+    raise exception 'Only client users see this' using errcode = '42501';
+  end if;
+  return jsonb_build_object(
+    'client', (select jsonb_build_object('id', c.id, 'name', c.name) from public.clients c where c.id = v_client),
+    'posts', (select coalesce(jsonb_agg(jsonb_build_object(
+        'id', s.id, 'name', s.name, 'city', s.city, 'guards_required', s.guards_required,
+        'guards', (select coalesce(jsonb_agg(jsonb_build_object(
+              'id', e.id, 'name', public.client_guard_name(e), 'position', e.position,
+              'on_duty_since', (select case when a.kind = 'time_in' then a.logged_at end from public.attendance_logs a
+                                where a.employee_id = e.id and a.logged_at > now() - interval '18 hours'
+                                order by a.logged_at desc limit 1))
+              order by e.last_name), '[]'::jsonb)
+            from public.employees e where e.site_id = s.id and e.status = 'active')
+      ) order by s.name), '[]'::jsonb)
+      from public.sites s where s.client_id = v_client and s.is_active));
+end $$;
+
+-- Time in and out at the client's posts on one day (Manila): who, when, and whether the phone was at the
+-- post. No photos or locations.
+create or replace function public.client_attendance(p_day date) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_client uuid := public.my_client_id();
+begin
+  if v_client is null then
+    raise exception 'Only client users see this' using errcode = '42501';
+  end if;
+  if p_day is null or p_day > (now() at time zone 'Asia/Manila')::date or p_day < (now() at time zone 'Asia/Manila')::date - 92 then
+    raise exception 'Choose a day in the last three months' using errcode = '22023';
+  end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object(
+      'post', s.name, 'guard', public.client_guard_name(e), 'kind', a.kind, 'logged_at', a.logged_at,
+      'at_post', a.location_check = 'at_post', 'by', a.source) order by s.name, a.logged_at), '[]'::jsonb)
+    from public.attendance_logs a
+    join public.sites s on s.id = a.site_id and s.client_id = v_client
+    join public.employees e on e.id = a.employee_id
+    where (a.logged_at at time zone 'Asia/Manila')::date = p_day);
+end $$;
+
+-- The reports the client's people filed, with Bannuar's status and update (never the case behind it)
+create or replace function public.client_reports() returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_client uuid := public.my_client_id();
+begin
+  if v_client is null then
+    raise exception 'Only client users see this' using errcode = '42501';
+  end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object(
+      'id', r.id, 'report_no', r.report_no, 'post', s.name, 'occurred_at', r.occurred_at, 'title', r.title,
+      'details', r.details, 'guard', coalesce(public.client_guard_name(e), r.guard_described), 'status', r.status,
+      'update', r.client_update, 'filed_by', r.reporter_name, 'created_at', r.created_at, 'updated_at', r.updated_at)
+      order by r.created_at desc), '[]'::jsonb)
+    from public.incident_reports r
+    left join public.sites s on s.id = r.site_id
+    left join public.employees e on e.id = r.employee_id
+    where r.client_id = v_client and r.reporter_kind = 'client');
+end $$;
+
+-- A request to operations: more guards, a replacement, a schedule change
+create or replace function public.file_client_request(p_site_id uuid, p_kind text, p_details text, p_guards_needed integer,
+                                                      p_needed_from date)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_client uuid := public.my_client_id();
+  v_no text;
+  v_id uuid;
+  v_name text;
+begin
+  if v_client is null then
+    raise exception 'Only client users file requests' using errcode = '42501';
+  end if;
+  if p_site_id is not null and not exists (select 1 from public.sites where id = p_site_id and client_id = v_client) then
+    raise exception 'Choose one of your posts' using errcode = '42501';
+  end if;
+  if p_kind not in ('additional_guards', 'replace_guard', 'schedule_change', 'other') then
+    raise exception 'Choose what you need' using errcode = '22023';
+  end if;
+  if length(trim(coalesce(p_details, ''))) < 10 then
+    raise exception 'Describe what you need' using errcode = '22023';
+  end if;
+  if p_guards_needed is not null and p_guards_needed not between 1 and 50 then
+    raise exception 'Give the number of guards (1 to 50)' using errcode = '22023';
+  end if;
+  if (select count(*) from public.client_requests r where r.requested_by = auth.uid() and r.created_at > now() - interval '1 day') >= 20 then
+    raise exception 'Too many requests today. Call Bannuar instead.' using errcode = 'P0001';
+  end if;
+  select cu.full_name into v_name from public.client_users cu where cu.user_id = auth.uid();
+  v_no := 'CR-' || to_char(now() at time zone 'Asia/Manila', 'YYYY') || '-' || lpad(nextval('public.client_request_no_seq')::text, 6, '0');
+  insert into public.client_requests (request_no, client_id, site_id, kind, details, guards_needed, needed_from, requested_by, requester_name)
+  values (v_no, v_client, p_site_id, p_kind, left(trim(p_details), 3000),
+          case when p_kind = 'additional_guards' then p_guards_needed end, p_needed_from, auth.uid(), v_name)
+  returning id into v_id;
+  perform public.notify_roles(array['super_admin', 'hr_admin', 'operations']::public.app_role[], 'A client asked for something',
+    v_no || ' · ' || (select name from public.clients where id = v_client), 'client_request',
+    jsonb_build_object('screen', 'Requests', 'tab', 'clients', 'id', v_id));
+  return jsonb_build_object('id', v_id, 'request_no', v_no, 'status', 'received');
+end $$;
+
+create or replace function public.client_requests_list() returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_client uuid := public.my_client_id();
+begin
+  if v_client is null then
+    raise exception 'Only client users see this' using errcode = '42501';
+  end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object(
+      'id', r.id, 'request_no', r.request_no, 'post', s.name, 'kind', r.kind, 'details', r.details, 'guards_needed', r.guards_needed,
+      'needed_from', r.needed_from, 'status', r.status, 'reply', r.reply, 'requested_by', r.requester_name, 'created_at', r.created_at)
+      order by r.created_at desc), '[]'::jsonb)
+    from public.client_requests r left join public.sites s on s.id = r.site_id
+    where r.client_id = v_client);
+end $$;
+
+create or replace function public.update_client_request(p_id uuid, p_status text, p_reply text) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.is_ops() then
+    raise exception 'Only operations answers client requests' using errcode = '42501';
+  end if;
+  if p_status not in ('received', 'in_progress', 'done', 'declined') then
+    raise exception 'Choose a status' using errcode = '22023';
+  end if;
+  update public.client_requests set status = p_status, reply = nullif(left(trim(coalesce(p_reply, '')), 1000), '') where id = p_id;
+  if not found then
+    raise exception 'Request not found' using errcode = 'P0002';
+  end if;
+end $$;
+
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['client_requests'] loop
+    execute format('drop trigger if exists set_updated_at on public.%I', t);
+    execute format('create trigger set_updated_at before update on public.%I for each row execute function public.set_updated_at()', t);
+  end loop;
+  foreach t in array array['client_users', 'client_requests'] loop
+    execute format('drop trigger if exists audit on public.%I', t);
+    execute format('create trigger audit after insert or update or delete on public.%I for each row execute function public.audit_row_change()', t);
+  end loop;
+end $$;
+
+do $$
+declare
+  r record;
+begin
+  for r in select policyname, tablename from pg_policies where schemaname = 'public' and tablename in ('client_users', 'client_requests') loop
+    execute format('drop policy if exists %I on public.%I', r.policyname, r.tablename);
+  end loop;
+end $$;
+alter table public.client_users enable row level security;
+alter table public.client_requests enable row level security;
+create policy "staff read client users" on public.client_users for select to authenticated using ((select public.is_staff()));
+create policy "staff read client requests" on public.client_requests for select to authenticated using ((select public.is_staff()));
+revoke all on public.client_users, public.client_requests from public, anon, authenticated;
+grant select on public.client_users, public.client_requests to authenticated;
+grant select, insert, update, delete on public.client_users, public.client_requests to service_role;
+
+revoke execute on function public.my_client_id(), public.is_client_login(), public.client_guard_name(public.employees) from public, anon;
+grant execute on function public.my_client_id(), public.is_client_login() to authenticated;
+revoke execute on function
+  public.invite_client_user(uuid, text, text), public.list_client_users(uuid), public.set_client_user_active(uuid, boolean),
+  public.client_overview(), public.client_attendance(date), public.client_reports(),
+  public.file_client_request(uuid, text, text, integer, date), public.client_requests_list(), public.update_client_request(uuid, text, text)
+from public, anon;
+grant execute on function
+  public.invite_client_user(uuid, text, text), public.list_client_users(uuid), public.set_client_user_active(uuid, boolean),
+  public.client_overview(), public.client_attendance(date), public.client_reports(),
+  public.file_client_request(uuid, text, text, integer, date), public.client_requests_list(), public.update_client_request(uuid, text, text)
 to authenticated;

@@ -660,6 +660,45 @@ check "nor deleted" "$(pg "select count(*) from public.offense_rules where id = 
 r=$(as_user "$HR" "update public.disciplinary_cases set decision = 'warning' where id = '$C1ID'"); check_has "cases change only through the due-process functions" "$r" "permission denied"
 check "every step is in the audit log" "$(pg "select count(*) > 5 from public.audit_log where table_name = 'disciplinary_cases' and record_id = '$C1ID'")" "t"
 
+echo "== Client portal: a client's people see only their own posts, and file reports and requests"
+CLIENT=$(as_user "$OPS" "insert into public.clients (name, status) values ('Acme Mart', 'active') returning id")
+OTHER=$(as_user "$OPS" "insert into public.clients (name, status) values ('Other Corp', 'active') returning id")
+pg "update public.sites set client_id = '$CLIENT' where id = '$SITE1'; update public.sites set client_id = '$OTHER' where id = '$SITE2'" >/dev/null
+r=$(as_user "$BEA" "select public.invite_client_user('$CLIENT', 'store@acme.test', 'Mia Manager')"); check_has "only operations invites client users" "$r" "Only operations"
+CCODE=$(as_user "$OPS" "select public.invite_client_user('$CLIENT', 'store@acme.test', 'Mia Manager')")
+check "their code works on the setup page like a staff invitation" "$(as_anon "select public.check_staff_invitation('store@acme.test', '$CCODE')")" "t"
+check "staff see the open invitation" "$(as_user "$OPS" "select state from public.list_client_users('$CLIENT')")" "invited"
+CU=$(signup 'store@acme.test' "{\"invite_code\":\"$CCODE\",\"full_name\":\"Mia Manager\"}")
+check "a client login gets no staff role" "$(pg "select count(*) from public.user_roles where user_id = '$CU'")" "0"
+check "and is tied to the client" "$(as_user "$CU" "select public.my_access() -> 'client' ->> 'name'")" "Acme Mart"
+check "it sees only its own posts" "$(as_user "$CU" "select string_agg(name, ',') from public.sites")" "Post A"
+check "and none of: employees, areas, document types, commanders, reports, cases, codes, other clients" "$(as_user "$CU" "select (select count(*) from public.employees) + (select count(*) from public.areas) + (select count(*) from public.document_types) + (select count(*) from public.site_supervisors) + (select count(*) from public.incident_reports) + (select count(*) from public.disciplinary_cases) + (select count(*) from public.offense_rules) + (select count(*) from public.clients) + (select count(*) from public.attendance_logs) + (select count(*) from public.stored_files)")" "0"
+OV=$(as_user "$CU" "select public.client_overview()")
+check "overview: its post, guards by first name and surname, and who is on duty, nothing personal" "$(echo "$OV" | python3 -c "import json,sys; o=json.load(sys.stdin); p=o['posts']; t=json.dumps(o); print(o['client']['name'], len(p), p[0]['name'], 'Bea Lim' in [g['name'] for g in p[0]['guards']], any(g['on_duty_since'] for g in p[0]['guards']), any(k in t for k in ('employee_no','mobile','birthdate','address','G-00','09171')))")" "Acme Mart 1 Post A True True False"
+AT=$(as_user "$CU" "select public.client_attendance((now() at time zone 'Asia/Manila')::date)")
+check "attendance of a day at its posts only, without photos or locations" "$(echo "$AT" | python3 -c "import json,sys; a=json.load(sys.stdin); t=json.dumps(a); print(len(a) > 0, {x['post'] for x in a} == {'Post A'}, any(k in t for k in ('photo','latitude','employees/')))")" "True True False"
+r=$(as_user "$CU" "select public.client_attendance(current_date - 200)"); check_has "within the last three months" "$r" "last three months"
+CR=$(as_user "$CU" "select public.file_incident_report('$SITE1', '$BEA_EMP', now() - interval '1 hour', 'Guard on her phone', 'The guard at the gate was on her phone for an hour.')"); CRID=$(echo "$CR" | jget id)
+check "the client files a report about a guard of its post" "$(pg "select reporter_kind || ':' || reporter_name || ':' || (client_id = '$CLIENT') from public.incident_reports where id = '$CRID'")" "client:Mia Manager · Acme Mart:true"
+check "operations and HR are told" "$(pg "select count(*) from public.notifications where user_id = '$OPS' and title = 'A client reported an incident'")" "1"
+r=$(as_user "$CU" "select public.file_incident_report('$SITE2', null, now(), 'Gate open', 'The gate was left open overnight.')"); check_has "never about another client's post" "$r" "Choose one of your posts"
+r=$(as_user "$CU" "select public.file_incident_report('$SITE1', '$EDU_EMP', now(), 'Gate open', 'The gate was left open overnight.')"); check_has "nor a guard of another post" "$r" "Choose a guard of that post"
+as_user "$DC" "select public.file_incident_report('$SITE1', '$CARLO_EMP', now(), 'Late relief', 'Relief came an hour late; internal matter.')" >/dev/null
+as_user "$HR" "select public.update_incident_report('$CRID', 'action_taken', 'We spoke with the guard and her commander.')" >/dev/null
+REPS=$(as_user "$CU" "select public.client_reports()")
+check "it follows only its own reports, with Bannuar's update, not the commander's internal ones" "$(echo "$REPS" | python3 -c "import json,sys; r=json.load(sys.stdin); print(len(r), r[0]['status'], r[0]['update'][:10], r[0]['guard'])")" "1 action_taken We spoke w Bea Lim"
+RQ=$(as_user "$CU" "select public.file_client_request('$SITE1', 'additional_guards', 'Two more guards for the holiday rush, 6 AM to 6 PM.', 2, current_date + 10)"); RQID=$(echo "$RQ" | jget id)
+check "the client asks for more guards" "$(echo "$RQ" | jget request_no | grep -cE '^CR-[0-9]{4}-[0-9]{6}$'):$(pg "select guards_needed || ':' || status from public.client_requests where id = '$RQID'")" "1:2:received"
+r=$(as_user "$CU" "select public.file_client_request('$SITE2', 'other', 'Please check the gate at the warehouse.', null, null)"); check_has "only for its own posts" "$r" "Choose one of your posts"
+r=$(as_user "$CU" "select public.update_client_request('$RQID', 'done', 'x')"); check_has "only operations answers" "$r" "Only operations"
+as_user "$OPS" "select public.update_client_request('$RQID', 'in_progress', 'Two guards from December 1.')" >/dev/null
+check "the client reads the answer" "$(as_user "$CU" "select public.client_requests_list() -> 0 ->> 'reply'")" "Two guards from December 1."
+r=$(as_user "$BEA" "select public.client_overview()"); check_has "guards and staff do not get a client's view" "$r" "Only client users"
+as_user "$OPS" "select public.set_client_user_active('$CU', false)" >/dev/null
+r=$(as_user "$CU" "select public.client_overview()"); check_has "a disabled client login sees nothing" "$r" "Only client users"
+check "not even the posts" "$(as_user "$CU" "select count(*) from public.sites")" "0"
+check "guards still see posts" "$(as_user "$BEA" "select count(*) > 0 from public.sites")" "t"
+
 echo "== Demo scripts still match the schema (on a second, empty database)"
 D="$(dirname "$0")/.."
 DEMO_DB="${PGDATABASE:-bannuar_test}_demo"

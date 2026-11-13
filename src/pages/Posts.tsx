@@ -154,6 +154,7 @@ function ClientList() {
   const qc = useQueryClient();
   const q = useClients();
   const [editing, setEditing] = useState<Record<string, unknown> | 'new' | null>(null);
+  const [portal, setPortal] = useState<{ id: string; name: string } | null>(null);
   const save = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.currentTarget)) as Record<string, string>;
@@ -178,11 +179,14 @@ function ClientList() {
               <td>{x.contact_person}<span className="cell-sub">{[x.contact_phone, x.contact_email].filter(Boolean).join(' · ')}</span></td>
               <td className="tabular">{x.contract_start ? `${fmtDate(x.contract_start)} to ${fmtDate(x.contract_end) || 'open'}` : ''}</td>
               <td><Badge tone={x.status === 'active' ? 'ok' : x.status === 'prospect' ? 'info' : 'neutral'}>{x.status[0].toUpperCase() + x.status.slice(1)}</Badge></td>
-              <td>{can.ops && <button className="btn btn-line btn-sm" type="button" onClick={() => setEditing(x)}>Edit</button>}</td>
+              <td>{can.ops && <span className="row"><button className="btn btn-line btn-sm" type="button" onClick={() => setEditing(x)}>Edit</button><button className="btn btn-ghost btn-sm" type="button" onClick={() => setPortal({ id: x.id, name: x.name })}>Portal access</button></span>}</td>
             </tr>
           ))}</tbody>
         </table>
       )}
+      <Dialog open={portal !== null} title={portal ? `Client portal: ${portal.name}` : ''} onClose={() => setPortal(null)}>
+        {portal && <ClientAccess clientId={portal.id} />}
+      </Dialog>
       <Dialog open={Boolean(editing)} title={editing === 'new' ? 'Add a client' : 'Edit the client'} onClose={() => setEditing(null)}>
         {editing && (
           <form className="form" onSubmit={save} key={c.id ?? 'new'}>
@@ -199,6 +203,76 @@ function ClientList() {
           </form>
         )}
       </Dialog>
+    </div>
+  );
+}
+
+/**
+ * Who at the client may sign in to the client portal (schema.sql section 17): invite by email, then
+ * give them the code; they make their account at /setup like staff, and see only their company's posts.
+ */
+function ClientAccess({ clientId }: { clientId: string }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [v, setV] = useState({ name: '', email: '' });
+  const [code, setCode] = useState<{ email: string; code: string } | null>(null);
+  const [error, setError] = useState('');
+  const users = useQuery({
+    queryKey: ['client-users', clientId],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc('list_client_users', { p_client_id: clientId });
+      if (error) throw error;
+      return data as { user_id: string | null; full_name: string; email: string; state: string; since: string }[];
+    },
+  });
+  const invite = async (e: FormEvent) => {
+    e.preventDefault();
+    setError('');
+    const { data, error: err } = await supabase.rpc('invite_client_user', { p_client_id: clientId, p_email: v.email, p_full_name: v.name });
+    if (err) return setError(errorText(err));
+    setCode({ email: v.email.trim().toLowerCase(), code: data as string });
+    setV({ name: '', email: '' });
+    qc.invalidateQueries({ queryKey: ['client-users', clientId] });
+  };
+  const setActive = async (userId: string, active: boolean) => {
+    const { error: err } = await supabase.rpc('set_client_user_active', { p_user_id: userId, p_active: active });
+    if (err) return toast(errorText(err), 'error');
+    qc.invalidateQueries({ queryKey: ['client-users', clientId] });
+  };
+  return (
+    <div className="stack">
+      <p className="muted small">
+        People at the client see their posts, the guards on duty and attendance by day, and file incident reports and requests. They never see pay,
+        addresses, government numbers, photos, locations or discipline cases. It works on a tablet: open the portal in the browser and Add to Home Screen.
+      </p>
+      {users.isLoading ? <Loading /> : users.error ? <ErrorState error={errorText(users.error)} retry={() => users.refetch()} /> : (
+        <ul className="client-list">
+          {(users.data ?? []).map((u) => (
+            <li key={`${u.email}-${u.state}`}>
+              <span><b>{u.full_name}</b><span className="muted small"> · {u.email}</span></span>
+              <span className="row">
+                <Badge tone={u.state === 'active' ? 'ok' : u.state === 'invited' ? 'info' : 'neutral'}>{u.state === 'active' ? 'Can sign in' : u.state === 'invited' ? 'Invited' : u.state === 'expired' ? 'Invitation expired' : 'Turned off'}</Badge>
+                {u.user_id && <button className="btn btn-ghost btn-sm" type="button" onClick={() => setActive(u.user_id!, u.state !== 'active')}>{u.state === 'active' ? 'Turn off' : 'Turn on'}</button>}
+              </span>
+            </li>
+          ))}
+          {!users.data?.length && <li className="muted">Nobody yet.</li>}
+        </ul>
+      )}
+      {code && (
+        <p className="callout" role="status">
+          Give <b>{code.email}</b> this code: <b className="tabular">{code.code}</b>. They open <b>{window.location.origin}/setup</b>, enter their email,
+          the code and a password. The code works for 14 days.
+        </p>
+      )}
+      <form className="form" onSubmit={invite} noValidate>
+        {error && <p className="form-error" role="alert">{error}</p>}
+        <div className="form-row">
+          <TextField label="Name" value={v.name} onChange={(e) => setV({ ...v, name: e.target.value })} />
+          <TextField label="Email" type="email" value={v.email} onChange={(e) => setV({ ...v, email: e.target.value })} />
+        </div>
+        <div className="form-foot"><button className="btn" type="submit">Invite to the client portal</button></div>
+      </form>
     </div>
   );
 }

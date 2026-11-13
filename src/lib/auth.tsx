@@ -11,6 +11,8 @@ export interface Access {
   email: string | null;
   must_change_password: boolean;
   employee: { id: string; employee_no: string; full_name: string; position: string; status: string } | null;
+  /** Someone at a client company (the client portal, schema.sql section 17). */
+  client?: { id: string; name: string } | null;
 }
 
 interface AuthState {

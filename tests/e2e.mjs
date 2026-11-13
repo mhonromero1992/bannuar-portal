@@ -150,6 +150,9 @@ T.disciplinary_cases = [
   caseRow('case3', 'DC-2026-000003', 'hearing_set', E.e1, { ...issued, explanation: 'I was resting my eyes.', explanation_via: 'paper', explained_at: now, hearing_at: now, hearing_place: 'HR office', hearing_notes: 'Attended with a co-guard. The inspector confirmed he was asleep.', hearing_held_at: now }),
 ];
 const findCase = (id) => T.disciplinary_cases.find((c) => c.id === id);
+// the client portal: Acme Mart's request, and what its people see
+T.client_requests = [{ id: 'cr1', request_no: 'CR-2026-000001', client_id: 'c1', site_id: 's1', kind: 'additional_guards', details: 'Two more guards for the holiday rush, 6 AM to 6 PM.', guards_needed: 2, needed_from: '2026-12-01', status: 'received', reply: null, requester_name: 'Mia Manager', created_at: now, client: { name: 'Acme Mart' }, site: { name: 'Post A · Main Gate' } }];
+const clientAccess = { user_id: 'u-mia', roles: [], full_name: 'Mia Manager', email: 'mia@acme.test', must_change_password: false, employee: null, client: { id: 'c1', name: 'Acme Mart' } };
 const access = { user_id: 'u-admin', roles: ['super_admin'], full_name: 'Ana Admin', email: 'ana@bannuar.test', must_change_password: false, employee: null };
 const dashboard = { employees_by_status: { active: 2, floating: 1 }, employees_current: 3, sites_active: 1, guards_required: 3, guards_deployed: 2, sites_short: 1, floating: 1, floating_over_150_days: 1, leave_pending_supervisor: 0, leave_pending_hr: 1, on_leave_today: 0, coe_pending: 1, coe_overdue: 1, profile_changes_pending: 1, payroll_concerns_open: 1, documents_expired: 0, documents_expiring: 1, compliance_gaps: 1, applications_new: 1, inquiries_new: 1, latest_period: { id: 'p1', label: 'Nov 1 to 15, 2026', status: 'draft', pay_date: '2026-11-20', payslips: 2 } };
 const certificate = { id: 'cert1', certificate_no: 'COE-2026-000001', verification_code: 'K7QM-3XPD-8RTA', employee_id: 'e2', employee_name: 'Bea Lim', position: 'Security Guard', date_hired: '2023-01-10', date_separated: null, purpose: 'bank_loan', include_compensation: true, compensation_text: '₱540.00 a day', signatory_name: 'Hector HR', signatory_title: 'HR Manager', issued_at: now, file_path: null };
@@ -192,6 +195,16 @@ const RPC = {
   decide_case: (b) => ({ id: b.p_case_id, decision: b.p_decision, departs: Boolean(b.p_departs_reason) }),
   withdraw_case: () => null,
   set_preventive_suspension: () => null,
+  list_client_users: () => [{ user_id: 'u-mia', full_name: 'Mia Manager', email: 'mia@acme.test', state: 'active', since: now }],
+  invite_client_user: () => 'Q4RT-7XWD',
+  set_client_user_active: () => null,
+  update_client_request: () => null,
+  client_overview: () => ({ client: { id: 'c1', name: 'Acme Mart' }, posts: [{ id: 's1', name: 'Post A · Main Gate', city: 'San Fernando', guards_required: 3, guards: [
+    { id: 'e2', name: 'Bea Lim', position: 'Lady Guard', on_duty_since: now }, { id: 'e1', name: 'Dante Cruz', position: 'Detachment Commander', on_duty_since: null }] }] }),
+  client_attendance: () => [{ post: 'Post A · Main Gate', guard: 'Bea Lim', kind: 'time_in', logged_at: now, at_post: true, by: 'self' }, { post: 'Post A · Main Gate', guard: 'Dante Cruz', kind: 'time_in', logged_at: now, at_post: false, by: 'commander' }],
+  client_reports: () => [{ id: 'ir1', report_no: 'IR-2026-000001', post: 'Post A · Main Gate', occurred_at: now, title: 'Guard asleep at the gate', details: 'Our store manager found the guard asleep at the main gate at 2 AM.', guard: 'Carlo Diaz', status: 'investigating', update: 'We are looking into it with the detachment commander.', filed_by: 'Mia Manager · Acme Mart', created_at: now, updated_at: now }],
+  client_requests_list: () => [{ id: 'cr1', request_no: 'CR-2026-000001', post: 'Post A · Main Gate', kind: 'additional_guards', details: 'Two more guards for the holiday rush.', guards_needed: 2, needed_from: '2026-12-01', status: 'in_progress', reply: 'Two guards from December 1.', requested_by: 'Mia Manager', created_at: now }],
+  file_client_request: () => ({ id: 'cr9', request_no: 'CR-2026-000009', status: 'received' }),
 };
 
 // ------------------------------------------------------------------ the mock API
@@ -893,6 +906,78 @@ check('reduced motion: figures show at once, no count-up', /^3$/.test((await p4.
 await p4.goto(`${BASE}/sign-in?next=/`);
 check('reduced motion: the duty clock stays flat', await p4.evaluate(() => { const s = document.querySelector('.clock__stage'); return !s || getComputedStyle(s).transform === 'none'; }));
 await calm.close();
+
+console.log('Client portal: staff invite and answer, then a client on a tablet');
+await page.goto(`${BASE}/posts`);
+await page.getByRole('tab', { name: 'Clients' }).click();
+await page.getByRole('button', { name: 'Portal access' }).first().click();
+const paDlg = page.locator('dialog[open]');
+await paDlg.getByText('Mia Manager').waitFor();
+await paDlg.getByLabel('Name').fill('Jun Desk');
+await paDlg.getByLabel('Email').fill('desk@acme.test');
+await paDlg.getByRole('button', { name: 'Invite to the client portal' }).click();
+await paDlg.getByText('Q4RT-7XWD').waitFor();
+const inv = rpcCalls('invite_client_user').at(-1)?.body;
+check('client access: operations invites someone at the client, and gets the code to give them', inv?.p_client_id === 'c1' && inv?.p_email === 'desk@acme.test' && inv?.p_full_name === 'Jun Desk' && /\/setup/.test(await paDlg.innerText()), JSON.stringify(inv));
+await paDlg.getByRole('button', { name: 'Turn off' }).click();
+await page.waitForTimeout(300);
+check('client access: a client login can be turned off', JSON.stringify(rpcCalls('set_client_user_active').at(-1)?.body) === '{"p_user_id":"u-mia","p_active":false}');
+await page.keyboard.press('Escape');
+await page.goto(`${BASE}/requests?tab=clients`);
+await page.getByRole('button', { name: 'More guards: 2' }).click();
+const crDlg = page.locator('dialog[open]');
+await crDlg.getByLabel('Status').selectOption('in_progress');
+await crDlg.getByLabel(/Answer for the client/).fill('Two guards from December 1.');
+await crDlg.getByRole('button', { name: 'Save' }).click();
+await page.getByText('Answer saved. The client sees it in their portal.').waitFor();
+const crUpd = rpcCalls('update_client_request').at(-1)?.body;
+check('client requests: operations answers, and the client sees it', crUpd?.p_id === 'cr1' && crUpd?.p_status === 'in_progress' && crUpd?.p_reply === 'Two guards from December 1.', JSON.stringify(crUpd));
+
+RPC.my_access = () => clientAccess;
+const beforeClient = requests.length;
+await page.setViewportSize({ width: 820, height: 1180 });
+await page.goto(`${BASE}/`);
+await page.locator('.client').waitFor();
+await page.getByText('On duty since').first().waitFor();
+check('client: a client login gets the client portal, not the staff portal', (await page.locator('.side').count()) === 0 && /Acme Mart/.test(await page.locator('.client-top').innerText()));
+check('client: its post, the guards assigned, and who is on duty', (await page.getByText('2 of 3 guards assigned').count()) === 1 && (await page.getByText('Off duty').count()) === 1);
+await page.screenshot({ path: `${ROOT}tests/shots/client-tablet.png` });
+await page.locator('.client-tab', { hasText: 'Attendance' }).click();
+await page.getByText('At the post').waitFor();
+check('client: attendance of the day, with who logged it', JSON.stringify(rpcCalls('client_attendance').at(-1)?.body) === JSON.stringify({ p_day: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date()) }) && (await page.getByText('Logged by the commander').count()) === 1 && (await page.getByText('Not confirmed').count()) === 1);
+await page.locator('.client-tab', { hasText: 'Incident reports' }).click();
+await page.getByText('We are looking into it').waitFor();
+await page.getByRole('button', { name: 'Report an incident' }).click();
+const crf = page.locator('dialog[open]');
+await crf.getByLabel(/^Guard/).selectOption('e2');
+await crf.getByLabel('What it is about').fill('Guard on her phone');
+await crf.getByLabel('What happened').fill('The guard at the gate was on her phone for an hour.');
+await crf.getByRole('button', { name: 'Send the report' }).click();
+await page.getByText('Report IR-2026-000009 sent to Bannuar.').waitFor();
+const cRep = rpcCalls('file_incident_report').at(-1)?.body;
+check('client: a report about a guard of its post goes to Bannuar', cRep?.p_site_id === 's1' && cRep?.p_employee_id === 'e2' && cRep?.p_guard_described === null && cRep?.p_title === 'Guard on her phone', JSON.stringify(cRep));
+await page.locator('.client-tab', { hasText: 'Requests' }).click();
+await page.getByText('Two guards from December 1.').waitFor();
+await page.getByRole('button', { name: 'Ask for something' }).click();
+const cReq = page.locator('dialog[open]');
+await cReq.getByLabel('How many guards').fill('3');
+await cReq.getByLabel('Details').fill('Three more guards for the Christmas sale, 8 AM to 10 PM.');
+await cReq.getByRole('button', { name: 'Send the request' }).click();
+await page.getByText('Request CR-2026-000009 sent to Bannuar.').waitFor();
+const cReqBody = rpcCalls('file_client_request').at(-1)?.body;
+check('client: asks for more guards', cReqBody?.p_site_id === 's1' && cReqBody?.p_kind === 'additional_guards' && cReqBody?.p_guards_needed === 3, JSON.stringify(cReqBody));
+const clientReads = requests.slice(beforeClient).filter((r) => r.path.startsWith('/rest/v1/') && !r.path.startsWith('/rest/v1/rpc/'));
+check('client: reads nothing but its own client functions (no tables)', clientReads.length === 0, clientReads.map((r) => r.path).join(', '));
+check('client: no sideways scroll on a tablet', !(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)));
+await page.setViewportSize({ width: 390, height: 844 });
+await page.locator('.client-tab', { hasText: 'Posts and guards' }).click();
+check('client: no sideways scroll on a phone either', !(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)));
+const manifest = await (await fetch(`${BASE}/manifest.webmanifest`)).json().catch(() => null);
+check('client: it can be added to a tablet\'s home screen (manifest, icons)', manifest?.display === 'standalone' && manifest.icons.some((i) => i.sizes === '512x512') && (await page.locator('link[rel="manifest"]').count()) === 1);
+RPC.my_access = () => access;
+await page.setViewportSize({ width: 1280, height: 860 });
+await page.goto(`${BASE}/`);
+await page.locator('.side').waitFor();
 
 console.log('Sign-up, phone width, sign-out');
 const p2 = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();

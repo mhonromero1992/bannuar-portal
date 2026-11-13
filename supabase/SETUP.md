@@ -365,6 +365,21 @@ reading batch): a 30-page code is roughly $0.10 to $0.40 to read; a case suggest
 Requests that Claude Opus 5.5 declines are retried on Anthropic's recommended fallback model
 (server-side fallbacks, a beta feature).
 
+## 11. The client portal
+
+Nothing to set up beyond running the schema again (step 2), which adds `client_users` and
+`client_requests` and the functions clients use. Then:
+
+1. Posts and clients → Clients → **Portal access** on the client: enter the person's name and email.
+   The portal shows a code.
+2. Give them the code and the portal's address. They open `/setup`, enter their email, the code and a
+   password, the same way staff do.
+3. On a tablet: open the portal in Safari or Chrome → Share (or the menu) → **Add to Home Screen**. It
+   opens full screen like an app.
+
+They see only their own posts, guards' names and positions, time in and out by day, and the reports
+and requests their company filed. Turn a login off from the same Portal access list.
+
 ## Tested
 
 `schema.sql` was run against Postgres 16 with stand-ins for Supabase's `auth` and `storage`

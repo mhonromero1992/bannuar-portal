@@ -54,6 +54,7 @@ const SCREEN_ROUTES: Record<string, string> = {
   incident_report: '/discipline?tab=reports',
   discipline: '/discipline?tab=cases',
   discipline_code: '/discipline?tab=code',
+  client_request: '/requests?tab=clients',
 };
 
 function Bell() {
