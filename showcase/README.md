@@ -70,4 +70,4 @@ Run these from the `bannuar-portal` folder.
   license): calm in D major, a part for each chapter, a soft click on each tap.
 - **Fonts:** Archivo, under the SIL Open Font License (`video/assets/Archivo-OFL.txt`).
 
-`showcase/.out` and the rendered video are not committed.
+The rendered video is committed as `bannuar-showcase.mp4`, with its narration script in [voice-over.md](voice-over.md). `showcase/.out` (captures and stills) is not.

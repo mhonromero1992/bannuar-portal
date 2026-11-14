@@ -9,4 +9,3 @@ tests/.run/
 
 # showcase video: captures, stills and renders
 showcase/.out/
-showcase/*.mp4
