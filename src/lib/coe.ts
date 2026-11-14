@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import { WEBSITE_URL } from './supabase';
 import { fmtLongDate } from './format';
 import { COE_PURPOSE } from './labels';
+import { latin1 } from './pdfText';
 
 export interface Certificate {
   id: string; certificate_no: string; verification_code: string; employee_id: string; employee_name: string; position: string | null;
@@ -14,9 +15,6 @@ const NIGHT = rgb(11 / 255, 22 / 255, 38 / 255);
 const RED = rgb(196 / 255, 22 / 255, 28 / 255);
 const MUTED = rgb(0.31, 0.36, 0.42);
 const GOLD = rgb(242 / 255, 194 / 255, 48 / 255);
-
-/** Standard PDF fonts cover Latin-1: keep ñ and accents, replace anything else so a name never breaks the file. */
-const latin1 = (s: string) => s.normalize('NFC').replace(/[^\x20-\x7e\xa0-\xff]/g, (c) => c.normalize('NFD').replace(/[^\x20-\x7e]/g, '') || '?');
 
 function wrap(text: string, font: PDFFont, size: number, width: number) {
   const lines: string[] = [];

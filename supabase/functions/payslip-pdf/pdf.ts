@@ -87,9 +87,12 @@ export function fullName(e: PayslipRow['employee']): string {
   return [e.first_name, middle, e.last_name, e.suffix?.trim() || ''].filter(Boolean).join(' ').trim();
 }
 
-/** Standard PDF fonts cover Latin-1: keep ñ and accents, replace anything else so a name never breaks the file. */
-const latin1 = (s: string) =>
-  s.normalize('NFC').replace(/[^\x20-\x7e\xa0-\xff]/g, (c) => c.normalize('NFD').replace(/[^\x20-\x7e]/g, '') || '?');
+/**
+ * Standard PDF fonts cover Latin-1: keep ñ and accents, write the peso sign as "PHP " (remarks often
+ * carry one), and replace anything else so a name never breaks the file.
+ */
+export const latin1 = (s: string) =>
+  s.normalize('NFC').replace(/₱\s*/g, 'PHP ').replace(/[^\x20-\x7e\xa0-\xff]/g, (c) => c.normalize('NFD').replace(/[^\x20-\x7e]/g, '') || '?');
 
 /** 'payslip-G-002-2026-10-16-to-2026-10-31.pdf' */
 export function fileName(p: PayslipRow): string {

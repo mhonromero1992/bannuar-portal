@@ -2,7 +2,7 @@
 import { assert, assertEquals, assertStringIncludes } from 'jsr:@std/assert@1';
 import { PDFDocument } from 'npm:pdf-lib@1.17.1';
 import { createPayslipPdfHandler, type LoadPayslip, PAYSLIP_SELECT } from './handler.ts';
-import { day, fileName, fullName, money, payslipLines, type PayslipRow } from './pdf.ts';
+import { day, fileName, fullName, latin1, money, payslipLines, type PayslipRow } from './pdf.ts';
 
 const ID = '9b2f4d1e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
 const SLIP: PayslipRow = {
@@ -93,4 +93,10 @@ Deno.test('every column the PDF reads exists in the real schema', async () => {
     for (const c of inner.split(',')) assert(cols(table).has(c), `${table}.${c}`);
   }
   assertStringIncludes(PAYSLIP_SELECT, 'status'); // drafts are marked
+});
+
+Deno.test('remarks with a peso sign read PHP, which the standard PDF fonts can draw', () => {
+  assertEquals(latin1('Added ₱540.00 for 4 hours OT'), 'Added PHP 540.00 for 4 hours OT');
+  assertEquals(latin1('₱ 1,000 and ₱2,500.50'), 'PHP 1,000 and PHP 2,500.50');
+  assertEquals(latin1('Peñafrancia ✓'), 'Peñafrancia ?');
 });

@@ -189,6 +189,9 @@ mistakes explained), the night differential for 8, 12 and 24-hour duties under b
 by post and client, rate changes and separations, Bannuar's 13th month example (₱21,320), the
 attendance sheet and a cutoff's pay. **13 passed.**
 
+**Certificate PDF text** (`npm run test:pdf`): the peso sign is written as PHP (the standard PDF
+fonts have no ₱), Latin-1 letters such as ñ stay, anything else is replaced. **2 passed.**
+
 **Portal** (`npm run test:e2e`): builds the portal, serves it, and drives it in Chromium against a
 mocked Supabase API: sign-in (wrong and right password, return to the page asked for), all 18
 screens with no sideways scroll, adding an employee (validation, the row sent), government numbers
@@ -219,7 +222,7 @@ its type's folder, the record keeps the S3 key, a walk-in certificate's PDF land
 certificates folder, an S3 selfie gets a five-minute link while an older one still opens from
 Supabase Storage, the folder of each document type is changed in Settings, the File storage tab
 counts files by folder and runs the live check, and a payslip downloads as a PDF made on request.
-**169 passed, 0 console errors, and every request matches the schema.**
+**219 passed, 0 console errors, and every request matches the schema.**
 
 The look and its reasons (the watch room, the duty clock, where glass and glow are allowed, motion
 and charts) are in [DESIGN.md](DESIGN.md).
