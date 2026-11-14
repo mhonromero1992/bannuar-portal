@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 960" width="1440" height="960">
+  <!-- A sample security guard license on a table, for the upload demo. Not an official design. -->
+  <rect width="1440" height="960" fill="#8a6d52"/>
+  <rect x="120" y="110" width="1200" height="740" rx="44" fill="#f6f3ec" stroke="#d8cfbf" stroke-width="6"/>
+  <rect x="120" y="110" width="1200" height="150" rx="44" fill="#13253d"/>
+  <rect x="120" y="200" width="1200" height="60" fill="#13253d"/>
+  <text x="720" y="200" text-anchor="middle" font-family="Arial" font-weight="bold" font-size="54" fill="#f2c230" letter-spacing="4">SECURITY GUARD LICENSE</text>
+  <rect x="190" y="320" width="300" height="380" rx="20" fill="#cfd6e0"/>
+  <circle cx="340" cy="450" r="80" fill="#8b98aa"/><path d="M220 700 C220 580 290 540 340 540 C390 540 460 580 460 700 Z" fill="#8b98aa"/>
+  <g font-family="Arial" fill="#0d1a2b">
+    <text x="560" y="350" font-size="30" fill="#4f5b6b">NAME</text><text x="560" y="400" font-size="50" font-weight="bold">LIM, BEA SANTOS</text>
+    <text x="560" y="470" font-size="30" fill="#4f5b6b">LICENSE NO.</text><text x="560" y="520" font-size="46" font-weight="bold">R01-202611-008842</text>
+    <text x="560" y="590" font-size="30" fill="#4f5b6b">ISSUED</text><text x="560" y="636" font-size="40">10 NOV 2026</text>
+    <text x="900" y="590" font-size="30" fill="#4f5b6b">VALID UNTIL</text><text x="900" y="636" font-size="40">09 NOV 2028</text>
+  </g>
+  <text x="720" y="640" text-anchor="middle" font-family="Arial" font-weight="bold" font-size="190" fill="#c4161c" opacity=".18" transform="rotate(-14 720 560)">SAMPLE</text>
+</svg>

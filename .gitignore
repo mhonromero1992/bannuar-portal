@@ -6,3 +6,7 @@ dist/
 tests/shots/
 tests/.run/
 .DS_Store
+
+# showcase video: captures, stills and renders
+showcase/.out/
+showcase/*.mp4
