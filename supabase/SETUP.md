@@ -32,11 +32,35 @@ adds what is missing and never deletes records.
 - **Redirect URLs**: add `https://<portal address>/reset-password` and
   `http://localhost:5173/reset-password`.
 
-## 4. Email (needed for password-reset and confirmation emails)
+## 4. Email (Resend, for account confirmation and password reset)
 
-**Authentication → Emails → SMTP Settings**: enter Bannuar's mail provider (Google Workspace,
-Microsoft 365, Amazon SES, Resend…). Supabase's built-in sender only reaches the project's own team
-members and a few messages an hour, so staff outside the team would never get their emails.
+Only Supabase Auth sends email: the confirmation when someone sets up a portal account (staff with
+an invitation code, client representatives) and the password reset. Staff invitation codes are shown
+in the portal, not emailed. Guards' app logins use made-up addresses (`…@employees.bannuar.invalid`)
+and never get mail; they reset passwords through HR.
+
+1. **Resend:** add a domain you control and set the DNS records Resend shows (SPF, DKIM). Resend
+   cannot send from `bannuar-portal.vercel.app` or any `vercel.app` address, because only Vercel
+   controls that DNS. Until Bannuar has its own domain, use one you own (for example
+   `no-reply@ibits.digital`) and change it later. Then make an API key with sending access.
+2. **Apply everything with one command**, on your own computer (both keys stay there):
+   ```bash
+   SUPABASE_ACCESS_TOKEN=sbp_... RESEND_API_KEY=re_... EMAIL_FROM=no-reply@your-domain node supabase/email/push.mjs
+   ```
+   It sets Resend as the mail server (`smtp.resend.com`, port 465, user `resend`), the **Site URL**
+   to `https://bannuar-portal.vercel.app` and the redirect URLs, so no email link points to
+   localhost, raises the email limit to 60 an hour, and installs the six templates with subjects.
+   Add `--dry-run` to see the settings first. The access token is under supabase.com → Account →
+   Access Tokens.
+3. **By hand instead:** Authentication → Emails → SMTP Settings (the values above), URL
+   Configuration (Site URL `https://bannuar-portal.vercel.app`, Redirect URLs
+   `https://bannuar-portal.vercel.app/**`), and Email Templates: paste each file from
+   `supabase/email/html/` with its subject from `supabase/email/templates.mjs`.
+4. **Test:** portal → *Forgot your password?* with your own email.
+
+The templates live in `supabase/email/templates.mjs` (one layout, Bannuar's badge from
+`{{ .SiteURL }}/badge-128.png`, colours of the portal). After a change run
+`node supabase/email/build.mjs` (writes the HTML files and `html/preview.html`), then push again.
 
 ## 5. The first administrator
 

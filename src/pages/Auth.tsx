@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useAuth } from '../lib/auth';
-import { supabase } from '../lib/supabase';
+import { supabase, PORTAL_URL } from '../lib/supabase';
 import { errorText } from '../lib/format';
 import { TextField, useToast } from '../ui/kit';
 import { DutyClock } from '../ui/DutyClock';
@@ -95,7 +95,7 @@ export function SetupAccount() {
     const { data, error: err } = await supabase.auth.signUp({
       email: f.email.trim(),
       password: f.password,
-      options: { data: { invite_code: code, full_name: f.name.trim() }, emailRedirectTo: `${location.origin}/sign-in` },
+      options: { data: { invite_code: code, full_name: f.name.trim() }, emailRedirectTo: `${PORTAL_URL}/sign-in` },
     });
     setBusy(false);
     if (err) return setError(/database error/i.test(err.message) ? 'The invitation could not be used. Ask the administrator for a new code.' : errorText(err));
@@ -138,7 +138,7 @@ export function ForgotPassword() {
     e.preventDefault();
     if (!email.trim()) return setError('Enter your email.');
     setBusy(true);
-    const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${location.origin}/reset-password` });
+    const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${PORTAL_URL}/reset-password` });
     setBusy(false);
     if (err) return setError(errorText(err));
     setDone(true);

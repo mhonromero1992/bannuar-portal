@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Confirm your new email</title>
+</head>
+<body style="margin:0;padding:0;background:#f6f3ec">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#f6f3ec">Confirm the change of your Bannuar portal email.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f6f3ec">
+<tr><td align="center" style="padding:28px 12px">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px">
+    <tr><td bgcolor="#0b1626" style="padding:22px 28px;border-radius:14px 14px 0 0;border-bottom:3px solid #f2c230">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+        <td style="padding-right:14px"><img src="{{ .SiteURL }}/badge-128.png" width="44" height="44" alt="Bannuar badge" style="display:block;border:0"></td>
+        <td style="font-family:Arial, 'Helvetica Neue', Helvetica, sans-serif;color:#eef2f7">
+          <div style="font-size:18px;font-weight:bold;letter-spacing:2px">BANNUAR</div>
+          <div style="font-size:11px;letter-spacing:1.5px;color:#aebccf">SECURITY AGENCY, INC.</div>
+        </td>
+      </tr></table>
+    </td></tr>
+    <tr><td bgcolor="#ffffff" style="padding:32px 28px 28px;border-radius:0 0 14px 14px">
+      <h1 style="margin:0 0 18px;font-family:Arial, 'Helvetica Neue', Helvetica, sans-serif;font-size:24px;line-height:30px;color:#0d1a2b">Confirm your new email</h1>
+      <p style="margin:0 0 14px;font-family:Arial, 'Helvetica Neue', Helvetica, sans-serif;font-size:16px;line-height:24px;color:#0d1a2b">{{ if .Data.full_name }}Hello {{ .Data.full_name }},{{ else }}Hello,{{ end }}</p>
+<p style="margin:0 0 14px;font-family:Arial, 'Helvetica Neue', Helvetica, sans-serif;font-size:16px;line-height:24px;color:#0d1a2b">The email of your Bannuar HR portal account is changing from {{ .Email }} to <b>{{ .NewEmail }}</b>. Confirm the change to finish it.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:28px 0 8px">
+  <tr><td bgcolor="#c4161c" style="border-radius:10px">
+    <a href="{{ .ConfirmationURL }}" target="_blank" style="display:inline-block;padding:14px 26px;font-family:Arial, 'Helvetica Neue', Helvetica, sans-serif;font-size:16px;font-weight:bold;line-height:20px;color:#ffffff;text-decoration:none;border-radius:10px">Confirm the change</a>
+  </td></tr>
+</table>
+<p style="margin:16px 0 0;font-family:Arial, 'Helvetica Neue', Helvetica, sans-serif;font-size:13px;line-height:20px;color:#4f5b6b">If the button does not open, copy this link into your browser:<br>
+<a href="{{ .ConfirmationURL }}" style="color:#0d1a2b;word-break:break-all">{{ .ConfirmationURL }}</a></p>
+<p style="margin:24px 0 0;padding-top:18px;border-top:1px solid #e4ded1;font-family:Arial, 'Helvetica Neue', Helvetica, sans-serif;font-size:13px;line-height:20px;color:#4f5b6b">If you did not ask for this change, do not open the link, and tell your system administrator.</p>
+    </td></tr>
+    <tr><td style="padding:20px 28px;font-family:Arial, 'Helvetica Neue', Helvetica, sans-serif;font-size:12px;line-height:18px;color:#4f5b6b" align="center">
+      Bannuar Security Agency, Inc. · 2nd floor, Prime Place Estate, Diversion Road, Panicsican, San Juan, La Union<br>
+      This message was sent to {{ .Email }} by the Bannuar HR portal. Please do not reply to it.
+    </td></tr>
+  </table>
+</td></tr>
+</table>
+</body>
+</html>

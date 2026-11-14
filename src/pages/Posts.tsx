@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '../lib/supabase';
+import { supabase, PORTAL_URL } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { errorText, fmtDate } from '../lib/format';
 import { parseLocation } from '../lib/attendance';
@@ -261,7 +261,7 @@ function ClientAccess({ clientId }: { clientId: string }) {
       )}
       {code && (
         <p className="callout" role="status">
-          Give <b>{code.email}</b> this code: <b className="tabular">{code.code}</b>. They open <b>{window.location.origin}/setup</b>, enter their email,
+          Give <b>{code.email}</b> this code: <b className="tabular">{code.code}</b>. They open <b>{PORTAL_URL}/setup</b>, enter their email,
           the code and a password. The code works for 14 days.
         </p>
       )}

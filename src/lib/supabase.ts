@@ -30,6 +30,12 @@ export const supabase = createClient(configured ? url : 'https://not-configured.
 });
 
 /** The public website: certificates print a link to its verification page. */
+/**
+ * The portal's public address. Links in emails (account confirmation, password reset) and the
+ * address staff are told to open always use it, even when the portal runs on localhost.
+ */
+export const PORTAL_URL = (import.meta.env.VITE_PORTAL_URL || 'https://bannuar-portal.vercel.app').replace(/\/$/, '');
+
 export const WEBSITE_URL = (import.meta.env.VITE_WEBSITE_URL ?? 'https://bannuar-website.vercel.app').replace(/\/$/, '');
 
 /** A short-lived link to a private file. */
