@@ -1,5 +1,5 @@
 import { createBrowserRouter, Navigate, RouterProvider, useLocation } from 'react-router';
-import type { ReactNode } from 'react';
+import { lazy, Suspense, type ReactNode } from 'react';
 import { useAuth } from './lib/auth';
 import { configured } from './lib/supabase';
 import { Loading } from './ui/kit';
@@ -25,6 +25,9 @@ import Users from './pages/Users';
 import AuditLog from './pages/AuditLog';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
+
+// the guide carries its own words and pictures: it loads when someone opens it
+const Guide = lazy(() => import('./pages/Guide'));
 
 function Protected({ children }: { children: ReactNode }) {
   const { ready, session, access, can, recovering } = useAuth();
@@ -71,6 +74,7 @@ const router = createBrowserRouter([
       { path: 'audit', element: <AuditLog /> },
       { path: 'settings', element: <Settings /> },
       { path: 'account', element: <ChangePassword /> },
+      { path: 'guide', element: <Suspense fallback={<Loading what="Opening the guide" />}><Guide /></Suspense> },
       { path: '*', element: <NotFound /> },
     ],
   },

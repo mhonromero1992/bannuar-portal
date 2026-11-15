@@ -234,6 +234,7 @@ export default function Shell() {
         { to: '/settings', label: 'Settings', show: can.hr || can.ops || can.payroll },
       ],
     },
+    { title: 'Help', items: [{ to: '/guide', label: 'Guide and questions', show: true }] },
   ];
 
   const pages = groups.flatMap((g) => g.items.filter((i) => i.show).map((i) => ({ to: i.to, label: i.label })));

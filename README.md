@@ -90,9 +90,25 @@ made. No account or record was created.
 | Users and roles | super admin | Staff accounts and roles, invitations with codes, temporary passwords |
 | Audit log | HR admin, super admin | Who changed what, and who viewed whose government numbers |
 | Settings | HR, operations, payroll | Areas, document types (expiry, reminders, what employees may upload, which S3 folder: 201 file, work requirements or LESP), leave types and credits; pay rules (formulas, night differential, duty days) and client rates (payroll edits) |
+| Guide and questions | everyone (clients: the Help tab) | How to use the whole system, written for the people who use it: the tour video (from YouTube, loaded only when played, with its chapters), the four parts and who can do what, then step-by-step guides for the HR portal, payroll, the client portal, the employee app and the website, each on a real screen with numbered markers that light up with their step, a "Watch it" link to that moment of the video, a search, and questions with short answers. The client portal has a Help tab with the client's part only |
 
 Notifications (top right) update live: new leave, certificate and detail requests, applications,
 proposal requests.
+
+### The guide
+
+The words are in `src/guide/content.ts`: plain language, no technical terms (the end-to-end test
+checks), **bold** for what reads on screen, and a picture's `pins` put step numbers on the screen.
+The pictures in `public/guide/` are the showcase captures (demo records) cropped to each topic by
+`showcase/guide/images.py`, which also writes where each marked button sits
+(`src/guide/shots.json`). When a screen changes, capture it again and rebuild the pictures:
+
+```bash
+node showcase/capture/portal.mjs && node showcase/capture/app.mjs && python3 showcase/guide/images.py
+```
+
+The tour video is `VIDEO_ID` in `content.ts` (YouTube); each topic's "Watch it" time and the
+chapters point into it, so update them together if the video is cut again.
 
 ### Certificates of employment
 
@@ -222,7 +238,7 @@ its type's folder, the record keeps the S3 key, a walk-in certificate's PDF land
 certificates folder, an S3 selfie gets a five-minute link while an older one still opens from
 Supabase Storage, the folder of each document type is changed in Settings, the File storage tab
 counts files by folder and runs the live check, and a payslip downloads as a PDF made on request.
-**219 passed, 0 console errors, and every request matches the schema.**
+**249 passed, 0 console errors, and every request matches the schema.**
 
 The look and its reasons (the watch room, the duty clock, where glass and glow are allowed, motion
 and charts) are in [DESIGN.md](DESIGN.md).

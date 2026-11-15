@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { lazy, Suspense, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
@@ -15,7 +15,8 @@ import { Badge, Dialog, Empty, ErrorState, Loading, SelectField, StatusBadge, Te
  * (schema.sql section 17); no pay, addresses, government numbers, photos, locations or discipline
  * records reach a client.
  */
-type View = 'posts' | 'attendance' | 'cutoffs' | 'reports' | 'requests';
+type View = 'posts' | 'attendance' | 'cutoffs' | 'reports' | 'requests' | 'help';
+const ClientHelp = lazy(() => import('../guide/ClientHelp'));
 type Guard = { id: string; name: string; position: string; on_duty_since: string | null };
 type Post = { id: string; name: string; city: string | null; guards_required: number; guards: Guard[] };
 type Overview = { client: { id: string; name: string }; posts: Post[] };
@@ -43,6 +44,7 @@ export default function ClientApp() {
     { id: 'cutoffs', label: waiting ? `Cutoffs to confirm (${waiting})` : 'Cutoffs' },
     { id: 'reports', label: 'Incident reports' },
     { id: 'requests', label: 'Requests' },
+    { id: 'help', label: 'Help' },
   ];
   const view = (views.find((v) => v.id === params.get('view'))?.id ?? 'posts') as View;
   return (
@@ -69,6 +71,7 @@ export default function ClientApp() {
         {view === 'cutoffs' && <CutoffsView />}
         {view === 'reports' && <ReportsView />}
         {view === 'requests' && <RequestsView />}
+        {view === 'help' && <Suspense fallback={<Loading what="Opening the help" />}><ClientHelp /></Suspense>}
       </main>
       <footer className="client-foot muted small">
         In an emergency at a post, call the detachment commander there. Reports and requests here go to Bannuar's office.

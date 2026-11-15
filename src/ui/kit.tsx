@@ -98,7 +98,7 @@ export function TextArea({ label, error, hint, optional, ...rest }: FieldProps &
 }
 
 /* ---------------------------------------------------------------- dialog (native <dialog>: Escape closes, focus is kept inside) */
-export function Dialog({ open, title, onClose, wide, children }: { open: boolean; title: string; onClose: () => void; wide?: boolean; children: ReactNode }) {
+export function Dialog({ open, title, onClose, wide, className, children }: { open: boolean; title: string; onClose: () => void; wide?: boolean; className?: string; children: ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   useEffect(() => {
@@ -108,7 +108,7 @@ export function Dialog({ open, title, onClose, wide, children }: { open: boolean
     if (!open && d.open) d.close();
   }, [open]);
   return (
-    <dialog ref={ref} className={`dialog${wide ? ' wide' : ''}`} aria-labelledby={titleId} onClose={onClose} onCancel={(e) => { e.preventDefault(); onClose(); }}>
+    <dialog ref={ref} className={`dialog${wide ? ' wide' : ''}${className ? ` ${className}` : ''}`} aria-labelledby={titleId} onClose={onClose} onCancel={(e) => { e.preventDefault(); onClose(); }}>
       {open && (
         <>
           <div className="dialog-head">
@@ -132,6 +132,10 @@ export function Tabs<T extends string>({ tabs, value, onChange, label }: { tabs:
     const measure = () => {
       const on = list.querySelector<HTMLElement>('[aria-selected="true"]');
       setInk(on ? { x: on.offsetLeft + 10, w: Math.max(on.offsetWidth - 20, 0) } : null);
+      // on a narrow screen the strip scrolls sideways: keep the chosen tab in view
+      if (on && (on.offsetLeft < list.scrollLeft || on.offsetLeft + on.offsetWidth > list.scrollLeft + list.clientWidth)) {
+        list.scrollLeft = Math.max(0, on.offsetLeft - (list.clientWidth - on.offsetWidth) / 2);
+      }
     };
     measure();
     const ro = new ResizeObserver(measure);

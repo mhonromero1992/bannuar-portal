@@ -93,6 +93,18 @@ Categorical colours (light, on white): `#256abf` `#eb6834` `#1baf7a` `#eda100` `
 always ship with labels or their table. Status red for a stretch or a post that needs fixing is
 `#d03b3b`, always with a mark and a word.
 
+## The guide
+
+Real screens, not drawings: each guide topic shows the screen it describes, cropped to the part
+that matters, with numbered markers on the buttons and fields its steps name. A marker is night
+with a white ring, so it reads on light and dark screens alike; the step you point at turns
+signal red on the list and on the picture (the one red thing in view). A step without a marker has
+a light number, so people learn that dark numbers are on the picture. Phones and tablets keep a
+night bezel so the app and the client portal read as devices. Pictures are never shown larger
+than they were made (twice their size, for sharp text) or taller than a screenful; any picture
+opens larger. The tour video is a still until someone presses play: no request goes to YouTube
+before that, and it plays from youtube-nocookie.com.
+
 ## Words
 
 Plain, specific, polite: "Leave for HR approval", "2 of 3 guards", "Create the payout cutoff".

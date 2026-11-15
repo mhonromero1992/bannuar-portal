@@ -41,7 +41,31 @@ async function phone({ as = 'guard', scheme = 'light', time = '2026-11-14T17:52:
 async function signIn(ui, shots, number, prefix) {
   const { page, btn } = ui;
   const inputs = page.locator('input');
-  if (shots) await shots.take(`${prefix}-signin`, { number: inputs.nth(0), password: inputs.nth(1) });
+  if (shots) await shots.take(`${prefix}-signin`, { number: inputs.nth(0), password: inputs.nth(1), activate: btn('First time? Activate your account'), forgot: btn('Forgot your password?') });
+  if (shots && prefix === 'app') {
+    // the first-time activation screen, filled with Bea's details on file (shown, never sent)
+    try {
+      await btn('First time? Activate your account').click();
+      await sleep(900);
+      const field = (label) => page.getByLabel(label, { exact: true }).filter({ visible: true }).first();
+      await field('Employee number').fill('G-002');
+      await field('Birthdate, day').fill('12');
+      await page.getByRole('button', { name: /^Month/ }).filter({ visible: true }).first().click();
+      await sleep(500);
+      await page.getByRole('radio', { name: 'March' }).click();
+      await sleep(400);
+      await field('Birthdate, year').fill('1996');
+      await field('Mobile number').fill('0917 555 0102');
+      await field('New password').fill('a-good-password');
+      await field('New password again').fill('a-good-password');
+      await shots.take('app-activate', { number: field('Employee number'), birthdate: page.getByLabel('Birthdate', { exact: true }).filter({ visible: true }).first(), mobile: field('Mobile number'), password: field('New password'), activate: btn('Activate') });
+      await ui.back();
+    } catch (e) {
+      console.warn(`  (activation screen not captured: ${e.message.slice(0, 120)})`);
+      await page.goto(page.url());
+      await page.getByText('Employee number').waitFor();
+    }
+  }
   await inputs.nth(0).fill(number);
   await inputs.nth(1).fill('a-good-password');
   if (shots) await shots.take(`${prefix}-signin-filled`, { signin: btn('Sign in') });
@@ -57,7 +81,7 @@ console.log('The guard: Bea Lim, Main Gate, night shift');
   const { page, btn, txt, scroll, back, tab, waitToast } = ui;
   const shots = new Shots('phone', page);
   await signIn(ui, shots, 'G-002', 'app');
-  await shots.take('app-home', { timein: btn('Time in'), bell: page.getByRole('button', { name: /notification/i }).filter({ visible: true }).first(), notice: txt('A notice waits for you') });
+  await shots.take('app-home', { timein: btn('Time in'), bell: page.getByRole('button', { name: /notification/i }).filter({ visible: true }).first(), notice: txt('A notice waits for you'), tabbar: page.getByRole('tablist').filter({ visible: true }).first(), post: txt('YOUR POST') });
 
   // time in: location, photo, logged
   await btn('Time in').click();
@@ -122,7 +146,7 @@ console.log('The guard: Bea Lim, Main Gate, night shift');
 
   // certificates of employment
   await tab('More');
-  await shots.take('app-more', { coe: txt('Certificates of employment'), records: txt('My records'), notices: txt('Notices from HR'), announcements: txt('Announcements', true) });
+  await shots.take('app-more', { coe: txt('Certificates of employment'), records: txt('My records'), notices: txt('Notices from HR'), announcements: txt('Announcements', true), concerns: txt('Payroll concerns', true), documents: txt('Licenses and documents', true), details: txt('Change my details', true), account: txt('Account', true) });
   await txt('Certificates of employment').click();
   await sleep(900);
   await shots.take('app-coe', { request: btn('Request a certificate'), open: btn('Open the certificate') });

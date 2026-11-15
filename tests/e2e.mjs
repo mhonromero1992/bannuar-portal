@@ -368,10 +368,16 @@ const context = await browser.newContext({ viewport: { width: 1280, height: 860 
 // the built-in project is Bannuar's live one, and its files are in Amazon S3: cut and record anything
 // that tries to reach either
 const realHits = [];
+// the guide's tour video plays from YouTube: answered here with a stand-in, and counted
+const videoHits = [];
 const blockReal = async (ctx) => {
   const cut = (route) => { realHits.push(route.request().url()); return route.abort('blockedbyclient'); };
   await ctx.route(/^https:\/\/[a-z0-9-]+\.supabase\.co\//, cut);
   await ctx.route(/^https:\/\/([a-z0-9.-]+\.)?amazonaws\.com\//, cut);
+  await ctx.route(/^https:\/\/([a-z0-9.-]+\.)?(youtube-nocookie\.com|youtube\.com|ytimg\.com|googlevideo\.com)\//, (route) => {
+    videoHits.push(route.request().url());
+    return route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>video</title><p>The tour video</p>' });
+  });
 };
 await blockReal(context);
 await context.route(`${MOCK}/**`, api);
@@ -404,7 +410,7 @@ const screens = [
   ['/requests', 'Requests'], ['/attendance', 'Attendance'], ['/announcements', 'Announcements'], ['/payroll', 'Payroll'], ['/payroll/p1', 'Nov 1 to 15, 2026'],
   ['/recruitment', 'Recruitment'], ['/inquiries', 'Proposal requests'], ['/compliance', 'Licenses and documents'], ['/users', 'Users and roles'],
   ['/audit', 'Audit log'], ['/settings', 'Settings'], ['/account', 'Change your password'], ['/nowhere', 'This page is not on the roster'],
-  ['/payroll/13th-month', '13th month pay'], ['/discipline', 'Discipline'],
+  ['/payroll/13th-month', '13th month pay'], ['/discipline', 'Discipline'], ['/guide', 'Guide'],
 ];
 for (const [path, heading] of screens) {
   await page.goto(BASE + path);
@@ -885,6 +891,51 @@ await page.getByText('Decision issued. The employee is told.').waitFor();
 const dec = rpcCalls('decide_case').at(-1)?.body;
 check('decision: a lighter penalty goes with its reason', dec?.p_case_id === 'case3' && dec?.p_decision === 'suspension' && dec?.p_suspension_days === 3 && /eight years/.test(dec?.p_departs_reason ?? ''), JSON.stringify(dec));
 
+console.log('Guide');
+await page.goto(`${BASE}/guide`);
+await page.getByRole('heading', { name: 'Guide', exact: true }).waitFor();
+check('guide: in the menu for everyone', (await page.getByRole('link', { name: 'Guide and questions' }).count()) === 1);
+check('guide: the tour is a picture until it is played (nothing from YouTube yet)', videoHits.length === 0 && (await page.locator('.video iframe').count()) === 0);
+await page.getByRole('button', { name: /^Play the tour video/ }).click();
+const tourSrc = await page.locator('.video iframe').getAttribute('src');
+check('guide: playing loads the video from YouTube, without cookies', /^https:\/\/www\.youtube-nocookie\.com\/embed\/lytYE9LJOAk\?/.test(tourSrc ?? '') && /start=0\b/.test(tourSrc), tourSrc);
+await page.locator('.chapters button', { hasText: 'Payroll' }).click();
+check('guide: a chapter starts the video at its time (Payroll at 2:44)', /start=164\b/.test((await page.locator('.video iframe').getAttribute('src')) ?? ''));
+const guideTabs = { start: 4, hr: 20, payroll: 10, client: 6, app: 14, website: 3 };
+let guideText = '';
+for (const [tab, topics] of Object.entries(guideTabs)) {
+  await page.goto(`${BASE}/guide?tab=${tab}`);
+  await page.locator('article.topic').first().waitFor();
+  guideText += await page.locator('.guide').innerText();
+  // pictures load lazily: bring each into view, then check them all
+  for (const fig of await page.locator('.shot-zoom').all()) await fig.scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => [...document.querySelectorAll('.shot img')].every((i) => i.complete));
+  const pics = await page.evaluate(() => [...document.querySelectorAll('.shot img')].map((i) => [i.getAttribute('src'), i.naturalWidth]));
+  check(`guide ${tab}: ${topics} topics, every picture loads`, (await page.locator('article.topic').count()) === topics && pics.length > 0 && pics.every(([, w]) => w > 0), pics.filter(([, w]) => !w).map(([src]) => src).join(', '));
+}
+await page.goto(`${BASE}/guide?tab=hr#attendance`);
+const attTopic = page.locator('#attendance');
+await attTopic.waitFor();
+check('guide: steps are numbered, and their markers are on the screenshot', (await attTopic.locator('.steps li').count()) === 4 && (await attTopic.locator('.pin').count()) === 4);
+await attTopic.locator('.steps li').nth(2).hover();
+check('guide: pointing at a step lights its marker', (await attTopic.locator('.pin.on').count()) === 1 && (await attTopic.locator('.pin.on').innerText()).trim() === '3');
+await attTopic.getByRole('button', { name: /^Enlarge the picture/ }).first().click();
+check('guide: a picture opens larger, with its markers', await page.locator('dialog[open] .shot--large img').isVisible() && (await page.locator('dialog[open] .pin').count()) === 4);
+await page.keyboard.press('Escape');
+await attTopic.getByRole('button', { name: /^Watch Attendance/ }).click();
+check('guide: "Watch it" plays that part of the video (2:01)', /start=121\b/.test((await page.locator('dialog[open] iframe').getAttribute('src')) ?? ''));
+await page.keyboard.press('Escape');
+await page.getByLabel('Search the guide').fill('temporary password');
+await page.locator('.guide-hits li').first().waitFor();
+const hitTitles = await page.locator('.guide-hits b').allInnerTexts();
+check('guide: search finds topics and questions', hitTitles.includes('A guard forgot their app password.') && hitTitles.includes('A guard\'s app account'), hitTitles.join(' | '));
+await page.getByRole('button', { name: /A guard forgot their app password/ }).click();
+await page.waitForURL(/tab=faq/);
+check('guide: a question found opens on the Questions tab', await page.locator('details[open] summary', { hasText: 'A guard forgot their app password.' }).isVisible());
+guideText += await page.locator('.guide').innerText();
+const techWords = guideText.match(/supabase|database|\bapi\b|edge function|\brls\b|\bsql\b|json|webhook|bucket|\bs3\b/gi);
+check('guide: features and how-tos only, no technical words', !techWords, (techWords ?? []).join(', '));
+
 console.log('Jump to, keyboard, every width, reduced motion');
 await page.goto(`${BASE}/`);
 await page.getByRole('heading', { name: /^Good/ }).waitFor();
@@ -917,7 +968,7 @@ const lamp = await page.evaluate(() => {
 });
 check('menu: the lamp moves to the page opened', lamp !== null && lamp < 1.5, String(lamp));
 
-const sweep = ['/', '/employees', '/employees/e2', '/posts/s1', '/requests', '/attendance', '/payroll', '/payroll/13th-month'];
+const sweep = ['/', '/employees', '/employees/e2', '/posts/s1', '/requests', '/attendance', '/payroll', '/payroll/13th-month', '/guide', '/guide?tab=app'];
 for (const [w, h] of [[1440, 900], [1024, 768], [768, 1024], [390, 844]]) {
   await page.setViewportSize({ width: w, height: h });
   for (const path of sweep) {
@@ -1041,6 +1092,13 @@ check('client: no sideways scroll on a tablet', !(await page.evaluate(() => docu
 await page.setViewportSize({ width: 390, height: 844 });
 await page.locator('.client-tab', { hasText: 'Posts and guards' }).click();
 check('client: no sideways scroll on a phone either', !(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)), await page.evaluate(() => [...document.querySelectorAll('body *')].filter((e) => e.getBoundingClientRect().right > document.documentElement.clientWidth + 1 && !e.closest('.client-tabs')).slice(0, 4).map((e) => `${e.tagName}.${e.className} ${Math.round(e.getBoundingClientRect().right)} [${e.textContent.slice(0, 60)}] parent ${e.parentElement.className} ${Math.round(e.parentElement.getBoundingClientRect().width)}`).join(' | ') + ` · client ${Math.round(document.querySelector('.client').getBoundingClientRect().width)} main ${Math.round(document.querySelector('.client-main').getBoundingClientRect().width)}`));
+await page.locator('.client-tab', { hasText: 'Help' }).click();
+await page.getByRole('heading', { name: 'How to use the client portal' }).waitFor();
+const helpTopics = await page.locator('article.topic h3').allInnerTexts();
+check('client help: the client\'s part of the guide only', helpTopics.length === 7 && helpTopics[0] === 'Getting a login' && helpTopics.includes('Confirm each cutoff') && !helpTopics.some((t) => /pay rules|13th|discipline|payslip/i.test(t)), helpTopics.join(' | '));
+check('client help: questions for clients, and the client part of the video', (await page.locator('.faq-item').count()) === 7 && /Watch the client portal part/.test(await page.locator('.video-facade').innerText()));
+check('client help: no sideways scroll on a phone', !(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)));
+await page.locator('.client-tab', { hasText: 'Posts and guards' }).click();
 const manifest = await (await fetch(`${BASE}/manifest.webmanifest`)).json().catch(() => null);
 check('client: it can be added to a tablet\'s home screen (manifest, icons)', manifest?.display === 'standalone' && manifest.icons.some((i) => i.sizes === '512x512') && (await page.locator('link[rel="manifest"]').count()) === 1);
 RPC.my_access = () => access;

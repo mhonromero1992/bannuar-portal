@@ -60,6 +60,17 @@ Run these from the `bannuar-portal` folder.
    To check the pictures first, `--stills` writes one still of every beat to `showcase/.out/stills`,
    and `--at 12.5,40` writes stills at those seconds. `--from 60 --to 75` renders only that part.
 
+## The portal's guide pictures
+
+The portal's Guide page (`/guide`) uses the same captures: `guide/images.py` crops each screen to
+what a guide topic talks about, saves it as WebP in `public/guide/`, and writes where each marked
+button and field sits to `src/guide/shots.json`. Run it after the captures, and after a render for
+the two frames it takes from the video (its poster and the "one time in" scene):
+
+```bash
+python3 showcase/guide/images.py
+```
+
 ## Change the video
 
 - **What is shown, for how long, and the captions:** `video/storyboard.js`. A beat is one screen with

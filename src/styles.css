@@ -539,3 +539,126 @@ a.tile:hover { box-shadow: var(--shadow-hover); transform: translateY(-2px); }
 .btn-lg { min-height: 52px; padding: 0 22px; font-size: 16px; }
 /* a wide table scrolls inside its own box instead of widening the page (grid items default to min-content) */
 .client .stack > * { min-width: 0; }
+
+/* ---------------------------------------------------------------- the guide (pages/Guide.tsx, guide/)
+   Real screens with numbered markers: a marker is night with a white ring, so it reads on light and
+   dark screens alike; the step you point at turns signal red, on the list and on the picture. */
+.guide-find { margin: -6px 0 18px; max-width: 560px; }
+.guide-find .search .input { width: 100%; }
+.guide-lead { max-width: 78ch; margin: 0; color: var(--muted); font-size: 15.5px; }
+.guide-h2 { font-size: 18px; font-weight: 740; font-stretch: 110%; margin: 10px 2px 0; }
+.guide-section { gap: 22px; }
+.guide-tour { display: grid; gap: 18px; grid-template-columns: minmax(0, 1.65fr) minmax(270px, 1fr); align-items: start; }
+.guide-aside h2 { font-size: 17px; font-weight: 740; font-stretch: 110%; margin-bottom: 6px; }
+.guide-parts { list-style: none; margin: 14px 0 0; padding: 0; display: grid; }
+.guide-parts li { display: grid; gap: 3px; padding: 12px 0; border-top: 1px solid var(--line); }
+.guide-parts .link-btn { justify-self: start; font-size: 15.5px; font-weight: 700; }
+.guide-parts .small { color: var(--muted); }
+/* the tour video: a picture until it is played */
+.guide-video { display: grid; gap: 10px; min-width: 0; }
+.video { position: relative; aspect-ratio: 16 / 9; overflow: hidden; border-radius: var(--r-lg); background: var(--night); box-shadow: var(--shadow); }
+.video iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.video-facade { position: absolute; inset: 0; display: block; width: 100%; height: 100%; padding: 0; border: 0; background: var(--night); }
+.video-facade img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.video-facade:focus-visible { border-radius: 0; box-shadow: inset 0 0 0 3px var(--red), inset 0 0 0 6px rgba(255, 255, 255, 0.7); }
+.video-play { position: absolute; left: 18px; bottom: 16px; display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 18px; border-radius: var(--r); background: var(--red); color: #fff; font-size: 15px; font-weight: 680; font-stretch: 104%; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 16px 32px -12px rgba(196, 22, 28, 0.9); transition: transform 0.2s var(--ease), background-color 0.2s var(--ease); }
+.video-len { font-weight: 560; opacity: 0.85; font-variant-numeric: tabular-nums; }
+.video-facade:hover .video-play { transform: translateY(-1px); background: var(--red-hi); }
+.video-note { position: absolute; right: 14px; bottom: 16px; padding: 4px 10px; border-radius: var(--r-sm); background: rgba(11, 22, 38, 0.8); color: var(--on-night); font-size: 12.5px; font-weight: 560; }
+.chapters { list-style: none; margin: 0; padding: 6px; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); gap: 2px 8px; border-radius: var(--r-lg); background: var(--panel); box-shadow: var(--shadow); }
+.chapters button { display: grid; grid-template-columns: 58px minmax(0, 1fr); align-items: center; gap: 6px; width: 100%; min-height: 40px; padding: 4px 10px; border: 0; border-radius: var(--r); background: none; text-align: left; font-size: 14px; font-weight: 560; transition: background-color 0.15s var(--ease); }
+.chapters button:hover { background: var(--panel-3); }
+.chapters .t { color: var(--muted); font-weight: 680; font-variant-numeric: tabular-nums; }
+.chapters button[aria-current='true'] { background: var(--panel-2); }
+.chapters button[aria-current='true'] .t::before { content: ''; display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0; border-radius: 50%; background: var(--sun); box-shadow: 0 0 8px rgba(242, 194, 48, 0.85); }
+.video-dialog { width: min(1120px, calc(100vw - 24px)); }
+/* on this tab */
+.toc { display: flex; flex-wrap: wrap; gap: 8px; }
+.toc a { display: inline-flex; align-items: center; min-height: 34px; padding: 0 12px; border-radius: var(--r); background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); color: var(--ink); font-size: 13.5px; font-weight: 580; text-decoration: none; transition: box-shadow 0.15s var(--ease), background-color 0.15s var(--ease); }
+.toc a:hover { background: var(--panel-3); box-shadow: inset 0 0 0 1px var(--line-strong); }
+/* a topic: what it is, the screen, the steps */
+.topics { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
+/* one column that never grows past the page, whatever is inside it */
+.guide-section, .guide.stack { grid-template-columns: minmax(0, 1fr); }
+.topic { padding: 22px 24px 24px; scroll-margin-top: 84px; }
+.topic-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px 16px; }
+.topic-head .label { margin: 0 0 4px; }
+.topic-head h3 { font-size: 19px; font-weight: 750; font-stretch: 112%; letter-spacing: -0.01em; }
+.topic-lead { max-width: 80ch; margin: 8px 0 18px; color: var(--muted); }
+.topic-body { display: grid; gap: 22px 30px; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr); align-items: start; }
+.topic-body.no-pics, .topic-body.no-text { grid-template-columns: minmax(0, 1fr); }
+.topic--phone .topic-body { grid-template-columns: minmax(0, 1.25fr) minmax(280px, 1fr); }
+.topic-pics { display: grid; gap: 18px; min-width: 0; }
+.topic--phone .topic-pics { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 16px; align-items: start; }
+.topic--video .shot { max-width: 920px; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.steps li { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 12px; align-items: start; padding: 8px 10px; border-radius: var(--r); transition: background-color 0.15s var(--ease); }
+.steps li.has-pin:hover, .steps li.on { background: var(--panel-3); }
+.step-n { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--night); color: #fff; font-size: 12.5px; font-weight: 740; font-variant-numeric: tabular-nums; transition: background-color 0.15s var(--ease); }
+/* a step with no marker on the picture has a lighter number */
+.steps li:not(.has-pin) .step-n { background: var(--panel-2); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.steps li.on .step-n { background: var(--red); }
+.tips { margin: 14px 0 0; padding: 12px 16px 12px 32px; border-radius: var(--r); background: var(--panel-3); box-shadow: inset 0 0 0 1px var(--line); color: var(--muted); font-size: 14px; display: grid; gap: 6px; }
+.tips b, .steps b, .topic-lead b, .faq-a b { color: var(--ink); font-weight: 650; }
+/* screenshots */
+.shot { margin: 0; min-width: 0; }
+.shot-zoom { position: relative; display: block; width: 100%; padding: 0; border: 0; border-radius: 12px; background: none; text-align: left; cursor: zoom-in; }
+.shot-frame { display: block; border-radius: 12px; background: var(--panel); box-shadow: 0 0 0 1px var(--line-strong); }
+.shot-img { position: relative; display: block; }
+.shot-img img { display: block; width: 100%; height: auto; border-radius: 12px; }
+.shot--phone .shot-frame { padding: 6px; border-radius: 24px; background: var(--night); box-shadow: 0 0 0 1px rgba(11, 22, 38, 0.5); }
+.shot--phone .shot-img img { border-radius: 18px; }
+.shot--tablet .shot-frame { padding: 8px; border-radius: 18px; background: var(--night); }
+.shot--tablet .shot-img img { border-radius: 10px; }
+.shot--video .shot-frame { box-shadow: none; }
+.shot-hint { position: absolute; right: 10px; top: 10px; z-index: 2; padding: 3px 9px; border-radius: var(--r-sm); background: rgba(11, 22, 38, 0.82); color: #fff; font-size: 12px; font-weight: 640; opacity: 0; transition: opacity 0.2s var(--ease); pointer-events: none; }
+.shot-zoom:hover .shot-hint, .shot-zoom:focus-visible .shot-hint { opacity: 1; }
+.shot-zoom:focus-visible { box-shadow: var(--focus); }
+.shot figcaption { margin-top: 8px; color: var(--muted); font-size: 13px; }
+.shot figcaption b { color: var(--ink); font-weight: 640; }
+.pin { position: absolute; z-index: 1; border-radius: 7px; box-shadow: 0 0 0 2px var(--night), 0 0 0 4px rgba(255, 255, 255, 0.92); pointer-events: none; transition: box-shadow 0.15s var(--ease); }
+.pin b { position: absolute; left: -12px; top: -12px; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--night); color: #fff; font-size: 12.5px; font-weight: 760; line-height: 1; box-shadow: 0 0 0 2px #fff, 0 3px 8px -2px rgba(11, 22, 38, 0.55); transition: background-color 0.15s var(--ease), transform 0.15s var(--ease); }
+.pin--inside b { left: 6px; top: 6px; }
+.pin--area { box-shadow: inset 0 0 0 2px rgba(11, 22, 38, 0.32); }
+.pin.on { box-shadow: 0 0 0 2px var(--red), 0 0 0 5px rgba(255, 255, 255, 0.92); }
+.pin--area.on { box-shadow: inset 0 0 0 2.5px var(--red); }
+.pin.on b { background: var(--red); transform: scale(1.12); }
+.topic--phone .pin b { width: 20px; height: 20px; left: -10px; top: -10px; font-size: 11px; }
+.topic--phone .pin--inside b { left: 4px; top: 4px; }
+/* a picture, larger */
+.shot-dialog { width: min(1240px, calc(100vw - 24px)); }
+.shot-dialog--phone { width: min(470px, calc(100vw - 24px)); }
+.shot--large { margin: 0 auto; }
+.shot--large .shot-zoom, .shot--large { cursor: default; }
+.shot-dialog-caption { margin-top: 12px; }
+/* questions */
+.faq { display: grid; gap: 16px; }
+.faq-group { padding: 6px 0 4px; }
+.faq-group > h3 { padding: 12px 22px 8px; font-size: 16px; font-weight: 720; font-stretch: 108%; }
+.faq-item { border-top: 1px solid var(--line); scroll-margin-top: 84px; }
+.faq-item summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 52px; padding: 10px 22px; font-weight: 620; list-style: none; transition: background-color 0.15s var(--ease); }
+.faq-item summary::-webkit-details-marker { display: none; }
+.faq-item summary::after { content: ''; flex: none; width: 8px; height: 8px; margin-right: 4px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); transition: transform 0.2s var(--ease); }
+.faq-item[open] summary::after { transform: rotate(-135deg); }
+.faq-item summary:hover { background: var(--panel-3); }
+.faq-item summary:focus-visible { border-radius: 0; box-shadow: inset 0 0 0 2px var(--red); }
+.faq-a { max-width: 82ch; padding: 0 22px 16px; }
+/* search */
+.guide-hits { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.guide-hits button { display: grid; gap: 3px; width: 100%; padding: 14px 18px; border: 0; border-radius: var(--r-lg); background: var(--panel); box-shadow: var(--shadow); text-align: left; transition: box-shadow 0.2s var(--ease); }
+.guide-hits button:hover { box-shadow: var(--shadow-hover); }
+.guide-hits b { font-size: 15.5px; font-weight: 660; }
+@media (max-width: 1099px) {
+  .guide-tour, .topic-body, .topic--phone .topic-body { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .topic { padding: 18px 16px 20px; }
+  .video-note { display: none; }
+  .video-play { left: 12px; bottom: 12px; min-height: 44px; padding: 0 14px; }
+  .topic--phone .topic-pics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .faq-item summary, .faq-a { padding-left: 16px; padding-right: 16px; }
+  .faq-group > h3 { padding-left: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pin, .pin b, .step-n, .video-play, .shot-hint { transition: none; }
+}
