@@ -49,7 +49,16 @@ begin
   end if;
   if exists (select 1 from public.employees where employee_no not like 'DEMO-%')
      or exists (select 1 from public.payroll_periods) then
-    raise exception 'This database already has real records. Demo data is only for a new, empty project.';
+    raise exception 'This database already has records that are not demo data: %. Demo data is only for a new, empty project. If those were only tests, delete them, then run this file again.',
+      concat_ws('; ',
+        (select format('%s employee(s), such as %s', (select count(*) from public.employees where employee_no not like 'DEMO-%'),
+                       string_agg(x.employee_no || ' ' || x.first_name || ' ' || x.last_name, ', ' order by x.employee_no))
+         from (select * from public.employees where employee_no not like 'DEMO-%' order by employee_no limit 3) x
+         having count(*) > 0),
+        (select format('%s cutoff(s), such as %s', (select count(*) from public.payroll_periods),
+                       string_agg(x.label || ' (' || x.status || ')', ', ' order by x.period_start))
+         from (select * from public.payroll_periods order by period_start limit 3) x
+         having count(*) > 0));
   end if;
   -- DEMO-0001's post today: the Main Gate until March, the Warehouse to October, then the Lobby
   v_juan_site := case when v_today < make_date(y, 4, 1) then v_site1 when v_today < make_date(y, 11, 1) then v_site2 else v_site3 end;

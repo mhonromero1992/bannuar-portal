@@ -835,14 +835,23 @@ if command -v node >/dev/null; then
 else
   FAIL=$((FAIL+1)); echo "  FAIL seed-check.mjs needs Node 22.18 or newer"
 fi
+# trying the portal on the demo: the demo applicant hired, and a cutoff made and left empty
+DEMO_ADMIN=$(pgd "select id from auth.users where email = 'bannuar@ibits.digital'")
+as_demo "$DEMO_ADMIN" "select public.hire_applicant((select id from public.job_applications where source = 'demo'), 'G-9001', current_date)" >/dev/null
+as_demo "$DEMO_ADMIN" "insert into public.payroll_periods (label, period_start, period_end, pay_date) values ('Jan 1 to 15, 2030', '2030-01-01', '2030-01-15', '2030-01-20')" >/dev/null
+check "trying the portal: the demo applicant hired, an empty cutoff made" "$(pgd "select (select count(*) from public.employees where employee_no = 'G-9001') || ':' || (select count(*) from public.payroll_periods where label = 'Jan 1 to 15, 2030')")" "1:1"
 r=$(run_file remove-demo.sql)
 check_has "remove-demo.sql keeps the demo admin while it is the only super admin, and says so" "$r:$(pgd "select count(*) from auth.users where email = 'bannuar@ibits.digital'")" "still your only super admin"
-check "remove-demo.sql takes out every demo record and the demo client login" "$(pgd "select (select count(*) from public.employees) || ':' || (select count(*) from public.payroll_periods) || ':' || (select count(*) from public.payslips) || ':' || (select count(*) from public.attendance_logs) || ':' || (select count(*) from public.clients) || ':' || (select count(*) from public.sites) || ':' || (select count(*) from public.pay_rules where client_id is not null) || ':' || (select count(*) from auth.users where email <> 'bannuar@ibits.digital') || ':' || (select count(*) from public.staff_invitations where client_id is not null)")" "0:0:0:0:0:0:0:0:0"
+check "remove-demo.sql takes out every demo record and the demo client login, the hired demo applicant and the empty cutoff" "$(pgd "select (select count(*) from public.employees) || ':' || (select count(*) from public.payroll_periods) || ':' || (select count(*) from public.payslips) || ':' || (select count(*) from public.attendance_logs) || ':' || (select count(*) from public.clients) || ':' || (select count(*) from public.sites) || ':' || (select count(*) from public.pay_rules where client_id is not null) || ':' || (select count(*) from auth.users where email <> 'bannuar@ibits.digital') || ':' || (select count(*) from public.staff_invitations where client_id is not null)")" "0:0:0:0:0:0:0:0:0"
 # once a real super admin signs in, running it again removes the demo admin too
 pgd "insert into public.staff_invitations (email, full_name, roles, code, expires_at) values ('owner@bannuar.test', 'Real Owner', '{super_admin}', 'REAL-0001', now() + interval '1 hour')" >/dev/null
 pgd "insert into auth.users (email, raw_user_meta_data) values ('owner@bannuar.test', '{\"invite_code\":\"REAL-0001\"}')" >/dev/null
 r=$(run_file remove-demo.sql)
 check "with a real super admin, remove-demo.sql removes the demo admin and keeps theirs" "$r:$(pgd "select string_agg(u.email, ',') from auth.users u join public.user_roles r on r.user_id = u.id and r.role = 'super_admin'")" ":owner@bannuar.test"
+pgd "insert into public.employees (employee_no, first_name, last_name) values ('R-0001', 'Rosa', 'Real')" >/dev/null
+pgd "insert into public.payroll_periods (label, period_start, period_end, pay_date) values ('Jan 1 to 15, 2031', '2031-01-01', '2031-01-15', '2031-01-20')" >/dev/null
+r=$(run_file seed-demo.sql); check_has "seed-demo.sql refuses real records, and names what is in the way" "$r" "1 employee(s), such as R-0001 Rosa Real; 1 cutoff(s), such as Jan 1 to 15, 2031 (draft)"
+r=$(run_file remove-demo.sql); check "remove-demo.sql leaves real records alone" "$r:$(pgd "select (select count(*) from public.employees) || ':' || (select count(*) from public.payroll_periods)")" ":1:1"
 psql -h "${PGHOST:-localhost}" -p "${PGPORT:-5432}" -U postgres -d postgres -q -c "drop database if exists $DEMO_DB" 2>&1 | grep -v NOTICE
 
 echo

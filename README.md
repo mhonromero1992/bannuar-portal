@@ -80,9 +80,12 @@ it on the morning of a presentation. Paste into the SQL Editor, in this order:
 **Before launch**, take the demo out: invite your own super admin from **Users and roles** and sign
 in as them, then run `supabase/remove-demo.sql`. It deletes every demo record (people, time in and
 out, cutoffs and payslips, the 13th month payout if one was made during the demo, leave, requests,
-certificates, the client, its posts and rates), the demo app and client logins, notifications about
-demo records, and the demo super admin, which it keeps only while it is the only super admin (it
-says so; run it again after signing in as your own). Real records are not touched. Files uploaded
+certificates, the client, its posts and rates), what trying the portal made from them (the demo
+applicant if they were hired, cutoffs created since the demo was loaded that have no payslips), the
+demo app and client logins, notifications about demo records, and the demo super admin, which it
+keeps only while it is the only super admin (it says so; run it again after signing in as your
+own). Real records are not touched. `seed-demo.sql` refuses a database with real records and names
+what is in its way. Files uploaded
 to the bucket during a demo stay there; delete them from the bucket if any were.
 
 **Checked against the live project on 8 November 2026** (read-only): the schema is installed (open
@@ -235,7 +238,7 @@ cutoff across the new year split, the payout itself not counted, who may read it
 the logins (each twice), the client login seeing its posts and its open cutoff but no payslips,
 **every published demo payslip checked figure for figure against the portal's own pay engine**
 (`supabase/tests/seed-check.mjs`: the duties that count, paid leave, the 13th month), and
-`remove-demo.sql` leaving nothing behind. **447 passed.** The live project's upgrade was rehearsed
+`remove-demo.sql` leaving nothing behind (a hired demo applicant and empty test cutoffs included), and the seed naming what is in its way on a database with real records. **450 passed.** The live project's upgrade was rehearsed
 too: the previous `schema.sql` and demo, then the new `schema.sql` (the new seed then asks for
 `remove-demo.sql` first), `remove-demo.sql`, `seed-demo.sql` and the logins; `seed-check.mjs`
 passes on the result.

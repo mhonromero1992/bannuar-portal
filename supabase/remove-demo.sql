@@ -1,4 +1,6 @@
--- Removes everything seed-demo.sql and the demo logins added. Real records are not touched.
+-- Removes everything seed-demo.sql and the demo logins added, and what trying the portal made from
+-- them: the demo applicant if they were hired, a 13th month payout of demo payslips, and cutoffs
+-- created since the demo was loaded that have no payslips. Real records are not touched.
 -- The demo super admin (bannuar@ibits.digital) goes too once someone else is super admin, so invite
 -- your own super admin first (Users and roles) and sign in as them; otherwise it stays, with a warning.
 set client_min_messages = warning;
@@ -21,14 +23,21 @@ where n.link ->> 'id' in (
   union all select id::text from public.inquiries where source = 'demo'
   union all select 'd0000000-0000-4000-8000-000000000501');
 
--- cutoffs holding only demo payslips: the demo year's, and any 13th month payout made during a demo
+-- the demo applicant, if they were hired while trying the portal, with what came with them
+delete from public.employees
+where employee_no not like 'DEMO-%'
+  and id in (select employee_id from public.job_applications where source = 'demo' and employee_id is not null);
+-- cutoffs: the demo year's, any holding only demo payslips (a 13th month payout made during a demo),
+-- and empty ones created since the demo was loaded
 delete from public.payroll_periods p
 where p.label like 'Demo · %'
    or p.id in ('d0000000-0000-4000-8000-000000000401', 'd0000000-0000-4000-8000-000000000402')
    or (exists (select 1 from public.payslips s join public.employees e on e.id = s.employee_id
                where s.payroll_period_id = p.id and e.employee_no like 'DEMO-%')
        and not exists (select 1 from public.payslips s join public.employees e on e.id = s.employee_id
-                       where s.payroll_period_id = p.id and e.employee_no not like 'DEMO-%'));
+                       where s.payroll_period_id = p.id and e.employee_no not like 'DEMO-%'))
+   or (not exists (select 1 from public.payslips s where s.payroll_period_id = p.id)
+       and p.created_at >= (select min(e.created_at) from public.employees e where e.employee_no like 'DEMO-%'));
 delete from public.announcements where id = 'd0000000-0000-4000-8000-000000000501';
 delete from public.job_openings where id = 'd0000000-0000-4000-8000-000000000601';
 delete from public.job_applications where source = 'demo';
