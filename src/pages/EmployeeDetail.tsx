@@ -12,9 +12,8 @@ import { Badge, Dialog, Empty, ErrorState, Loading, SelectField, StatusBadge, Ta
 import { AssignmentHistory, ShiftPicker, defaultShift } from './Pay';
 import { EmployeeForm, type EmployeeRow } from './EmployeeForm';
 import { IssueCoeForm, downloadCertificate } from './coeShared';
-import { AttendanceTable, selfieLinks } from './attendanceShared';
+import { EmployeeAttendance } from './employeeAttendance';
 import { DocCheckLine, AskClaude, useDocChecks } from './documentCheck';
-import { ATTENDANCE_SELECT, type AttendanceLog } from '../lib/attendance';
 
 type Tab = 'profile' | 'deployment' | 'attendance' | 'ids' | 'pay' | 'documents' | 'leave' | 'payslips' | 'certificates' | 'account';
 
@@ -561,23 +560,3 @@ function Account({ e }: { e: EmployeeRow }) {
   );
 }
 
-/** The last 60 time in and out logs, newest first. */
-function EmployeeAttendance({ employeeId }: { employeeId: string }) {
-  const q = useQuery({
-    queryKey: ['employee-attendance', employeeId],
-    queryFn: async () => {
-      const { data, error } = await supabase.from('attendance_logs').select(ATTENDANCE_SELECT).eq('employee_id', employeeId).order('logged_at', { ascending: false }).limit(60);
-      if (error) throw error;
-      const rows = data as unknown as AttendanceLog[];
-      return { rows, photos: await selfieLinks(rows) };
-    },
-  });
-  return (
-    <div className="panel">
-      <div className="panel-head"><h2>Time in and out from the app</h2><span className="muted small">The last 60</span></div>
-      {q.isLoading ? <Loading /> : q.error ? <ErrorState error={errorText(q.error)} retry={() => q.refetch()} /> : !q.data?.rows.length ? (
-        <Empty title="No time in or out yet">They appear here once this employee uses the app at the post.</Empty>
-      ) : <AttendanceTable rows={q.data.rows} photos={q.data.photos} showEmployee={false} />}
-    </div>
-  );
-}

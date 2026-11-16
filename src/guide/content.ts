@@ -244,6 +244,7 @@ export const SECTIONS: Section[] = [
           'The flag says what to check. **Away from the post** shows how far.',
           '**Add a manual log** when a guard could not log, for example a lost phone: the employee, the date and time, and a reason. The employee is told.',
         ],
+        tips: ['One guard\'s month: open them in **Employees** → **Attendance** and pick the **Month**, or any **From** and **To** dates. **Duties** shows each time in with its time out, the hours, and what counts for pay; **Every log, with photos** shows each log.'],
         video: '2:01',
       },
       {

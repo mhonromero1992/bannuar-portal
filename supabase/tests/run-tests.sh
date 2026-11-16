@@ -804,6 +804,20 @@ check "and 2027 the rest" "$(t13 2027)" "1 G-002:Post A:1000.00:2027-01-01..2027
 check "HR admins read it; operations, guards and clients do not" "$(as_user "$HR" "select public.thirteenth_month_released(2026) is not null"):$(as_user "$OPS" "select public.thirteenth_month_released(2026)" | grep -c 'Only payroll'):$(as_user "$BEA" "select public.thirteenth_month_released(2026)" | grep -c 'Only payroll'):$(as_user "$CU" "select public.thirteenth_month_released(2026)" | grep -c 'Only payroll')" "t:1:1:1"
 r=$(as_anon "select public.thirteenth_month_released(2026)"); check_has "nor anon" "$r" "permission denied"
 
+echo "== One employee's time in and out by month or dates (their page)"
+dsig() { echo "select string_agg(duty_date || ':' || coalesce(hours::text, '-') || ':' || array_to_string(flags, '+') || ':' || clean, ' ' order by duty_date, coalesce(time_in, time_out))"; }
+WANT=$(pg "$(dsig) from public.period_duties($TD - 12, $TD - 2) where employee_id = '$BEA_EMP'")
+check "HR reads a guard's duties for any dates: the same duties payroll works from" "$(as_user "$HR" "$(dsig) from public.employee_duties('$BEA_EMP', $TD - 12, $TD - 2)")" "$WANT"
+check "the guard reads her own" "$(as_user "$BEA" "$(dsig) from public.employee_duties('$BEA_EMP', $TD - 12, $TD - 2)")" "$WANT"
+check "with the post's name, and the dates asked only" "$(as_user "$HR" "select string_agg(distinct site_name, ',') || ':' || min($TD - duty_date) || ':' || max($TD - duty_date) from public.employee_duties('$BEA_EMP', $TD - 9, $TD - 4)")" "Post A:4:9"
+check "her commander reads her duties at his post, not another post's guard" "$(as_user "$DC" "select count(*) from public.employee_duties('$BEA_EMP', $TD - 12, $TD - 2)"):$(as_user "$DC" "select count(*) from public.employee_duties('$EDU_EMP', $TD - 12, $TD - 2) where site_id <> '$SITE1'")" "$(pg "select count(*) from public.period_duties($TD - 12, $TD - 2) where employee_id = '$BEA_EMP'"):0"
+r=$(as_user "$EDU" "select count(*) from public.employee_duties('$BEA_EMP', $TD - 12, $TD - 2)"); check_has "another guard does not" "$r" "Only staff, the employee and their commander"
+r=$(as_user "$CU" "select count(*) from public.employee_duties('$BEA_EMP', $TD - 12, $TD - 2)"); check_has "nor a client" "$r" "Only staff, the employee and their commander"
+r=$(as_anon "select count(*) from public.employee_duties('$BEA_EMP', $TD - 12, $TD - 2)"); check_has "nor anon" "$r" "permission denied"
+r=$(as_user "$HR" "select count(*) from public.employee_duties('$BEA_EMP', $TD, $TD - 1)"); check_has "the end comes after the start" "$r" "end date on or after it"
+r=$(as_user "$HR" "select count(*) from public.employee_duties('$BEA_EMP', '2025-01-01', '2026-06-30')"); check_has "a year at most" "$r" "a year or less"
+r=$(as_user "$BEA" "select count(*) from public.period_duties_for($TD - 12, $TD - 2, '$BEA_EMP')"); check_has "the internal function stays closed" "$r" "permission denied"
+
 echo "== Demo scripts still match the schema (on a second, empty database)"
 D="$(dirname "$0")/.."
 DEMO_DB="${PGDATABASE:-bannuar_test}_demo"

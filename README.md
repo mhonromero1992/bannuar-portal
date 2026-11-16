@@ -99,7 +99,7 @@ made. No account or record was created.
 | Screen | For | What it does |
 |---|---|---|
 | Dashboard | all staff | What waits for a decision first (leave, certificates, detail changes, payroll concerns, applications, proposal requests), then the roll, today's time in and out (and how many need a look), floating guards near the six-month limit, expired documents, each post's guards against the number needed, and the roll by status. Jump to (Ctrl K, in the top bar on every screen) finds an employee, a post or a page |
-| Employees | all staff (HR edits) | Search 4,000 records by name or number, filter by status and post, add employees. The 201 file: profile, deployment, licenses and documents (upload to the employee's S3 folder, verify what employees send from the app, with what Claude read on a LESP beside it: number, expiry, whether the name matches), government numbers (each view logged), pay rate, payslips, leave balances and history, certificates, app account (temporary passwords), assignment history (post, duty and shift, from when to when) |
+| Employees | all staff (HR edits) | Search 4,000 records by name or number, filter by status and post, add employees. The 201 file: profile, deployment, attendance (any month or dates: the duties that count for pay, the hours and what needs a look, or every log with its photo), licenses and documents (upload to the employee's S3 folder, verify what employees send from the app, with what Claude read on a LESP beside it: number, expiry, whether the name matches), government numbers (each view logged), pay rate, payslips, leave balances and history, certificates, app account (temporary passwords), assignment history (post, duty and shift, from when to when) |
 | Posts and clients | all staff (operations edits) | Posts with guards needed against assigned, commanders, the duty pattern (8, 12 or 24 hours), deploying guards on a shift and setting them to floating; the post's pay rule and hourly rates (payroll); client records |
 | Licenses and documents | all staff | Expired and expiring documents; field employees missing a document required for deployment |
 | Requests | HR, payroll, operations | Leave (commander endorses with a reliever, HR approves), certificates of employment (three-day due date, overdue flag, issue as PDF), contact detail changes (apply or decline), payroll concerns (answer) |
@@ -238,7 +238,9 @@ cutoff across the new year split, the payout itself not counted, who may read it
 the logins (each twice), the client login seeing its posts and its open cutoff but no payslips,
 **every published demo payslip checked figure for figure against the portal's own pay engine**
 (`supabase/tests/seed-check.mjs`: the duties that count, paid leave, the 13th month), and
-`remove-demo.sql` leaving nothing behind (a hired demo applicant and empty test cutoffs included), and the seed naming what is in its way on a database with real records. **450 passed.** The live project's upgrade was rehearsed
+`remove-demo.sql` leaving nothing behind (a hired demo applicant and empty test cutoffs included), and the seed naming what is in its way on a database with real records; one employee's duties by
+dates (the same duties payroll works from; staff, the employee, or the commander of the post).
+**460 passed.** The live project's upgrade was rehearsed
 too: the previous `schema.sql` and demo, then the new `schema.sql` (the new seed then asks for
 `remove-demo.sql` first), `remove-demo.sql`, `seed-demo.sql` and the logins; `seed-check.mjs`
 passes on the result.
@@ -284,7 +286,7 @@ its type's folder, the record keeps the S3 key, a walk-in certificate's PDF land
 certificates folder, an S3 selfie gets a five-minute link while an older one still opens from
 Supabase Storage, the folder of each document type is changed in Settings, the File storage tab
 counts files by folder and runs the live check, and a payslip downloads as a PDF made on request.
-**260 passed, 0 console errors, and every request matches the schema.**
+**265 passed, 0 console errors, and every request matches the schema.**
 
 The look and its reasons (the watch room, the duty clock, where glass and glow are allowed, motion
 and charts) are in [DESIGN.md](DESIGN.md).

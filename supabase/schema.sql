@@ -5025,20 +5025,29 @@ create table if not exists public.cutoff_client_reviews (
   unique (period_id, client_id)
 );
 
--- Every duty logged between two dates (internal: the functions below check who is asking)
-create or replace function public.period_duties(p_start date, p_end date)
+-- Every duty logged between two dates, by everyone or by one employee (internal: the functions
+-- below check who is asking). One employee's read their own logs by the index on employee and time.
+create or replace function public.period_duties_for(p_start date, p_end date, p_employee_id uuid)
 returns table (log_id uuid, employee_id uuid, site_id uuid, duty_date date, time_in timestamptz, time_out timestamptz,
                hours numeric, flags text[], clean boolean)
 language sql stable security definer set search_path = '' as $$
-  with logs as (
+  with picked as (
+    select a.* from public.attendance_logs a
+    where p_employee_id is not null and a.employee_id = p_employee_id
+      and a.logged_at >= (p_start::timestamp at time zone 'Asia/Manila') - interval '1 day'
+      and a.logged_at < ((p_end + 1)::timestamp at time zone 'Asia/Manila') + interval '1 day'
+    union all
+    select a.* from public.attendance_logs a
+    where p_employee_id is null
+      and a.logged_at >= (p_start::timestamp at time zone 'Asia/Manila') - interval '1 day'
+      and a.logged_at < ((p_end + 1)::timestamp at time zone 'Asia/Manila') + interval '1 day'
+  ), logs as (
     select a.id, a.employee_id, a.site_id, a.kind, a.logged_at, a.location_check, coalesce(a.mock_location, false) as mock, a.source,
            lag(a.kind) over w as prev_kind, lag(a.logged_at) over w as prev_at,
            lead(a.kind) over w as next_kind, lead(a.logged_at) over w as next_at,
            lead(a.location_check) over w as next_check, coalesce(lead(a.mock_location) over w, false) as next_mock,
            lead(a.source) over w as next_source
-    from public.attendance_logs a
-    where a.logged_at >= (p_start::timestamp at time zone 'Asia/Manila') - interval '1 day'
-      and a.logged_at < ((p_end + 1)::timestamp at time zone 'Asia/Manila') + interval '1 day'
+    from picked a
     window w as (partition by a.employee_id order by a.logged_at)
   ), duties as (
     -- a time in, and the time out that follows it within 18 hours
@@ -5071,6 +5080,40 @@ language sql stable security definer set search_path = '' as $$
       where x is not null order by x) as flags) f
   where d.day between p_start and p_end
 $$;
+
+create or replace function public.period_duties(p_start date, p_end date)
+returns table (log_id uuid, employee_id uuid, site_id uuid, duty_date date, time_in timestamptz, time_out timestamptz,
+               hours numeric, flags text[], clean boolean)
+language sql stable security definer set search_path = '' as $$
+  select * from public.period_duties_for(p_start, p_end, null)
+$$;
+
+-- One employee's duties between two dates, for their page in the portal: staff and the employee see
+-- them all, a commander the duties at the posts they supervise. A year at most.
+create or replace function public.employee_duties(p_employee_id uuid, p_from date, p_to date)
+returns table (log_id uuid, duty_date date, site_id uuid, site_name text, time_in timestamptz, time_out timestamptz,
+               hours numeric, flags text[], clean boolean)
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_all boolean := public.is_staff() or coalesce(p_employee_id = public.current_employee_id(), false);
+  v_sites uuid[] := coalesce(public.my_supervised_site_ids(), '{}');
+begin
+  if not v_all and cardinality(v_sites) = 0 then
+    raise exception 'Only staff, the employee and their commander see this' using errcode = '42501';
+  end if;
+  if p_from is null or p_to is null or p_to < p_from then
+    raise exception 'Choose a start date, and an end date on or after it' using errcode = '22023';
+  end if;
+  if p_to - p_from > 366 then
+    raise exception 'Choose a year or less' using errcode = '22023';
+  end if;
+  return query
+    select d.log_id, d.duty_date, d.site_id, st.name, d.time_in, d.time_out, d.hours, d.flags, d.clean
+    from public.period_duties_for(p_from, p_to, p_employee_id) d
+    left join public.sites st on st.id = d.site_id
+    where v_all or d.site_id = any (v_sites)
+    order by d.duty_date, coalesce(d.time_in, d.time_out);
+end $$;
 
 -- The duties a cutoff counts: clean ones payroll did not take out, and exceptions payroll counted
 create or replace function public.cutoff_counted_duties(p_period_id uuid)
@@ -5366,6 +5409,9 @@ grant select on public.duty_decisions, public.cutoff_client_reviews to authentic
 grant select, insert, update, delete on public.duty_decisions, public.cutoff_client_reviews to service_role;
 
 revoke execute on function public.period_duties(date, date) from public, anon, authenticated;
+revoke execute on function public.period_duties_for(date, date, uuid) from public, anon, authenticated;
+revoke execute on function public.employee_duties(uuid, date, date) from public, anon;
+grant execute on function public.employee_duties(uuid, date, date) to authenticated;
 revoke execute on function
   public.cutoff_counted_duties(uuid), public.cutoff_review(uuid), public.decide_duty(uuid, uuid, boolean, text),
   public.open_cutoff_reviews(uuid, integer), public.client_cutoffs(), public.client_cutoff_coverage(uuid),

@@ -223,6 +223,14 @@ const RPC = {
     { employee_id: 'e2', employee_no: 'G-002', site_id: 's1', dates: ['2026-11-03', '2026-11-04', '2026-11-06'], hours: 36 },
     { employee_id: 'e9', employee_no: 'G-009', site_id: 's2', dates: ['2026-11-06'], hours: 12 }],
   cutoff_paid_leave: () => [{ employee_id: 'e2', employee_no: 'G-002', day: '2026-11-05', share: 1 }],
+  // Bea's duties in November 2026: three that count, one away from the post, one with no time out
+  employee_duties: (b) => [
+    { log_id: 'd1', duty_date: '2026-11-03', site_id: 's1', site_name: 'Post A · Main Gate', time_in: '2026-11-03T09:52:00Z', time_out: '2026-11-03T22:04:00Z', hours: 12.2, flags: [], clean: true },
+    { log_id: 'd2', duty_date: '2026-11-04', site_id: 's1', site_name: 'Post A · Main Gate', time_in: '2026-11-04T09:55:00Z', time_out: '2026-11-04T22:01:00Z', hours: 12.1, flags: [], clean: true },
+    { log_id: 'd3', duty_date: '2026-11-06', site_id: 's1', site_name: 'Post A · Main Gate', time_in: '2026-11-06T10:20:00Z', time_out: '2026-11-06T22:00:00Z', hours: 11.67, flags: ['away'], clean: false },
+    { log_id: 'd4', duty_date: '2026-11-07', site_id: 's1', site_name: 'Post A · Main Gate', time_in: '2026-11-07T09:50:00Z', time_out: '2026-11-07T22:00:00Z', hours: 12.17, flags: [], clean: true },
+    { log_id: 'd5', duty_date: '2026-11-09', site_id: 's1', site_name: 'Post A · Main Gate', time_in: '2026-11-09T09:58:00Z', time_out: null, hours: null, flags: ['no_time_out'], clean: false },
+  ].filter((d) => d.duty_date >= b.p_from && d.duty_date <= b.p_to),
   // published cutoffs Jan 1 to Oct 31: Dante at Post A then B (the DEMO-0001 example), Bea at Post A with two days missed
   thirteenth_month_released: () => ({
     cutoffs: Array.from({ length: 20 }, (_, i) => {
@@ -832,9 +840,32 @@ await page.getByText('Manual log added. The employee is told.').waitFor();
 const ml = rpcCalls('add_manual_attendance').at(-1)?.body;
 check('manual log: sent to the database with Manila time and the reason', ml?.p_employee_id === 'e2' && ml?.p_kind === 'time_in' && ml?.p_logged_at === '2026-11-09T23:05:00.000Z' && ml?.p_reason === 'Phone lost; time from the post logbook', JSON.stringify(ml));
 await page.goto(`${BASE}/employees/e2?tab=attendance`);
-await page.getByText('Time in and out from the app').waitFor();
+await page.locator('.att-sum').waitFor();
+const manilaToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date());
+const firstCall = rpcCalls('employee_duties').at(-1)?.body;
+check('employee attendance: opens on this month', firstCall?.p_employee_id === 'e2' && firstCall?.p_from === `${manilaToday.slice(0, 7)}-01` && firstCall?.p_to.slice(0, 7) === manilaToday.slice(0, 7), JSON.stringify(firstCall));
+await page.goto(`${BASE}/employees/e2?tab=attendance&from=2026-11-01&to=2026-11-30`);
+const attPanel = page.locator('.panel', { hasText: 'Time in and out' });
+await attPanel.getByRole('row', { name: /Tue, Nov 3/ }).waitFor();
+const attSum = (await attPanel.locator('.att-sum').innerText()).replace(/\s+/g, ' ');
+check('employee attendance: a month of duties, what counts and what needs a look', /3 duties count on their own, 2 need payroll's look · 48\.14 hours · Post A · Main Gate/.test(attSum) && (await attPanel.locator('tbody tr').count()) === 5 && /November 2026/.test(await attPanel.locator('.panel-head').innerText()), attSum);
+const awayRow = (await attPanel.getByRole('row', { name: /Fri, Nov 6/ }).innerText()).replace(/\s+/g, ' ');
+check('employee attendance: each duty with its post, times in Manila, hours and why it needs a look', /Post A · Main Gate 6:20 PM 6:00 AM, Sat, Nov 7 11\.67 Away from the post/i.test(awayRow) && /None/.test(await attPanel.getByRole('row', { name: /Mon, Nov 9/ }).innerText()), awayRow);
+await page.screenshot({ path: `${ROOT}tests/shots/employee-attendance.png` });
+await attPanel.getByRole('button', { name: 'Previous month' }).click();
+await attPanel.getByText('No time in or out in these dates').waitFor();
+check('employee attendance: a month back in one click', JSON.stringify(rpcCalls('employee_duties').at(-1)?.body) === JSON.stringify({ p_employee_id: 'e2', p_from: '2026-10-01', p_to: '2026-10-31' }) && /October 2026/.test(await attPanel.locator('.panel-head').innerText()));
+await attPanel.getByLabel('Month', { exact: true }).fill('2026-11');
+await attPanel.getByRole('row', { name: /Tue, Nov 3/ }).waitFor();
+await attPanel.getByLabel('From').fill('2026-11-04');
+await attPanel.getByLabel('To').fill('2026-11-06');
+await page.waitForTimeout(300);
+check('employee attendance: any dates, kept in the address', JSON.stringify(rpcCalls('employee_duties').at(-1)?.body) === JSON.stringify({ p_employee_id: 'e2', p_from: '2026-11-04', p_to: '2026-11-06' }) && (await attPanel.locator('tbody tr').count()) === 2 && /Nov 4, 2026 to Nov 6, 2026/.test(await attPanel.locator('.panel-head').innerText()) && page.url().includes('from=2026-11-04') && page.url().includes('to=2026-11-06'), page.url());
+await attPanel.getByLabel('Show').selectOption('all');
+await page.waitForTimeout(400);
 const empAtt = requests.filter((r) => r.path === '/rest/v1/attendance_logs').at(-1);
-check('employee page: their own logs', /employee_id=eq\.e2/.test(empAtt?.url ?? ''), empAtt?.url);
+const empAttUrl = decodeURIComponent(empAtt?.url ?? '');
+check('employee attendance: every log of those dates, with photos', /employee_id=eq\.e2/.test(empAttUrl) && empAttUrl.includes('logged_at=gte.2026-11-03T16:00:00.000Z') && empAttUrl.includes('logged_at=lt.2026-11-06T16:00:00.000Z'), empAttUrl);
 
 console.log('Discipline');
 await page.goto(`${BASE}/discipline?tab=code`);
