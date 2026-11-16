@@ -505,6 +505,20 @@ create table if not exists public.payslips (
   unique (payroll_period_id, employee_id)
 );
 create index if not exists payslips_employee_idx on public.payslips (employee_id);
+-- What the 13th month counts (PD 851: a twelfth of the basic pay earned in the year) and the posts it
+-- was earned at, [{site_id, post, from, to, rate, days, leave_days, basic}]. Payslips worked out in the
+-- portal carry both. For one from a payroll file without them, its basic pay counts, shared among the
+-- guard's assignments in the cutoff by their days.
+alter table public.payslips
+  add column if not exists thirteenth_basic numeric(12, 2),
+  add column if not exists posts_detail jsonb not null default '[]'::jsonb;
+-- A regular cutoff, or a year's 13th month payout (which pays no basic pay of its own)
+alter table public.payroll_periods
+  add column if not exists kind text not null default 'regular' check (kind in ('regular', 'thirteenth_month'));
+update public.payroll_periods set kind = 'thirteenth_month'
+where kind = 'regular' and label like '13th month pay%'
+  and period_start = make_date(extract(year from period_start)::int, 1, 1)
+  and period_end = make_date(extract(year from period_start)::int, 12, 31);
 
 -- Leave
 create table if not exists public.leave_types (
@@ -2760,6 +2774,8 @@ declare
   d_detail jsonb;
   e_extra numeric;
   d_extra numeric;
+  v_thirteenth numeric;
+  v_posts jsonb;
   g numeric;
   d numeric;
   n numeric;
@@ -2823,6 +2839,19 @@ begin
           end if;
         end if;
       end loop;
+      -- the basic pay the 13th month counts, and the posts it was earned at (both optional)
+      v_thirteenth := case when nullif(trim(coalesce(rec ->> 'thirteenth_basic', '')), '') is not null
+                           then round(replace(rec ->> 'thirteenth_basic', ',', '')::numeric, 2) end;
+      v_posts := coalesce((
+        select jsonb_agg(jsonb_build_object(
+          'site_id', case when x ->> 'site_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then x ->> 'site_id' end,
+          'post', left(coalesce(x ->> 'post', ''), 200),
+          'from', (x ->> 'from')::date, 'to', (x ->> 'to')::date,
+          'rate', round(coalesce((x ->> 'rate')::numeric, 0), 2), 'days', round(coalesce((x ->> 'days')::numeric, 0), 2),
+          'leave_days', round(coalesce((x ->> 'leave_days')::numeric, 0), 2), 'basic', round(coalesce((x ->> 'basic')::numeric, 0), 2)))
+        from jsonb_array_elements(case when jsonb_typeof(rec -> 'posts_detail') = 'array' then rec -> 'posts_detail' else '[]'::jsonb end) x
+        where jsonb_typeof(x) = 'object'
+      ), '[]'::jsonb);
     exception when others then
       errors := errors || jsonb_build_object('row', idx, 'employee_no', v_no, 'message', 'A pay or hours column is not a number');
       continue;
@@ -2852,7 +2881,7 @@ begin
     insert into public.payslips (payroll_period_id, employee_id, site_name, days_worked, hours_worked, overtime_hours,
       night_diff_hours, basic_pay, overtime_pay, night_diff_pay, holiday_pay, allowances, other_earnings, gross_pay,
       sss, philhealth, pagibig, withholding_tax, loans, other_deductions, total_deductions, net_pay,
-      earnings_detail, deductions_detail, remarks)
+      earnings_detail, deductions_detail, remarks, thirteenth_basic, posts_detail)
     values (p_period_id, v_emp, nullif(trim(coalesce(rec ->> 'site_name', '')), ''),
       coalesce((vals ->> 'days_worked')::numeric, 0), coalesce((vals ->> 'hours_worked')::numeric, 0),
       coalesce((vals ->> 'overtime_hours')::numeric, 0), coalesce((vals ->> 'night_diff_hours')::numeric, 0),
@@ -2862,7 +2891,7 @@ begin
       coalesce((vals ->> 'sss')::numeric, 0), coalesce((vals ->> 'philhealth')::numeric, 0),
       coalesce((vals ->> 'pagibig')::numeric, 0), coalesce((vals ->> 'withholding_tax')::numeric, 0),
       coalesce((vals ->> 'loans')::numeric, 0), coalesce((vals ->> 'other_deductions')::numeric, 0), d, n,
-      e_detail, d_detail, nullif(trim(coalesce(rec ->> 'remarks', '')), ''))
+      e_detail, d_detail, nullif(trim(coalesce(rec ->> 'remarks', '')), ''), v_thirteenth, v_posts)
     on conflict (payroll_period_id, employee_id) do update set
       site_name = excluded.site_name, days_worked = excluded.days_worked, hours_worked = excluded.hours_worked,
       overtime_hours = excluded.overtime_hours, night_diff_hours = excluded.night_diff_hours,
@@ -2871,7 +2900,8 @@ begin
       gross_pay = excluded.gross_pay, sss = excluded.sss, philhealth = excluded.philhealth, pagibig = excluded.pagibig,
       withholding_tax = excluded.withholding_tax, loans = excluded.loans, other_deductions = excluded.other_deductions,
       total_deductions = excluded.total_deductions, net_pay = excluded.net_pay,
-      earnings_detail = excluded.earnings_detail, deductions_detail = excluded.deductions_detail, remarks = excluded.remarks;
+      earnings_detail = excluded.earnings_detail, deductions_detail = excluded.deductions_detail, remarks = excluded.remarks,
+      thirteenth_basic = excluded.thirteenth_basic, posts_detail = excluded.posts_detail;
     if v_existing then n_upd := n_upd + 1; else n_ins := n_ins + 1; end if;
   end loop;
 
@@ -5165,6 +5195,9 @@ begin
   if not found then
     raise exception 'Cutoff not found' using errcode = 'P0002';
   end if;
+  if p.kind <> 'regular' then
+    raise exception 'A 13th month payout has no duties for clients to confirm' using errcode = 'P0001';
+  end if;
   if (now() at time zone 'Asia/Manila')::date <= p.period_end then
     raise exception 'Ask clients once the cutoff has ended' using errcode = 'P0001';
   end if;
@@ -5343,3 +5376,106 @@ grant execute on function
   public.open_cutoff_reviews(uuid, integer), public.client_cutoffs(), public.client_cutoff_coverage(uuid),
   public.client_dispute_duty(uuid, uuid, text), public.client_respond_cutoff(uuid, text)
 to authenticated;
+
+-- -------------------------------------------------------------------------------------
+-- 20. Pay from attendance: paid leave in a cutoff, and the 13th month from released payroll
+-- -------------------------------------------------------------------------------------
+-- Approved paid leave falling in a cutoff, a row a day (a half-day request gives 0.5). Work out pay
+-- pays these days at the post's basic rate, so a guard on approved leave is not short.
+create or replace function public.cutoff_paid_leave(p_period_id uuid)
+returns table (employee_id uuid, employee_no text, day date, share numeric)
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  p public.payroll_periods;
+begin
+  if not (public.is_payroll() or public.is_hr()) then
+    raise exception 'Only payroll and HR see this' using errcode = '42501';
+  end if;
+  select * into p from public.payroll_periods where id = p_period_id;
+  if not found then
+    raise exception 'Cutoff not found' using errcode = 'P0002';
+  end if;
+  return query
+    select e.id, e.employee_no, d::date, round(r.days / (r.end_date - r.start_date + 1), 4)
+    from public.leave_requests r
+    join public.leave_types t on t.id = r.leave_type_id and t.is_paid
+    join public.employees e on e.id = r.employee_id
+    cross join lateral generate_series(greatest(r.start_date, p.period_start), least(r.end_date, p.period_end), interval '1 day') d
+    where r.status = 'approved' and r.start_date <= p.period_end and r.end_date >= p.period_start
+    order by e.employee_no, d;
+end $$;
+
+-- The 13th month counts what payroll actually released: the basic pay on the year's published
+-- cutoffs (PD 851), at each post it was earned at. Returns the cutoffs released and, for each
+-- employee and post, the basic pay and the days it covers. A cutoff across the new year (Dec 26 to
+-- Jan 10) gives each year the pay of its own days. The portal adds the days no released cutoff
+-- covers yet as projected, from the assignments, and says so.
+create or replace function public.thirteenth_month_released(p_year integer) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_from date := make_date(p_year, 1, 1);
+  v_to date := make_date(p_year, 12, 31);
+begin
+  if not public.is_payroll() then
+    raise exception 'Only payroll sees this' using errcode = '42501';
+  end if;
+  return (
+    with released as (
+      select p.id, p.period_start, p.period_end
+      from public.payroll_periods p
+      where p.status = 'published' and p.kind = 'regular' and p.period_start <= v_to and p.period_end >= v_from
+    ), slips as (
+      select s.id, s.employee_id, s.payroll_period_id, s.posts_detail, coalesce(s.thirteenth_basic, s.basic_pay) as basic,
+             r.period_start, r.period_end
+      from public.payslips s join released r on r.id = s.payroll_period_id
+    ), pieces as (
+      -- worked out in the portal: each post and its days
+      select s.employee_id, s.payroll_period_id, nullif(x ->> 'site_id', '')::uuid as site_id, nullif(x ->> 'post', '') as post,
+             greatest(coalesce((x ->> 'from')::date, s.period_start), s.period_start) as p_from,
+             least(coalesce((x ->> 'to')::date, s.period_end), s.period_end) as p_to,
+             coalesce((x ->> 'basic')::numeric, 0) as basic
+      from slips s cross join lateral jsonb_array_elements(s.posts_detail) x
+      where jsonb_array_length(s.posts_detail) > 0
+      union all
+      -- from a payroll file: shared among the cutoff's assignments by their days
+      select s.employee_id, s.payroll_period_id, a.site_id, null,
+             greatest(a.start_date, s.period_start), least(coalesce(a.end_date, s.period_end), s.period_end),
+             s.basic * (least(coalesce(a.end_date, s.period_end), s.period_end) - greatest(a.start_date, s.period_start) + 1)
+               / sum(least(coalesce(a.end_date, s.period_end), s.period_end) - greatest(a.start_date, s.period_start) + 1)
+                   over (partition by s.id)
+      from slips s
+      join public.employee_assignments a on a.employee_id = s.employee_id
+        and a.start_date <= s.period_end and coalesce(a.end_date, s.period_end) >= s.period_start
+      where jsonb_array_length(s.posts_detail) = 0
+      union all
+      -- no posts named and no assignment then: counted, with no post
+      select s.employee_id, s.payroll_period_id, null, null, s.period_start, s.period_end, s.basic
+      from slips s
+      where jsonb_array_length(s.posts_detail) = 0
+        and not exists (select 1 from public.employee_assignments a where a.employee_id = s.employee_id
+                          and a.start_date <= s.period_end and coalesce(a.end_date, s.period_end) >= s.period_start)
+    ), in_year as (  -- the share of each piece's days that fall in the year
+      select employee_id, payroll_period_id, site_id, post,
+             greatest(p_from, v_from) as d_from, least(p_to, v_to) as d_to,
+             basic * (least(p_to, v_to) - greatest(p_from, v_from) + 1) / (p_to - p_from + 1) as basic
+      from pieces
+      where p_to >= p_from and p_from <= v_to and p_to >= v_from
+    ), per_post as (
+      select r.employee_id, r.site_id, coalesce(max(st.name), max(r.post), 'No post') as post,
+             min(r.d_from) as d_from, max(r.d_to) as d_to, round(sum(r.basic), 2) as basic,
+             count(distinct r.payroll_period_id) as cutoffs
+      from in_year r left join public.sites st on st.id = r.site_id
+      group by r.employee_id, r.site_id
+    )
+    select jsonb_build_object(
+      'cutoffs', coalesce((select jsonb_agg(jsonb_build_object('from', greatest(period_start, v_from), 'to', least(period_end, v_to))
+                                            order by period_start) from released), '[]'::jsonb),
+      'rows', coalesce((select jsonb_agg(jsonb_build_object(
+          'employee_id', pp.employee_id, 'site_id', pp.site_id, 'post', pp.post, 'from', pp.d_from, 'to', pp.d_to,
+          'basic', pp.basic, 'cutoffs', pp.cutoffs) order by pp.employee_id, pp.d_from) from per_post pp where pp.basic <> 0), '[]'::jsonb)
+    )
+  );
+end $$;
+
+revoke execute on function public.cutoff_paid_leave(uuid), public.thirteenth_month_released(integer) from public, anon;
+grant execute on function public.cutoff_paid_leave(uuid), public.thirteenth_month_released(integer) to authenticated;

@@ -56,14 +56,34 @@ The project's sign-in settings, as read on 8 November 2026: email sign-in on, si
    `update auth.users set email_confirmed_at = now() where email = 'you@company.ph';`
 4. Invite everyone else from **Users and roles**. Each invitation shows a code to pass on in person;
    nobody can sign up without one. The same confirmation step applies to them.
-5. Optional: `supabase/seed-demo.sql` fills an empty project with clearly marked demo records to
-   try every screen; `supabase/remove-demo.sql` takes them out.
-   For showing the portal, `supabase/demo-login.sql` makes a demo super admin
-   (`bannuar@ibits.digital`, password `password`, already confirmed). Delete it before real records
-   go in: `delete from auth.users where email = 'bannuar@ibits.digital';`
-   For the employee app, `supabase/demo-employee-logins.sql` (after the demo data) gives two demo
-   employees an app login, password `password`: DEMO-0001, a detachment commander, and DEMO-0002, a
-   guard. `remove-demo.sql` deletes them with the demo data.
+5. Optional, for a demo: see **Demo data** below.
+
+### Demo data
+
+`supabase/seed-demo.sql` fills an empty project with one consistent demo year, every record marked
+"Demo": a client with three posts, six employees, a year of time in and out (with a few absences
+and exceptions), every cutoff of the year published but the latest, and payslips worked out exactly
+as **Work out pay** does from that time in and out (the database tests check every figure). The
+latest cutoff is a draft: an approved day of leave to pay, a duty logged away from the post for
+payroll to decide, and the client's confirmation still open. The 13th month then reads from the
+published cutoffs, with DEMO-0001 as Bannuar's example: ₱100 an hour January to March, ₱90 April to
+October and ₱150 from November make ₱21,320. The demo year follows the date it is loaded, so load
+it on the morning of a presentation. Paste into the SQL Editor, in this order:
+
+1. `supabase/remove-demo.sql`, when an older demo is loaded (the seed asks for this when it finds one).
+2. `supabase/seed-demo.sql` (it refuses once real employees exist).
+3. `supabase/demo-employee-logins.sql`: app logins, password `password`, for DEMO-0001 (a detachment
+   commander) and DEMO-0002 (a guard).
+4. `supabase/demo-login.sql`: `bannuar@ibits.digital` (super admin, the HR portal) and
+   `client@ibits.digital` (Demo Client Corporation, the client portal), password `password`.
+
+**Before launch**, take the demo out: invite your own super admin from **Users and roles** and sign
+in as them, then run `supabase/remove-demo.sql`. It deletes every demo record (people, time in and
+out, cutoffs and payslips, the 13th month payout if one was made during the demo, leave, requests,
+certificates, the client, its posts and rates), the demo app and client logins, notifications about
+demo records, and the demo super admin, which it keeps only while it is the only super admin (it
+says so; run it again after signing in as your own). Real records are not touched. Files uploaded
+to the bucket during a demo stay there; delete them from the bucket if any were.
 
 **Checked against the live project on 8 November 2026** (read-only): the schema is installed (open
 posts, the certificate and invitation checks answer; the employees table refuses public reads; all
@@ -84,7 +104,7 @@ made. No account or record was created.
 | Discipline | HR (operations: incident reports) | Incident reports from clients, commanders and staff (status, and an update the client reads); discipline cases that follow due process: the charge on an approved rule, a notice to explain with at least five calendar days to answer, the employee's explanation from the app or on paper, a hearing when asked for and always before a dismissal, a written decision (a penalty other than the code's needs a reason), preventive suspension up to 30 days. The Code of Discipline: upload the PDF, Claude Opus 5.5 reads it into offense rules with penalties by offense count and notes for counsel, HR approves each rule and puts the code in force. Claude can suggest the rule and draft the notice for a case; HR edits and decides ([SETUP step 10](supabase/SETUP.md)) |
 | Client portal | people at a client company (invited by operations) | Made for a tablet at the client's desk (Add to Home Screen opens it full screen). Their posts with the guards assigned and who is on duty now; time in and out by day (who, when, at the post or not; no photos or locations); incident reports about a guard or a post, with Bannuar's status and update (never the case behind it); each cutoff's duties at their posts to confirm or dispute within two days (no answer counts as confirmed); requests for more guards, a replacement or a schedule change, answered by operations. Clients see nothing else: other clients' posts, pay, addresses and government numbers are closed to them. Staff invite and turn off client logins under Posts and clients → Clients → Portal access, and answer requests under Requests → Client requests |
 | Announcements | publishers | Write for everyone, chosen areas or chosen posts; ask for acknowledgment; see how many read and acknowledged |
-| Payroll | payroll | Cutoffs; work out pay from the assignments, rates and client pay rules (attendance sheet to download, edit and upload) or import the payroll file (CSV, common column names recognised, `earning:` and `deduction:` lines kept); check totals; publish to employees, who are notified without the amount; download any payslip as a PDF, made on request and never stored; the 13th month, pro-rated by post and rate (a timeline of each employee's year, each stretch marked with its share and the total at the right, or the list), and its payout cutoff |
+| Payroll | payroll | Cutoffs; work out pay from the cutoff's time in and out (the duties that count, approved paid leave) at each post's rate and its client's pay rule, deductions the rule has included (an attendance sheet to download, edit and upload; the schedule only as a labelled fallback), or import the payroll file (CSV, common column names recognised, `earning:` and `deduction:` lines kept); check totals; publish to employees, who are notified without the amount; download any payslip as a PDF, made on request and never stored; the 13th month from the basic pay of the year's published cutoffs, post by post, with the days no published cutoff covers yet projected and marked so (a timeline of each employee's year, or the list), and its payout cutoff |
 | Recruitment | HR | Applications from the website (open the attached resume, notes, status, hire into an employee record); the open posts listed on the website |
 | Proposal requests | all staff | Companies asking for guards through the website: call, email, status, notes |
 | Users and roles | super admin | Staff accounts and roles, invitations with codes, temporary passwords |
@@ -154,24 +174,36 @@ Each client pays its guards its own way, and each post has its own rate.
   or not; never pay) and confirms, or disputes the duties it says were not served, within two days.
   No answer in time counts as confirmed. Disputes join payroll's list; pay is never held for a client
   (Labor Code Art. 103).
-- **Work out pay** (a draft cutoff → Work out pay): "Fill the days from time in and out" puts the
-  counted duties on each assignment's row; or use the assignments' scheduled duty days. Download the
-  sheet to change any day, upload it, check the result and save the payslips, or download them as a
-  payroll file to add SSS, PhilHealth, Pag-IBIG, tax and loans and import it.
-- **13th month** (Payroll → 13th month): for each stretch of the year a guard held a post at one
-  rate, basic pay is the rule's 13th month lines for the duty days (hourly rate × 8 hours × 26 days ×
-  months), and the 13th month is a twelfth of it; the stretches are added up. Bannuar's example,
-  in the demo data: DEMO-0001 at ₱100 an hour January to March (₱5,200), ₱90 April to October
-  (₱10,920) and ₱150 November to December (₱5,200) gets ₱21,320. *Create the payout cutoff*
-  makes a cutoff with a 13th month line for each employee, to check and publish.
+- **Work out pay** (a draft cutoff → Work out pay): opens on the cutoff's time in and out: each
+  assignment's row gets the duties that count (clean ones, and the exceptions payroll counted; an
+  undecided exception is left out) and the approved paid leave in the cutoff, paid at the post's
+  rate for the rule's regular hours. A duty at a post the guard has no assignment for is pointed
+  out, not paid. Download the sheet to change any day and upload it, check the result and save the
+  payslips. Each payslip keeps the basic pay its rule marks for the 13th month and the posts it was
+  earned at. *Use the schedule instead* pays each assignment its scheduled duty days, and says so,
+  for a cutoff whose time in and out is not in the system. Deduction lines in the rule (the demo's
+  SSS, PhilHealth and Pag-IBIG) fill those columns; for tax and loans, download the result as a
+  payroll file, add them and import it.
+- **13th month** (Payroll → 13th month): a twelfth of the basic pay earned in the year (PD 851).
+  *Released* is the basic pay on the year's published cutoffs, at the post it was earned at (from a
+  payroll file without posts, shared among the guard's assignments by their days; a cutoff across
+  the new year gives each year its own days). *Projected* covers the days no published cutoff
+  covers yet: the rule's 13th month lines for the scheduled duty days at the rate in force (hourly
+  rate × 8 hours × 26 days a month). The timeline draws released pay solid and projected days
+  outlined. A day a guard missed was not paid, so it lowers the 13th month. *Create the payout
+  cutoff* makes a 13th month cutoff with a line for each employee, to check and publish; the
+  projected days are included unless payroll unticks them. Bannuar's example, in the demo data:
+  DEMO-0001 at ₱100 an hour January to March (₱5,200), ₱90 April to October (₱10,920), both
+  released, and ₱150 from November (₱5,200, projected until those cutoffs are published) gets
+  ₱21,320.
 
-**Not covered yet:** holiday and rest-day premiums, which need a holiday calendar and day-by-day
-attendance (put them in the payroll file for now), and statutory deductions (from the payroll file).
+**Not covered yet:** holiday and rest-day premiums, which need a holiday calendar (put them in the
+payroll file for now), and withholding tax and loans (from the payroll file).
 
 **Updating a project that already runs the portal:** paste `supabase/schema.sql` into the SQL
 Editor again. It only adds; existing records stay, and every employee already at a post gets an open
 assignment from their hiring date. Then give each post (or client) an hourly rate. On a demo
-project, run `supabase/seed-demo.sql` again to add the demo rule, rates and DEMO-0001's year.
+project, load the demo again as **Demo data** above describes (remove, seed, logins).
 
 ## Security, in short
 
@@ -192,18 +224,27 @@ project, run `supabase/seed-demo.sql` again to add the demo rule, rates and DEMO
 ## Tests
 
 **Database** (`supabase/tests/run-tests.sh`, against Postgres 16 with stand-ins for Supabase's
-`auth` and `storage` schemas, connecting the way the Supabase API does): 136 checks of sign-up,
-row level security for every role, payroll import and publishing, the leave and COE flows,
-certificate verification, announcements, website forms, storage folders, admin tools, pay rules
-(formula line checks, one default a client, who may read and set rules and rates), assignment
-history (written by deployments, no overlaps, who sees whose) and running `schema.sql` twice and
-over existing data. **136 passed.** The upgrade was also rehearsed: the previous schema and demo
-data first, then the new `schema.sql` and `seed-demo.sql` on top, and `remove-demo.sql` after.
+`auth` and `storage` schemas, connecting the way the Supabase API does): sign-up, row level
+security for every role, payroll import and publishing, the leave and COE flows, certificate
+verification, announcements, website forms, storage folders, admin tools, pay rules, rates and
+assignment history, time in and out, discipline, the client portal, the cutoff review (duties from
+time in and out, payroll's decisions, the client's confirmation), paid leave in a cutoff, the 13th
+month from released payroll (published cutoffs only, posts from the payslips or the assignments, a
+cutoff across the new year split, the payout itself not counted, who may read it), and running
+`schema.sql` twice and over existing data. Then, on a second empty database, the demo: the seed,
+the logins (each twice), the client login seeing its posts and its open cutoff but no payslips,
+**every published demo payslip checked figure for figure against the portal's own pay engine**
+(`supabase/tests/seed-check.mjs`: the duties that count, paid leave, the 13th month), and
+`remove-demo.sql` leaving nothing behind. **447 passed.** The live project's upgrade was rehearsed
+too: the previous `schema.sql` and demo, then the new `schema.sql` (the new seed then asks for
+`remove-demo.sql` first), `remove-demo.sql`, `seed-demo.sql` and the logins; `seed-check.mjs`
+passes on the result.
 
 **Pay engine** (`npm run test:pay`): the formula language (precedence, percentages, functions,
 mistakes explained), the night differential for 8, 12 and 24-hour duties under both rules, rates
-by post and client, rate changes and separations, Bannuar's 13th month example (₱21,320), the
-attendance sheet and a cutoff's pay. **13 passed.**
+by post and client, rate changes and separations, the attendance sheet, a cutoff's pay with paid
+leave and deduction lines, and the 13th month from released payroll with the rest projected
+(Bannuar's example, ₱21,320). **17 passed.**
 
 **Certificate PDF text** (`npm run test:pdf`): the peso sign is written as PHP (the standard PDF
 fonts have no ₱), Latin-1 letters such as ñ stay, anything else is replaced. **2 passed.**
@@ -218,10 +259,12 @@ and a bad row, publishing a cutoff, publishing an announcement to a post, hiring
 inviting staff, deploying a floating guard, setting up an account with an invitation code, the
 phone menu and sign-out; and the pay features: editing a client's pay rule (the example's night
 differential, a typo caught and refused, a line added), a post's rate and rule, the assignment
-history, the 13th month (the timeline first: a bar for each stretch at its dates with its
-pro-rated share, the total at the right, the tooltip, the legend, How and Hide; then the list:
-₱21,320 for the example, its breakdown, the payout cutoff) and working out a cutoff's pay (the
-attendance sheet from the assignments, an edited sheet uploaded, night differential for the last
+history, the 13th month (the timeline first: released and projected bars at their dates with
+their shares, the total at the right, the tooltip, the legend, How and Hide; then the list:
+₱21,320 for the example, its breakdown, the payout cutoff with and without the projected days) and
+working out a cutoff's pay (from the time in and out without asking, paid leave, a duty at a post
+with no assignment pointed out, the payslip saved with its 13th month basic and posts, the
+schedule as the labelled fallback, an edited sheet uploaded, night differential for the last
 shift). Then the overhaul's parts: the dashboard (today's time in and out counted by the database,
 each post's guards against the number needed, the roll by status), Jump to (Ctrl K) finding an
 employee by name, the skip link and focus rings by keyboard, the menu's lamp following the page,
@@ -238,7 +281,7 @@ its type's folder, the record keeps the S3 key, a walk-in certificate's PDF land
 certificates folder, an S3 selfie gets a five-minute link while an older one still opens from
 Supabase Storage, the folder of each document type is changed in Settings, the File storage tab
 counts files by folder and runs the live check, and a payslip downloads as a PDF made on request.
-**249 passed, 0 console errors, and every request matches the schema.**
+**260 passed, 0 console errors, and every request matches the schema.**
 
 The look and its reasons (the watch room, the duty clock, where glass and glow are allowed, motion
 and charts) are in [DESIGN.md](DESIGN.md).

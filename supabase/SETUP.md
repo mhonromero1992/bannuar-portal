@@ -91,10 +91,16 @@ Never put the `service_role` / secret key in either: both are delivered to brows
 
 ## 7. Optional
 
-**Demo records** for trying the portal: run [`seed-demo.sql`](seed-demo.sql) in a new project
-(it refuses once real employees exist), and [`remove-demo.sql`](remove-demo.sql) to take them out.
-The demo creates six employees, two posts, two payroll cutoffs, a leave request, a COE request,
-an announcement, an application and a proposal request.
+**Demo records** for trying or presenting the portal: in a new project, run
+[`seed-demo.sql`](seed-demo.sql) (it refuses once real employees exist), then
+[`demo-employee-logins.sql`](demo-employee-logins.sql) and [`demo-login.sql`](demo-login.sql). The
+demo is one consistent year that follows the date it is loaded: a client with three posts, six
+employees, a year of time in and out, every cutoff published but the latest (a draft to work out),
+payslips worked out from that time in and out, and the 13th month from them. Logins, password
+`password`: `bannuar@ibits.digital` (HR portal, super admin), `client@ibits.digital` (client
+portal), DEMO-0001 and DEMO-0002 (the app). To refresh it, run [`remove-demo.sql`](remove-demo.sql)
+first. Before launch, invite your own super admin, sign in as them and run `remove-demo.sql`: it
+takes out every demo record and login, the demo super admin included (see the README's Demo data).
 
 **Daily reminders for expiring licenses and clearances**: Database → Extensions → enable
 `pg_cron`, then run:

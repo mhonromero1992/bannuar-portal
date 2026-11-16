@@ -1,15 +1,20 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useQuery } from '@tanstack/react-query';
 import { errorText, fmtMoney } from '../lib/format';
-import { computePay, readSheet, roundTo, scheduleSheet, SHEET_COLUMNS, toCsv, toPayrollRow, type AttendanceRow, type Person } from '../lib/pay';
+import { computePay, readSheet, roundTo, scheduleSheet, sheetFromDuties, SHEET_COLUMNS, toCsv, toPayrollCsvRow, toPayrollRow, type AttendanceRow, type CountedDuties, type PaidLeaveDay, type Person } from '../lib/pay';
 import { downloadFile, loadPayInputs, loadPeople, readCsv, savePayslips } from '../lib/payData';
 import { ErrorState, Loading } from '../ui/kit';
 
-interface Sheet { rows: AttendanceRow[]; errors: { row: number; message: string }[]; extra: Person[]; name: string }
+type Source = 'logs' | 'schedule' | 'file';
+interface Sheet { rows: AttendanceRow[]; errors: { row: number; message: string }[]; extra: Person[]; name: string; source: Source }
 const SHOW = 150;
 
-/** Work out a cutoff's pay from the assignments (or an edited attendance sheet), then save it as payslips. */
+/**
+ * Work out a cutoff's pay and save it as payslips. The days come from the cutoff's time in and out
+ * (the duties that count) plus approved paid leave; the schedule or an edited attendance sheet are
+ * the deliberate alternatives.
+ */
 export default function ComputePay({ period, onSaved, onClose }: { period: { id: string; label: string; period_start: string; period_end: string }; onSaved: () => void; onClose: () => void }) {
   const range = { start: period.period_start, end: period.period_end };
   const inputs = useQuery({ queryKey: ['pay-inputs', range.start, range.end], queryFn: () => loadPayInputs(range.start, range.end), gcTime: 0 });
@@ -19,12 +24,19 @@ export default function ComputePay({ period, onSaved, onClose }: { period: { id:
   const [saved, setSaved] = useState<{ inserted: number; updated: number; errors: { row: number; employee_no?: string; message: string }[] } | null>(null);
   const data = inputs.data;
   const schedule = useMemo(() => (data ? scheduleSheet(range, data.people, data.assignments, data.posts, data.rules) : []), [data, range.start, range.end]);
-  const rows = sheet?.rows ?? schedule;
-  const results = useMemo(() => (data ? computePay(rows, [...data.people, ...(sheet?.extra ?? [])], data.posts, data.rules, data.rates) : []), [data, rows, sheet]);
-  const ready = results.filter((r) => !r.problems.length && r.lines.length);
-  const blocked = results.filter((r) => r.problems.length);
+  const rows = sheet?.rows ?? [];
+  const results = useMemo(() => (data && sheet ? computePay(rows, [...data.people, ...sheet.extra], data.posts, data.rules, data.rates) : []), [data, rows, sheet]);
   const sum = (kind: 'earning' | 'deduction', r: (typeof results)[number]) => r.lines.filter((l) => l.kind === kind).reduce((t, l) => t + l.amount, 0);
+  // a guard with no duty and no paid leave in the cutoff gets no payslip
+  const ready = results.filter((r) => !r.problems.length && sum('earning', r) > 0);
+  const blocked = results.filter((r) => r.problems.length);
+  const idle = results.filter((r) => !r.problems.length && sum('earning', r) <= 0);
   const totals = ready.reduce((t, r) => ({ earn: t.earn + sum('earning', r), ded: t.ded + sum('deduction', r) }), { earn: 0, ded: 0 });
+  const headers = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const r of ready) for (const l of r.lines) if (!seen.has(l.code)) seen.set(l.code, l.label);
+    return [...seen.entries()];
+  }, [ready]);
 
   const upload = async (file?: File) => {
     setError('');
@@ -39,41 +51,52 @@ export default function ComputePay({ period, onSaved, onClose }: { period: { id:
       const known = new Set(data?.people.map((p) => p.employee_no.toUpperCase()));
       const missing = [...new Set(read.rows.map((r) => r.employee_no).filter((n) => !known.has(n)))];
       const extra = missing.length ? await loadPeople('employee_no', missing) : [];
-      setSheet({ ...read, extra, name: file.name });
+      setSheet({ ...read, extra, name: file.name, source: 'file' });
     } catch (e) {
       setError(errorText(e));
     } finally {
       setBusy('');
     }
   };
-  /** Days from the cutoff's counted duties (clean ones, and the exceptions payroll counted), per assignment row. */
+  /** Days from the cutoff's counted duties (clean ones, and the exceptions payroll counted), and approved paid leave. */
   const fillFromLogs = async () => {
     setError('');
     setSaved(null);
     setBusy('Reading the time in and out…');
     try {
-      const { data: counted, error: err } = await supabase.rpc('cutoff_counted_duties', { p_period_id: period.id });
-      if (err) throw err;
-      const list = (counted ?? []) as { employee_no: string; site_id: string; dates: string[] }[];
-      const used = new Set<string>();
-      const rows = schedule.map((r) => {
-        const mine = list.find((c) => c.employee_no.toUpperCase() === r.employee_no.toUpperCase() && c.site_id === r.site_id);
-        if (mine) used.add(`${mine.employee_no}|${mine.site_id}`);
-        return { ...r, days: (mine?.dates ?? []).filter((d) => d >= r.from && d <= r.to).length };
-      });
-      const unplaced = list.filter((c) => !used.has(`${c.employee_no}|${c.site_id}`));
+      const [duties, leave] = await Promise.all([
+        supabase.rpc('cutoff_counted_duties', { p_period_id: period.id }),
+        supabase.rpc('cutoff_paid_leave', { p_period_id: period.id }),
+      ]);
+      if (duties.error) throw duties.error;
+      if (leave.error) throw leave.error;
+      const { rows: sheetRows, unplaced } = sheetFromDuties(schedule, (duties.data ?? []) as CountedDuties[], (leave.data ?? []) as PaidLeaveDay[]);
       setSheet({
-        rows,
-        errors: unplaced.map((c, i) => ({ row: i + 1, message: `${c.employee_no}: ${c.dates.length} duties at a post they have no assignment for in this cutoff. Add the assignment, then fill again.` })),
+        rows: sheetRows,
+        errors: unplaced.map((c, i) => ({ row: i + 1, message: `${c.employee_no}: ${c.dates.length} ${c.dates.length === 1 ? 'duty' : 'duties'} at a post they have no assignment for in this cutoff. Add the assignment, then fill again.` })),
         extra: [],
         name: 'the time in and out',
+        source: 'logs',
       });
     } catch (e) {
-      setError(errorText(e));
+      setError(`${errorText(e)} The schedule is shown instead.`);
+      fromSchedule();
     } finally {
       setBusy('');
     }
   };
+  const fromSchedule = () => {
+    setSaved(null);
+    setSheet({ rows: schedule, errors: [], extra: [], name: 'the schedule', source: 'schedule' });
+  };
+  // the time in and out first, as soon as the assignments, rules and rates are in
+  const started = useRef(false);
+  useEffect(() => {
+    if (!data || started.current) return;
+    started.current = true;
+    if (schedule.length) fillFromLogs();
+  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const save = async () => {
     if (!confirm(`Save ${ready.length} payslips into ${period.label}? A payslip already in this cutoff for the same employee is replaced.`)) return;
     setError('');
@@ -91,31 +114,45 @@ export default function ComputePay({ period, onSaved, onClose }: { period: { id:
   if (inputs.isLoading) return <Loading what="Reading assignments, rules and rates" />;
   if (inputs.error || !data) return <ErrorState error={errorText(inputs.error)} retry={() => inputs.refetch()} />;
   const postCount = new Set(schedule.map((r) => r.post)).size;
+  const leaveTotal = rows.reduce((t, r) => t + (r.leave_days ?? 0), 0);
+  const dutyTotal = rows.reduce((t, r) => t + r.days, 0);
   return (
     <div className="stack">
-      <p className="muted">Pay is worked out from each guard's duty in this cutoff, at the post's hourly rate and its client's pay rule (formulas and night differential). Deductions such as SSS, PhilHealth, Pag-IBIG, tax and loans still come from the payroll file: download the result as a payroll file to add them.</p>
+      <p className="muted">Pay is worked out from the duties that count in this cutoff (each guard's time in and out) and approved paid leave, at each post's hourly rate and its client's pay rule: formulas, night differential, and any deduction lines the rule has, such as SSS, PhilHealth and Pag-IBIG. Other deductions, such as loans, come from the payroll file: download the result as a payroll file to add them.</p>
 
       <h3 style={{ margin: 0 }}>1. Attendance</h3>
-      {sheet ? (
-        <p><b>{sheet.rows.length}</b> {sheet.rows.length === 1 ? 'row' : 'rows'} read from <span className="code">{sheet.name}</span>. <button className="link-btn" type="button" onClick={() => setSheet(null)}>Use the schedule instead</button>
-          {sheet.name === 'the time in and out' && <span className="muted small"> Counted: clean duties and the exceptions you counted on the cutoff page. Exceptions not decided yet are left out. Change any day by downloading, editing and uploading the sheet.</span>}</p>
+      {!sheet ? (
+        <p className="muted" role="status">{busy || (schedule.length ? `${schedule.length} ${schedule.length === 1 ? 'assignment' : 'assignments'} at ${postCount} ${postCount === 1 ? 'post' : 'posts'} in this cutoff.` : 'No guard was assigned to a post in this cutoff.')}</p>
+      ) : sheet.source === 'logs' ? (
+        <p>
+          <b>{dutyTotal}</b> {dutyTotal === 1 ? 'duty' : 'duties'} that count{leaveTotal ? <>, and <b>{roundTo(leaveTotal, 2)}</b> {roundTo(leaveTotal, 2) === 1 ? 'day' : 'days'} of approved paid leave,</> : ''} for <b>{rows.length}</b> {rows.length === 1 ? 'assignment' : 'assignments'} at <b>{postCount}</b> {postCount === 1 ? 'post' : 'posts'}, from the time in and out.
+          <span className="muted small"> Counted: clean duties and the exceptions you counted on the cutoff page. Exceptions not decided yet are left out. To change a day, download the sheet, edit it and upload it.</span>
+        </p>
+      ) : sheet.source === 'schedule' ? (
+        <p className="callout warn"><b>From the schedule, not the time in and out:</b> each assignment gets its rule's duty days, whether or not they were worked. Use it only when the time in and out is not in the system. <button className="link-btn" type="button" onClick={fillFromLogs}>Use the time in and out</button></p>
       ) : (
-        <p><b>{schedule.length}</b> assignments at <b>{postCount}</b> posts in this cutoff, each with its rule's duty days. Change the days to the days actually worked: download the sheet, edit it, and upload it here.</p>
+        <p><b>{rows.length}</b> {rows.length === 1 ? 'row' : 'rows'} read from <span className="code">{sheet.name}</span>. <button className="link-btn" type="button" onClick={fillFromLogs}>Use the time in and out instead</button></p>
       )}
       <div className="row">
-        <button className="btn btn-sm" type="button" disabled={!schedule.length || Boolean(busy)} onClick={fillFromLogs}>Fill the days from time in and out</button>
-        <button className="btn btn-line btn-sm" type="button" disabled={!(sheet?.rows ?? schedule).length} onClick={() => downloadFile(`attendance ${range.start} to ${range.end}.csv`, toCsv((sheet?.rows ?? schedule).map((r) => ({ ...r })), SHEET_COLUMNS))}>Download the attendance sheet</button>
+        {sheet?.source !== 'logs' && <button className="btn btn-sm" type="button" disabled={!schedule.length || Boolean(busy)} onClick={fillFromLogs}>Fill the days from time in and out</button>}
+        {sheet?.source === 'logs' && <button className="btn btn-line btn-sm" type="button" disabled={!schedule.length || Boolean(busy)} onClick={fromSchedule}>Use the schedule instead</button>}
+        <button className="btn btn-line btn-sm" type="button" disabled={!rows.length} onClick={() => downloadFile(`attendance ${range.start} to ${range.end}.csv`, toCsv(rows.map((r) => ({ ...r })), SHEET_COLUMNS))}>Download the attendance sheet</button>
       </div>
       <div className="field" style={{ maxWidth: 440 }}>
         <label htmlFor="attendance-file">Upload the filled sheet (CSV)</label>
         <input id="attendance-file" className="input" type="file" accept=".csv,text/csv" onChange={(e) => { upload(e.target.files?.[0]); e.target.value = ''; }} />
       </div>
       {sheet && sheet.errors.length > 0 && (
-        <div className="callout warn" role="alert"><b>{sheet.errors.length} rows were skipped:</b><ul>{sheet.errors.slice(0, 10).map((x) => <li key={x.row}>Line {x.row}: {x.message}</li>)}</ul></div>
+        <div className="callout warn" role="alert">
+          <b>{sheet.source === 'logs'
+            ? `${sheet.errors.length === 1 ? 'One employee has duties' : `${sheet.errors.length} employees have duties`} that cannot be paid yet:`
+            : `${sheet.errors.length} ${sheet.errors.length === 1 ? 'row was' : 'rows were'} skipped:`}</b>
+          <ul>{sheet.errors.slice(0, 10).map((x) => <li key={x.row}>{sheet.source === 'logs' ? '' : `Line ${x.row}: `}{x.message}</li>)}</ul>
+        </div>
       )}
 
       <h3 style={{ margin: 0 }}>2. Pay</h3>
-      {!results.length ? <p className="callout">No guard was on duty in this cutoff according to the assignment history.</p> : (
+      {!sheet ? null : !results.length ? <p className="callout">No guard was on duty in this cutoff according to the assignment history.</p> : (
         <>
           <div className="tiles">
             <div className="tile"><span className="label">Payslips ready</span><span className="big">{ready.length}</span></div>
@@ -128,20 +165,23 @@ export default function ComputePay({ period, onSaved, onClose }: { period: { id:
               {blocked.length > 10 && <p className="small">and {blocked.length - 10} more.</p>}
             </div>
           )}
+          {idle.length > 0 && <p className="muted small">{idle.length} assigned {idle.length === 1 ? 'employee has' : 'employees have'} no duty and no paid leave in this cutoff, so no payslip: {idle.slice(0, 6).map((r) => r.name || r.employee_no).join(', ')}{idle.length > 6 ? ', and more' : ''}.</p>}
           <div className="preview-table" style={{ maxHeight: 420 }}>
             <table className="table">
-              <thead><tr><th style={{ minWidth: 150 }}>Employee</th><th style={{ minWidth: 180 }}>Post</th><th className="num">Duties</th><th className="num">Regular hours</th><th className="num">Overtime hours</th><th className="num">Night hours</th>
-                {(ready[0]?.lines ?? []).map((l) => <th key={l.code} className="num">{l.label}</th>)}<th className="num">Earnings</th></tr></thead>
+              <thead><tr><th style={{ minWidth: 150 }}>Employee</th><th style={{ minWidth: 180 }}>Post</th><th className="num">Duties</th><th className="num">Paid leave</th><th className="num">Regular hours</th><th className="num">Overtime hours</th><th className="num">Night hours</th>
+                {headers.map(([code, label]) => <th key={code} className="num">{label}</th>)}<th className="num">Earnings</th><th className="num">Net</th></tr></thead>
               <tbody>{ready.slice(0, SHOW).map((r) => (
                 <tr key={r.employee_no}>
                   <td><b>{r.name}</b><span className="cell-sub tabular">{r.employee_no}</span></td>
                   <td>{r.posts.join(', ')}</td>
                   <td className="num">{roundTo(r.days, 2)}</td>
+                  <td className="num">{roundTo(r.leave_days, 2)}</td>
                   <td className="num">{roundTo(r.regular_hours, 2)}</td>
                   <td className="num">{roundTo(r.overtime_hours, 2)}</td>
                   <td className="num">{roundTo(r.night_hours, 2)}</td>
-                  {(ready[0]?.lines ?? []).map((h) => <td key={h.code} className="num">{fmtMoney(r.lines.find((l) => l.code === h.code)?.amount ?? 0)}</td>)}
+                  {headers.map(([code]) => <td key={code} className="num">{fmtMoney(r.lines.filter((l) => l.code === code).reduce((t, l) => t + l.amount, 0))}</td>)}
                   <td className="num"><b>{fmtMoney(sum('earning', r))}</b></td>
+                  <td className="num">{fmtMoney(sum('earning', r) - sum('deduction', r))}</td>
                 </tr>
               ))}</tbody>
             </table>
@@ -159,8 +199,8 @@ export default function ComputePay({ period, onSaved, onClose }: { period: { id:
         </div>
       ) : (
         <div className="form-foot">
-          {busy && <span className="muted small" role="status">{busy}</span>}
-          <button className="btn btn-line" type="button" disabled={!ready.length} onClick={() => downloadFile(`payroll ${range.start} to ${range.end}.csv`, toCsv(ready.map(toPayrollRow)))}>Download as payroll file</button>
+          {busy && sheet && <span className="muted small" role="status">{busy}</span>}
+          <button className="btn btn-line" type="button" disabled={!ready.length} onClick={() => downloadFile(`payroll ${range.start} to ${range.end}.csv`, toCsv(ready.map(toPayrollCsvRow)))}>Download as payroll file</button>
           <button className="btn" type="button" disabled={!ready.length || Boolean(busy)} aria-busy={Boolean(busy)} onClick={save}>Save {ready.length} {ready.length === 1 ? 'payslip' : 'payslips'}</button>
         </div>
       )}

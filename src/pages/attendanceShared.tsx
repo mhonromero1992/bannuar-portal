@@ -7,12 +7,18 @@ import { ATTENDANCE_KIND, ATTENDANCE_SOURCE, LOCATION_CHECK } from '../lib/label
 import { locationLine, mapsLink, needsALook, sourceLine, type AttendanceLog } from '../lib/attendance';
 import { Badge, Dialog, StatusBadge } from '../ui/kit';
 
+/** Demo records (seed-demo.sql) stand in an illustration for the photo, never a real person's. */
+const DEMO_PHOTO = /^demo\/(DEMO-\d{4})\//;
+
 /**
  * Links to the selfies of a page of logs: S3 ones (five minutes) from the files function, older ones
  * (ten minutes) from Supabase Storage, one request each. A failure only hides the photos.
  */
 export async function selfieLinks(rows: { photo_path: string | null }[]): Promise<Record<string, string>> {
-  const paths = rows.map((r) => r.photo_path).filter((p): p is string => Boolean(p));
+  const all = rows.map((r) => r.photo_path).filter((p): p is string => Boolean(p));
+  const demo = Object.fromEntries(all.flatMap((p) => { const m = DEMO_PHOTO.exec(p); return m ? [[p, `/demo/${m[1].toLowerCase()}.svg`]] : []; }));
+  const paths = all.filter((p) => !(p in demo));
+  if (!paths.length) return demo;
   const legacy = paths.filter((p) => !isS3Key(p));
   const [s3, old] = await Promise.all([
     signFiles(paths).catch(() => ({})),
@@ -20,7 +26,7 @@ export async function selfieLinks(rows: { photo_path: string | null }[]): Promis
       ? supabase.storage.from('attendance-photos').createSignedUrls(legacy, 600).then(({ data }) => data ?? []).catch(() => [])
       : Promise.resolve([]),
   ]);
-  const links: Record<string, string> = { ...s3 };
+  const links: Record<string, string> = { ...demo, ...s3 };
   for (const d of old as { path: string | null; signedUrl: string }[]) if (d.path && d.signedUrl) links[d.path] = d.signedUrl;
   return links;
 }

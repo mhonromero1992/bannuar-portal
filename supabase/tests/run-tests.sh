@@ -166,6 +166,7 @@ check "after publishing the guard sees her own payslip only" "$(as_user "$BEA" "
 check "the notification leaves the amount out" "$(pg "select body from public.notifications where user_id = '$BEA' and kind = 'payslip'")" "Oct 16 to 31"
 check "management cannot read payslips" "$(as_user "$MGMT" "select count(*) from public.payslips")" "0"
 r=$(as_user "$HR" "select public.import_payslips('$P1', '[]'::jsonb)"); check_has "a published cutoff cannot be re-imported" "$r" "published"
+pg "insert into public.payroll_periods (label, period_start, period_end, pay_date, kind) values ('13th month pay 2025', '2025-01-01', '2025-12-31', '2025-12-15', 'regular')" >/dev/null  # as made before cutoffs had kinds
 
 echo "== Leave"
 SIL=$(pg "select id from public.leave_types where code = 'SIL'")
@@ -419,6 +420,7 @@ r=$(psql $H -U postgres -v ON_ERROR_STOP=1 -q -f "$(dirname "$0")/../schema.sql"
 check "re-running schema.sql succeeds" "$r" ""
 check "and keeps every record" "$(pg "select (select count(*) from public.employees) || '/' || (select count(*) from public.notifications) || '/' || (select count(*) from public.activation_attempts) || '/' || (select count(*) from public.leave_types)")" "$before"
 check "attendance logs are kept, and still closed to direct writes" "$(pg "select count(*) from public.attendance_logs"):$(as_user "$BEA" "delete from public.attendance_logs" | grep -c 'permission denied')" "9:1"
+check "a 13th month payout made before cutoffs had kinds is marked as one" "$(pg "select kind from public.payroll_periods where label = '13th month pay 2025'")" "thirteenth_month"
 check "activation stays closed to anon after a re-run" "$(as_anon "select public.check_employee_activation('G-002', '1992-02-02', '09171110002')" | grep -c 'permission denied')" "1"
 
 echo "== Files in Amazon S3 (the database's half: who may store or open what, and under which key)"
@@ -775,17 +777,72 @@ pg "update public.payroll_periods set status = 'draft' where id = '$CUT'" >/dev/
 r=$(as_user "$BEA" "update public.duty_decisions set decision = 'count'"); check_has "decisions change only through the functions" "$r" "permission denied"
 check "every decision is in the audit log" "$(pg "select count(*) >= 3 from public.audit_log where table_name = 'duty_decisions'")" "t"
 
+echo "== Pay from attendance: paid leave in a cutoff, and the 13th month from released payroll"
+LV=$(pg "insert into public.payroll_periods (label, period_start, period_end, pay_date) values ('Leave cutoff', current_date + 4, current_date + 6, current_date + 10) returning id")
+UNPAID=$(pg "insert into public.leave_requests (employee_id, leave_type_id, start_date, end_date) values ('$EDU_EMP', '$LWOP', current_date + 4, current_date + 4) returning id")
+pg "update public.leave_requests set status = 'approved' where id = '$UNPAID'" >/dev/null
+check "approved paid leave in a cutoff, a row a day; leave without pay is not paid" "$(as_user "$PAY" "select string_agg(employee_no || ':' || (day - current_date) || ':' || share, ',' order by day) from public.cutoff_paid_leave('$LV')")" "G-002:5:1.0000,G-002:6:1.0000"
+r=$(as_user "$BEA" "select * from public.cutoff_paid_leave('$LV')"); check_has "guards do not read it" "$r" "Only payroll and HR"
+r=$(as_anon "select * from public.cutoff_paid_leave('$LV')"); check_has "nor anon" "$r" "permission denied"
+P2=$(as_user "$PAY" "insert into public.payroll_periods (label, period_start, period_end, pay_date) values ('Nov 1 to 15', '2026-11-01', '2026-11-15', '2026-11-20') returning id")
+res=$(as_user "$PAY" "select public.import_payslips('$P2', '[{\"employee_no\":\"G-002\",\"basic_pay\":\"5000\",\"earning: Paid leave\":\"800\",\"thirteenth_basic\":\"5,800\",
+  \"posts_detail\":[{\"site_id\":\"$SITE1\",\"post\":\"Post A\",\"from\":\"2026-11-01\",\"to\":\"2026-11-15\",\"rate\":\"100\",\"days\":\"5\",\"leave_days\":\"1\",\"basic\":\"5800\"}, \"junk\", {\"site_id\":\"not-a-post\",\"post\":\"Gate\",\"basic\":\"0\"}]}]'::jsonb)")
+check "Work out pay's rows import: the basic pay for the 13th month and each post's days" "$(echo "$res" | jget inserted):$(pg "select thirteenth_basic || ':' || gross_pay || ':' || jsonb_array_length(posts_detail) || ':' || (posts_detail -> 0 ->> 'leave_days') || ':' || coalesce(posts_detail -> 1 ->> 'site_id', 'none') from public.payslips where payroll_period_id = '$P2'")" "1:5800.00:5800.00:2:1.00:none"
+t13() { as_user "$PAY" "select jsonb_array_length(t -> 'cutoffs') || ' ' || coalesce((select string_agg(e.employee_no || ':' || (r ->> 'post') || ':' || (r ->> 'basic') || ':' || (r ->> 'from') || '..' || (r ->> 'to') || ':' || (r ->> 'cutoffs'), ' ' order by e.employee_no) from jsonb_array_elements(t -> 'rows') r join public.employees e on e.id = (r ->> 'employee_id')::uuid), '-') from public.thirteenth_month_released($1) t"; }
+check "the 13th month counts published cutoffs only; a payroll file's basic pay goes to the posts assigned then" "$(t13 2026)" "1 G-002:Post A:7020.00:2026-10-16..2026-10-31:1 G-003:Post A:6000.00:2026-10-16..2026-10-31:1"
+as_user "$PAY" "select public.import_payslips('$P2', '[{\"employee_no\":\"G-010\",\"basic_pay\":\"2000\"}]'::jsonb)" >/dev/null
+as_user "$PAY" "select public.publish_payroll_period('$P2')" >/dev/null
+P13=$(as_user "$PAY" "insert into public.payroll_periods (label, period_start, period_end, pay_date, kind) values ('13th month pay 2026', '2026-01-01', '2026-12-31', '2026-12-15', 'thirteenth_month') returning id")
+as_user "$PAY" "select public.import_payslips('$P13', '[{\"employee_no\":\"G-002\",\"basic_pay\":\"1068.33\"}]'::jsonb)" >/dev/null
+as_user "$PAY" "select public.publish_payroll_period('$P13')" >/dev/null
+r=$(as_user "$PAY" "select public.open_cutoff_reviews('$P13', 2)"); check_has "a 13th month payout is not sent to clients to confirm" "$r" "no duties for clients to confirm"
+NY=$(as_user "$PAY" "insert into public.payroll_periods (label, period_start, period_end, pay_date) values ('Dec 26 to Jan 10', '2026-12-26', '2027-01-10', '2027-01-15') returning id")
+as_user "$PAY" "select public.import_payslips('$NY', '[{\"employee_no\":\"G-002\",\"basic_pay\":\"1600\"}]'::jsonb)" >/dev/null
+as_user "$PAY" "select public.publish_payroll_period('$NY')" >/dev/null
+check "published: each post's days count, a slip with no post is kept, the 13th month payout is not counted, and a cutoff across new year gives 2026 its own days" "$(t13 2026)" "3 G-002:Post A:13420.00:2026-10-16..2026-12-31:3 G-003:Post A:6000.00:2026-10-16..2026-10-31:1 G-010:No post:2000.00:2026-11-01..2026-11-15:1"
+check "and 2027 the rest" "$(t13 2027)" "1 G-002:Post A:1000.00:2027-01-01..2027-01-10:1"
+check "HR admins read it; operations, guards and clients do not" "$(as_user "$HR" "select public.thirteenth_month_released(2026) is not null"):$(as_user "$OPS" "select public.thirteenth_month_released(2026)" | grep -c 'Only payroll'):$(as_user "$BEA" "select public.thirteenth_month_released(2026)" | grep -c 'Only payroll'):$(as_user "$CU" "select public.thirteenth_month_released(2026)" | grep -c 'Only payroll')" "t:1:1:1"
+r=$(as_anon "select public.thirteenth_month_released(2026)"); check_has "nor anon" "$r" "permission denied"
+
 echo "== Demo scripts still match the schema (on a second, empty database)"
 D="$(dirname "$0")/.."
 DEMO_DB="${PGDATABASE:-bannuar_test}_demo"
 DH="-h ${PGHOST:-localhost} -p ${PGPORT:-5432} -d $DEMO_DB"
 psql -h "${PGHOST:-localhost}" -p "${PGPORT:-5432}" -U postgres -d postgres -q -c "drop database if exists $DEMO_DB" -c "create database $DEMO_DB" 2>&1 | grep -v NOTICE
 pgd() { psql $DH -U postgres -tA -v ON_ERROR_STOP=1 -q -c "$1" 2>&1; }
-r=$(for f in tests/supabase-stubs.sql schema.sql seed-demo.sql demo-employee-logins.sql demo-employee-logins.sql; do psql $DH -U postgres -v ON_ERROR_STOP=1 -q -f "$D/$f" 2>&1 | grep -v 'NOTICE' || true; done)
-check "seed-demo.sql, then the demo employee logins twice" "$r" ""
-check "both demo logins link through the sign-up trigger, metadata scrubbed" "$(pgd "select string_agg(e.employee_no || '=' || (u.raw_user_meta_data ?| array['birthdate', 'mobile_no', 'activation_ticket'])::text, ',' order by e.employee_no) from public.employees e join auth.users u on u.id = e.user_id where e.employee_no like 'DEMO-%'")" "DEMO-0001=false,DEMO-0002=false"
-r=$(psql $DH -U postgres -v ON_ERROR_STOP=1 -q -f "$D/remove-demo.sql" 2>&1 | grep -v 'NOTICE' || true)
-check "remove-demo.sql clears them" "$r:$(pgd "select count(*) from public.employees where employee_no like 'DEMO-%'")" ":0"
+as_demo() { # uid sql: a signed-in user on the demo database
+  psql $DH -U postgres -tA -v ON_ERROR_STOP=1 -q -c "set role authenticated" \
+    -c "do \$\$ begin perform set_config('request.jwt.claims', '{\"sub\":\"$1\",\"role\":\"authenticated\"}', false); end \$\$" \
+    -c "$2" 2>&1 | sed '/^$/d'
+}
+run_file() { psql $DH -U postgres -v ON_ERROR_STOP=1 -q -f "$D/$1" 2>&1 | grep -v 'NOTICE' || true; }
+# (the stubs warn on a server without logical replication: that is the test server, not the scripts)
+r=$(PGOPTIONS='-c client_min_messages=error' run_file tests/supabase-stubs.sql
+    for f in schema.sql seed-demo.sql demo-employee-logins.sql demo-employee-logins.sql demo-login.sql demo-login.sql; do run_file $f; done)
+check "seed-demo.sql, then the demo logins twice each" "$r" ""
+check "both demo employee logins link through the sign-up trigger, metadata scrubbed" "$(pgd "select string_agg(e.employee_no || '=' || (u.raw_user_meta_data ?| array['birthdate', 'mobile_no', 'activation_ticket'])::text, ',' order by e.employee_no) from public.employees e join auth.users u on u.id = e.user_id where e.employee_no like 'DEMO-%'")" "DEMO-0001=false,DEMO-0002=false"
+N=$(pgd "select (select count(*) from public.attendance_logs) || ':' || (select count(*) from public.payslips)")
+r=$(run_file seed-demo.sql); check "seed-demo.sql run again leaves the demo as it is" "$r:$(pgd "select (select count(*) from public.attendance_logs) || ':' || (select count(*) from public.payslips)")" ":$N"
+DEMO_CLIENT=$(pgd "select id from auth.users where email = 'client@ibits.digital'")
+check "the demo client login belongs to the demo client, with no staff role" "$(pgd "select c.name || ':' || (select count(*) from public.user_roles r where r.user_id = cu.user_id) from public.client_users cu join public.clients c on c.id = cu.client_id where cu.user_id = '$DEMO_CLIENT'")" "Demo Client Corporation:0"
+check "the demo client sees its posts and the cutoff waiting for it, not the payslips" "$(as_demo "$DEMO_CLIENT" "select (select count(*) from public.sites) || ':' || (select count(*) from jsonb_array_elements(public.client_cutoffs()) c where c ->> 'status' = 'waiting') || ':' || (select count(*) from public.payslips)")" "3:1:0"
+# every published payslip, the draft cutoff and the 13th month against the portal's pay engine
+if command -v node >/dev/null; then
+  r=$(DEMO_PSQL="psql $DH -U postgres" node "$D/tests/seed-check.mjs" 2>&1)
+  echo "$r" | grep -v '^SEED-CHECK'
+  n=$(echo "$r" | sed -nE 's/^SEED-CHECK pass=([0-9]+) fail=([0-9]+)$/\1 \2/p')
+  if [[ -n "$n" ]]; then PASS=$((PASS + ${n% *})); FAIL=$((FAIL + ${n#* })); else FAIL=$((FAIL+1)); echo "  FAIL seed-check.mjs did not finish"; fi
+else
+  FAIL=$((FAIL+1)); echo "  FAIL seed-check.mjs needs Node 22.18 or newer"
+fi
+r=$(run_file remove-demo.sql)
+check_has "remove-demo.sql keeps the demo admin while it is the only super admin, and says so" "$r:$(pgd "select count(*) from auth.users where email = 'bannuar@ibits.digital'")" "still your only super admin"
+check "remove-demo.sql takes out every demo record and the demo client login" "$(pgd "select (select count(*) from public.employees) || ':' || (select count(*) from public.payroll_periods) || ':' || (select count(*) from public.payslips) || ':' || (select count(*) from public.attendance_logs) || ':' || (select count(*) from public.clients) || ':' || (select count(*) from public.sites) || ':' || (select count(*) from public.pay_rules where client_id is not null) || ':' || (select count(*) from auth.users where email <> 'bannuar@ibits.digital') || ':' || (select count(*) from public.staff_invitations where client_id is not null)")" "0:0:0:0:0:0:0:0:0"
+# once a real super admin signs in, running it again removes the demo admin too
+pgd "insert into public.staff_invitations (email, full_name, roles, code, expires_at) values ('owner@bannuar.test', 'Real Owner', '{super_admin}', 'REAL-0001', now() + interval '1 hour')" >/dev/null
+pgd "insert into auth.users (email, raw_user_meta_data) values ('owner@bannuar.test', '{\"invite_code\":\"REAL-0001\"}')" >/dev/null
+r=$(run_file remove-demo.sql)
+check "with a real super admin, remove-demo.sql removes the demo admin and keeps theirs" "$r:$(pgd "select string_agg(u.email, ',') from auth.users u join public.user_roles r on r.user_id = u.id and r.role = 'super_admin'")" ":owner@bannuar.test"
 psql -h "${PGHOST:-localhost}" -p "${PGPORT:-5432}" -U postgres -d postgres -q -c "drop database if exists $DEMO_DB" 2>&1 | grep -v NOTICE
 
 echo

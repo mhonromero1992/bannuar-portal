@@ -238,10 +238,21 @@ console.log('HR portal');
   await shots.take('hr-import', { template: dlg().getByRole('button', { name: 'Download the template' }), file: dlg().getByLabel('Payroll file (CSV)') });
   await page.keyboard.press('Escape');
   await sleep(300);
+  // the client rule deducts SSS, PhilHealth and Pag-IBIG, as the demo rule does (seed-demo.sql)
+  T.pay_rules.find((r) => r.name === 'Acme Mart standard').formulas.push(
+    { code: 'sss', label: 'SSS', formula: 'min(max(round((basic + overtime + night_diff) * 2 / 500) * 500, 5000), 35000) * 5% / 2', kind: 'deduction', thirteenth: false },
+    { code: 'philhealth', label: 'PhilHealth', formula: 'min(max(basic * 2, 10000), 100000) * 2.5% / 2', kind: 'deduction', thirteenth: false },
+    { code: 'pagibig', label: 'Pag-IBIG', formula: 'min(basic * 2, 10000) * 2% / 2', kind: 'deduction', thirteenth: false });
+  // both guards on duty in the cutoff for the picture, Bea with a day of approved leave on the 5th
+  const novDays = (list) => list.map((d) => `2026-11-${String(d).padStart(2, '0')}`);
+  RPC.cutoff_counted_duties = () => [
+    { employee_id: 'e2', employee_no: 'G-002', site_id: 's1', dates: novDays([1, 2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 15]), hours: 144 },
+    { employee_id: 'e1', employee_no: 'G-001', site_id: 's3', dates: novDays([1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 15]), hours: 156 },
+  ];
   await page.getByRole('button', { name: 'Work out pay' }).click();
-  await dlg().getByText('Payslips ready').waitFor();
+  await dlg().getByText('from the time in and out').waitFor();
   await sleep(500);
-  await shots.take('hr-work-out-pay', { ready: dlg().locator('.tiles'), fill: dlg().getByRole('button', { name: 'Fill the days from time in and out' }), sheet: dlg().getByRole('button', { name: 'Download the attendance sheet' }), save: dlg().getByRole('button', { name: /^Save \d+ payslip/ }) });
+  await shots.take('hr-work-out-pay', { ready: dlg().locator('.tiles'), logs: dlg().locator('h3 + p').first(), schedule: dlg().getByRole('button', { name: 'Use the schedule instead' }), sheet: dlg().getByRole('button', { name: 'Download the attendance sheet' }), save: dlg().getByRole('button', { name: /^Save \d+ payslip/ }) });
   await page.keyboard.press('Escape');
   await go('/payroll/13th-month');
   await page.getByText('Dante Cruz').first().waitFor();

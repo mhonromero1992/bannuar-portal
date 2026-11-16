@@ -451,6 +451,11 @@ a.tile:hover { box-shadow: var(--shadow-hover); transform: translateY(-2px); }
 .tl-bar:focus-visible { box-shadow: none; }
 .tl-bar:focus-visible .tl-mark { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--ink); }
 .tl-bar.is-dim .tl-mark { background: #d5d9df; }
+/* days not paid yet: a light, striped tint of the post's colour with an outline, dark text */
+.tl-bar.is-projected .tl-mark { background: color-mix(in srgb, var(--bar) 16%, #fff); color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--bar); background-image: repeating-linear-gradient(135deg, transparent 0 7px, color-mix(in srgb, var(--bar) 12%, transparent) 7px 9px); }
+.tl-bar.is-projected.is-dim .tl-mark { background: #eef0f3; box-shadow: inset 0 0 0 1.5px #c4c9d0; }
+.tl-swatch--released { background: var(--ink); }
+.tl-swatch--projected { background: color-mix(in srgb, var(--ink) 10%, #fff); box-shadow: inset 0 0 0 1.5px var(--ink); }
 .tl-bar.is-picked .tl-mark { box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--bar); }
 .tl-mark.is-tight { padding: 0 4px; justify-content: center; }
 .tl-amt { font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.005em; }

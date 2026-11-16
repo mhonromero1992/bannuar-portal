@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   parseFormula, evaluate, compileLines, runLines, nightOverlap, nightHoursPerDuty, dutyVariables, monthsCovered,
   scheduledDays, thirteenthMonth, scheduleSheet, readSheet, computePay, toPayrollRow, toCsv, ruleFor, rateBook, VARIABLES, shiftSlots, timeLabel,
+  uncovered, thirteenthFromPayroll, toPayrollCsvRow, thirteenthBasic,
 } from '../src/lib/pay.ts';
 
 const NAMES = new Set(VARIABLES.map((v) => v.name));
@@ -195,3 +196,86 @@ test('shift choices for 8, 12 and 24-hour duties', () => {
   assert.equal(timeLabel('00:00'), '12:00 AM');
   assert.equal(timeLabel('12:30'), '12:30 PM');
 });
+
+// ---------------------------------------------------------------------------------- pay from attendance, and the 13th month as released
+const DEDUCTIONS = [
+  { code: 'sss', label: 'SSS', formula: 'min(max(round((basic + overtime + night_diff) * 2 / 500) * 500, 5000), 35000) * 5% / 2', kind: 'deduction' },
+  { code: 'philhealth', label: 'PhilHealth', formula: 'min(max(basic * 2, 10000), 100000) * 2.5% / 2', kind: 'deduction' },
+  { code: 'pagibig', label: 'Pag-IBIG', formula: 'min(basic * 2, 10000) * 2% / 2', kind: 'deduction' },
+];
+
+test('a cutoff with paid leave: paid at the basic rate, counted for the 13th month, never twice', () => {
+  const row = { employee_no: 'DEMO-0001', post: 'Area3', site_id: 'a3', from: '2026-11-01', to: '2026-11-15', days: 11, leave_days: 2, duty_hours: 12, shift_start: '06:00' };
+  const [pay] = computePay([row], [juan], posts, [rule()], rates);
+  assert.deepEqual(pay.problems, []);
+  const leave = pay.lines.find((l) => l.code === 'paid_leave');
+  assert.equal(leave.amount, 150 * 8 * 2, 'two days at ₱150 × 8 regular hours');
+  assert.equal(leave.thirteenth, true);
+  assert.equal(thirteenthBasic(pay.lines), 150 * 8 * 11 + 2400, 'basic pay and paid leave count; overtime does not');
+  const out = toPayrollRow(pay);
+  assert.equal(out.days_worked, 13, 'days on the payslip include the paid leave');
+  assert.equal(out['earning: Paid leave'], 2400);
+  assert.equal(out.thirteenth_basic, 15600);
+  assert.deepEqual(out.posts_detail, [{ site_id: 'a3', post: 'Area3', from: '2026-11-01', to: '2026-11-15', rate: 150, days: 11, leave_days: 2, basic: 15600 }]);
+  assert.match(out.remarks, /11 duties of 12 hours and 2 days of paid leave at ₱150.00/);
+  assert.equal('posts_detail' in toPayrollCsvRow(pay), false, 'the spreadsheet keeps the posts in the remarks');
+  const back = readSheet([{ employee_no: 'DEMO-0001', post: 'Area3', from: '2026-11-01', to: '2026-11-15', days: '0', leave_days: '16', duty_hours: '12' }], { start: '2026-11-01', end: '2026-11-15' });
+  assert.match(back.errors[0]?.message ?? '', /16 days of leave do not fit between 2026-11-01 and 2026-11-15/);
+});
+
+test('deduction lines of a rule fill the payslip\'s SSS, PhilHealth and Pag-IBIG columns', () => {
+  const r = rule({ formulas: [...STANDARD, ...DEDUCTIONS] });
+  const row = { employee_no: 'DEMO-0001', post: 'Area1', site_id: 'a1', from: '2026-03-01', to: '2026-03-15', days: 13, duty_hours: 12, shift_start: '06:00' };
+  const [pay] = computePay([row], [juan], posts, [r], rates);
+  // basic 100 × 8 × 13 = 10,400; overtime 100 × 125% × 52 = 6,500; monthly 33,800 → MSC ₱34,000 → SSS 1,700 a month
+  assert.deepEqual(pay.lines.filter((l) => l.kind === 'deduction').map((l) => [l.code, l.amount]), [['sss', 850], ['philhealth', 260], ['pagibig', 100]]);
+  const out = toPayrollRow(pay);
+  assert.equal(out.sss, 850);
+  assert.equal(out.philhealth, 260);
+  assert.equal(out.pagibig, 100);
+  assert.equal(out['deduction: SSS'], undefined);
+});
+
+test('the days of a year no released cutoff covers', () => {
+  assert.deepEqual(uncovered(2026, []), [{ from: '2026-01-01', to: '2026-12-31' }]);
+  const halves = [];
+  for (let m = 1; m <= 10; m++) {
+    const mm = String(m).padStart(2, '0');
+    halves.push({ from: `2026-${mm}-01`, to: `2026-${mm}-15` }, { from: `2026-${mm}-16`, to: new Date(Date.UTC(2026, m, 0)).toISOString().slice(0, 10) });
+  }
+  assert.deepEqual(uncovered(2026, halves), [{ from: '2026-11-01', to: '2026-12-31' }]);
+  assert.deepEqual(uncovered(2026, halves.filter((h) => h.from !== '2026-06-01')), [{ from: '2026-06-01', to: '2026-06-15' }, { from: '2026-11-01', to: '2026-12-31' }], 'a cutoff not published yet in the middle of the year');
+  assert.deepEqual(uncovered(2026, [{ from: '2025-12-16', to: '2026-01-15' }]), [{ from: '2026-01-16', to: '2026-12-31' }], 'a cutoff that starts the year before');
+});
+
+test('13th month from released payroll: what was paid, post by post, then the rest projected', () => {
+  const halves = [];
+  for (let m = 1; m <= 10; m++) {
+    const mm = String(m).padStart(2, '0');
+    halves.push({ from: `2026-${mm}-01`, to: `2026-${mm}-15` }, { from: `2026-${mm}-16`, to: new Date(Date.UTC(2026, m, 0)).toISOString().slice(0, 10) });
+  }
+  // what published cutoffs paid DEMO-0001: 26 duties a month at Area1 and Area2, except 2 duties he missed in June
+  const released = { cutoffs: halves, rows: [
+    { employee_id: 'e1', site_id: 'a1', post: 'Area1', from: '2026-01-01', to: '2026-03-31', basic: 62400, cutoffs: 6 },
+    { employee_id: 'e1', site_id: 'a2', post: 'Area2', from: '2026-04-01', to: '2026-10-31', basic: 131040 - 2 * 720, cutoffs: 14 },
+  ] };
+  const [row] = thirteenthFromPayroll(2026, released, [juan], history, posts, [rule()], rates);
+  assert.deepEqual(row.pieces.map((p) => [p.kind, p.post, p.from, p.to, p.basic, p.share]), [
+    ['released', 'Area1', '2026-01-01', '2026-03-31', 62400, 5200],
+    ['released', 'Area2', '2026-04-01', '2026-10-31', 129600, 10800],
+    ['projected', 'Area3', '2026-11-01', '2026-12-31', 62400, 5200],
+  ]);
+  assert.equal(row.released, 16000);
+  assert.equal(row.projected, 5200);
+  assert.equal(row.amount, 21200, 'the 2 missed duties lower it from the schedule\'s ₱21,320');
+  // a guard with no assignment left this year, paid in January only
+  const pedro = { id: 'e9', employee_no: 'DEMO-0009', name: 'Pedro', date_hired: '2020-01-01', date_separated: '2026-01-31' };
+  const [gone] = thirteenthFromPayroll(2026, { cutoffs: halves, rows: [{ employee_id: 'e9', site_id: null, post: 'No post', from: '2026-01-01', to: '2026-01-31', basic: 18000, cutoffs: 2 }] }, [pedro], [], posts, [rule()], rates);
+  assert.equal(gone.amount, 1500);
+  assert.equal(gone.projected, 0);
+  // nothing published yet: all projected, the same as the schedule
+  const [early] = thirteenthFromPayroll(2026, { cutoffs: [], rows: [] }, [juan], history, posts, [rule()], rates);
+  assert.equal(early.amount, 21320);
+  assert.equal(early.released, 0);
+});
+

@@ -81,7 +81,10 @@ function labelFor(p: ThirteenthPiece, px: number): { amount: string; post: strin
 function describe(r: ThirteenthRow, p: ThirteenthPiece): string {
   const when = `${fmtDate(p.from)} to ${fmtDate(p.to)}`;
   if (p.problem) return `${r.person.name}, ${p.post}, ${when}: not worked out yet. ${p.problem}.`;
-  return `${r.person.name}, ${p.post}, ${when}, ${p.rate === null ? '' : `${fmtMoney(p.rate)} an hour, `}13th month ${fmtMoney(p.share)}`;
+  const source = p.kind === 'released'
+    ? `released by ${p.cutoffs} published ${p.cutoffs === 1 ? 'cutoff' : 'cutoffs'}`
+    : `projected, ${roundTo(p.days, 2)} duty days${p.rate === null ? '' : ` at ${fmtMoney(p.rate)} an hour`}`;
+  return `${r.person.name}, ${p.post}, ${when}, ${source}, 13th month ${fmtMoney(p.share)}`;
 }
 
 interface Tip { row: ThirteenthRow; piece: ThirteenthPiece; slot: Slot; x: number; y: number }
@@ -107,6 +110,7 @@ export function ThirteenthTimeline({ year, rows, allRows, open, onToggle, render
   const axisRef = useRef<HTMLDivElement>(null);
   const [trackPx, setTrackPx] = useState(0);
   const hasProblems = rows.some((r) => r.problems.length);
+  const hasProjected = rows.some((r) => r.pieces.some((p) => p.kind === 'projected'));
 
   useLayoutEffect(() => {
     const el = axisRef.current;
@@ -164,7 +168,7 @@ export function ThirteenthTimeline({ year, rows, allRows, open, onToggle, render
       <figcaption className="tl-head">
         <div>
           <h2 id="tl-title">Where each employee worked in {year}</h2>
-          <p className="muted small">Each bar is a stretch at one post and one hourly rate, marked with its pro-rated 13th month; the total for the year is at the right. Point at a bar for its dates and rate, or open "How" for the working.</p>
+          <p className="muted small">Each bar is a stretch at one post, marked with its 13th month: solid for basic pay that published cutoffs released, outlined and striped for days not paid yet, projected from the assignment. The total for the year is at the right. Point at a bar for its dates, or open "How" for the working.</p>
         </div>
         <div className="tl-legend" role="group" aria-label={shared ? 'Pick out a post' : 'Posts'}>
           {posts.map((p) => (
@@ -180,6 +184,8 @@ export function ThirteenthTimeline({ year, rows, allRows, open, onToggle, render
               <span className="tl-swatch" style={{ background: p.slot.fill }} aria-hidden="true" />{p.name}
             </button>
           ))}
+          <span className="tl-key is-static"><span className="tl-swatch tl-swatch--released" aria-hidden="true" />Released</span>
+          {hasProjected && <span className="tl-key is-static"><span className="tl-swatch tl-swatch--projected" aria-hidden="true" />Projected</span>}
           {hasProblems && <span className="tl-key is-static"><span className="tl-swatch tl-swatch--problem" aria-hidden="true">!</span>Needs a rate or rule</span>}
           {todayPct !== null && <span className="tl-key is-static"><span className="tl-swatch tl-swatch--today" aria-hidden="true" />Today</span>}
         </div>
@@ -219,7 +225,7 @@ export function ThirteenthTimeline({ year, rows, allRows, open, onToggle, render
                           <button
                             key={`${p.from}-${i}`}
                             type="button"
-                            className={`tl-bar${dim ? ' is-dim' : ''}${picked === p.site_id ? ' is-picked' : ''}`}
+                            className={`tl-bar${p.kind === 'projected' ? ' is-projected' : ''}${dim ? ' is-dim' : ''}${picked === p.site_id ? ' is-picked' : ''}`}
                             style={{ left: `calc(${left}% + 1px)`, width: `calc(${width}% - 2px)`, '--bar': slot.fill, '--bar-ink': slot.ink } as CSSProperties}
                             aria-label={describe(r, p)}
                             aria-expanded={isOpen}
@@ -256,8 +262,10 @@ export function ThirteenthTimeline({ year, rows, allRows, open, onToggle, render
           <span className="tl-tip-value">{tip.piece.problem ? 'Not worked out yet' : fmtMoney(tip.piece.share)}<small>{tip.piece.problem ? '' : ' 13th month'}</small></span>
           <span className="tl-tip-post"><i style={{ background: tip.slot.fill }} aria-hidden="true" />{tip.piece.post}</span>
           <span>{fmtDate(tip.piece.from)} to {fmtDate(tip.piece.to)} · {roundTo(tip.piece.months, 2)} {tip.piece.months === 1 ? 'month' : 'months'}</span>
-          {tip.piece.problem ? <span className="tl-tip-problem">{tip.piece.problem}</span> : (
-            <span>{tip.piece.rate === null ? '' : `${fmtMoney(tip.piece.rate)} an hour · `}basic pay {fmtMoney(tip.piece.basic)}</span>
+          {tip.piece.problem ? <span className="tl-tip-problem">{tip.piece.problem}</span> : tip.piece.kind === 'released' ? (
+            <span>Released by {tip.piece.cutoffs} published {tip.piece.cutoffs === 1 ? 'cutoff' : 'cutoffs'} · basic pay {fmtMoney(tip.piece.basic)}</span>
+          ) : (
+            <span>Projected: {roundTo(tip.piece.days, 2)} duty days{tip.piece.rate === null ? '' : ` at ${fmtMoney(tip.piece.rate)} an hour`} · basic pay {fmtMoney(tip.piece.basic)}</span>
           )}
           <span className="tl-tip-who">{tip.row.person.name}</span>
         </div>

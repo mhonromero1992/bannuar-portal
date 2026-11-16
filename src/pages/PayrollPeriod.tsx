@@ -70,6 +70,8 @@ export default function PayrollPeriod() {
   if (period.error || !period.data) return <ErrorState error={errorText(period.error)} />;
   const p = period.data;
   const draft = p.status === 'draft';
+  // a 13th month payout is made on the 13th month page, not from a cutoff's time in and out
+  const payout = p.kind === 'thirteenth_month';
   return (
     <>
       <Link className="back" to="/payroll">← Payroll</Link>
@@ -79,7 +81,7 @@ export default function PayrollPeriod() {
           <p className="row" style={{ marginTop: 8 }}><StatusBadge map={PERIOD_STATUS} value={p.status} /> · Pay date {fmtDate(p.pay_date)}{p.published_at && ` · published ${fmtDateTime(p.published_at)}`}</p>
         </div>
         <div className="page-actions">
-          {draft && <button className="btn btn-line" type="button" onClick={() => setComputing(true)}>Work out pay</button>}
+          {draft && !payout && <button className="btn btn-line" type="button" onClick={() => setComputing(true)}>Work out pay</button>}
           {draft && <button className="btn btn-line" type="button" onClick={() => setImporting(true)}>Import the payroll file</button>}
           {draft ? <button className="btn" type="button" disabled={!totals.data?.n} onClick={() => publish(true)}>Publish to employees</button> : <button className="btn btn-line" type="button" onClick={() => publish(false)}>Unpublish</button>}
         </div>
@@ -89,11 +91,13 @@ export default function PayrollPeriod() {
         <div className="tile"><span className="label">Gross pay</span><span className="big" style={{ fontSize: 26 }}>{fmtMoney(totals.data?.gross ?? 0)}</span></div>
         <div className="tile night on-night"><span className="label">Net pay</span><span className="big" style={{ fontSize: 26 }}>{fmtMoney(totals.data?.net ?? 0)}</span></div>
       </div>
-      <div style={{ marginBottom: 16 }}><CutoffReview periodId={id} draft={draft} /></div>
+      {payout
+        ? <p className="callout" style={{ marginBottom: 16 }}>This is a <b>13th month payout</b>, made on <Link to="/payroll/13th-month">Payroll → 13th month</Link> from the year's released payroll{draft ? '. To change it, make the payout again there: it replaces these payslips' : ''}.</p>
+        : <div style={{ marginBottom: 16 }}><CutoffReview periodId={id} draft={draft} /></div>}
       <div className="panel">
         <div className="toolbar"><Search value={text} onChange={setText} label="Search by name or employee number" /></div>
         {slips.isLoading ? <Loading /> : slips.error ? <ErrorState error={errorText(slips.error)} retry={() => slips.refetch()} /> : !slips.data?.rows.length ? (
-          <Empty title={s ? 'No payslip matches' : 'No payslips in this cutoff yet'}>{!s && draft ? 'Work out the pay from the assignments, or import the payroll file.' : null}</Empty>
+          <Empty title={s ? 'No payslip matches' : 'No payslips in this cutoff yet'}>{!s && draft ? (payout ? 'Make the payout on Payroll → 13th month.' : 'Work out the pay from the time in and out, or import the payroll file.') : null}</Empty>
         ) : (
           <div className="table-wrap">
             <table className="table">

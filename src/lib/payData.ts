@@ -1,6 +1,6 @@
 import { supabase } from './supabase';
 import { fullName } from './format';
-import type { Assignment, PayRate, PayRule, Person, Post } from './pay';
+import type { Assignment, PayRate, PayRule, Person, Post, ReleasedBasis } from './pay';
 
 /** Supabase answers at most 1,000 rows a request: read a whole list page by page. */
 export async function fetchAll<T>(page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>): Promise<T[]> {
@@ -68,7 +68,7 @@ export async function readCsv(file: File): Promise<{ rows: Record<string, string
 interface ImportResult { inserted: number; updated: number; errors: { row: number; employee_no?: string; message: string }[] }
 
 /** Save payroll rows into a cutoff through import_payslips, 500 at a time. */
-export async function savePayslips(periodId: string, rows: Record<string, string | number>[], progress?: (text: string) => void): Promise<ImportResult> {
+export async function savePayslips(periodId: string, rows: Record<string, unknown>[], progress?: (text: string) => void): Promise<ImportResult> {
   const total: ImportResult = { inserted: 0, updated: 0, errors: [] };
   for (let i = 0; i < rows.length; i += 500) {
     progress?.(`Saving ${i + 1} to ${Math.min(rows.length, i + 500)} of ${rows.length}…`);
@@ -80,4 +80,12 @@ export async function savePayslips(periodId: string, rows: Record<string, string
     total.errors.push(...r.errors.map((x) => ({ ...x, row: x.row + i })));
   }
   return total;
+}
+
+/** What the year's published cutoffs paid, by employee and post (payroll only). */
+export async function loadReleased(year: number): Promise<ReleasedBasis> {
+  const { data, error } = await supabase.rpc('thirteenth_month_released', { p_year: year });
+  if (error) throw error;
+  const d = (data ?? {}) as Partial<ReleasedBasis>;
+  return { cutoffs: d.cutoffs ?? [], rows: (d.rows ?? []).map((r) => ({ ...r, basic: Number(r.basic), cutoffs: Number(r.cutoffs) })) };
 }

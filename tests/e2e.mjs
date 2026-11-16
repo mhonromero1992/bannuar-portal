@@ -222,6 +222,20 @@ const RPC = {
   cutoff_counted_duties: () => [
     { employee_id: 'e2', employee_no: 'G-002', site_id: 's1', dates: ['2026-11-03', '2026-11-04', '2026-11-06'], hours: 36 },
     { employee_id: 'e9', employee_no: 'G-009', site_id: 's2', dates: ['2026-11-06'], hours: 12 }],
+  cutoff_paid_leave: () => [{ employee_id: 'e2', employee_no: 'G-002', day: '2026-11-05', share: 1 }],
+  // published cutoffs Jan 1 to Oct 31: Dante at Post A then B (the DEMO-0001 example), Bea at Post A with two days missed
+  thirteenth_month_released: () => ({
+    cutoffs: Array.from({ length: 20 }, (_, i) => {
+      const m = String(Math.floor(i / 2) + 1).padStart(2, '0');
+      const last = new Date(Date.UTC(2026, Math.floor(i / 2) + 1, 0)).getUTCDate();
+      return i % 2 ? { from: `2026-${m}-16`, to: `2026-${m}-${last}` } : { from: `2026-${m}-01`, to: `2026-${m}-15` };
+    }),
+    rows: [
+      { employee_id: 'e1', site_id: 's1', post: 'Post A · Main Gate', from: '2026-01-01', to: '2026-03-31', basic: 62400, cutoffs: 6 },
+      { employee_id: 'e1', site_id: 's2', post: 'Post B · Warehouse', from: '2026-04-01', to: '2026-10-31', basic: 131040, cutoffs: 14 },
+      { employee_id: 'e2', site_id: 's1', post: 'Post A · Main Gate', from: '2026-01-01', to: '2026-10-31', basic: 206400, cutoffs: 20 },
+    ],
+  }),
   decide_duty: () => null,
   open_cutoff_reviews: () => 1,
   client_cutoffs: () => [{ period_id: 'p1', label: 'Nov 1 to 15, 2026', start: '2026-11-01', end: '2026-11-15', due_at: new Date(Date.now() + 2 * 86400000).toISOString(), responded_at: null, responder: null, note: null, disputed: 0, status: 'waiting' }],
@@ -626,10 +640,13 @@ const danteBars = page.getByRole('button', { name: /^Dante Cruz, / });
 await danteBars.first().waitFor();
 check('13th month: the timeline opens first', (await page.getByRole('tab', { name: 'Timeline' }).getAttribute('aria-selected')) === 'true');
 const barNames = await danteBars.evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')));
-check('13th month timeline: a bar for each stretch, named with its post, dates, rate and share', barNames.length === 3
-  && /^Dante Cruz, Post A · Main Gate, Jan 1, 2026 to Mar 31, 2026, ₱100\.00 an hour, 13th month ₱5,200\.00$/.test(barNames[0])
-  && /Post B · Warehouse, Apr 1, 2026 to Oct 31, 2026, ₱90\.00 an hour, 13th month ₱10,920\.00$/.test(barNames[1])
-  && /Post C · Lobby, Nov 1, 2026 to Dec 31, 2026, ₱150\.00 an hour, 13th month ₱5,200\.00$/.test(barNames[2]), barNames.join(' | '));
+check('13th month timeline: a bar for each stretch, named with its post, dates, where it comes from and its share', barNames.length === 3
+  && /^Dante Cruz, Post A · Main Gate, Jan 1, 2026 to Mar 31, 2026, released by 6 published cutoffs, 13th month ₱5,200\.00$/.test(barNames[0])
+  && /Post B · Warehouse, Apr 1, 2026 to Oct 31, 2026, released by 14 published cutoffs, 13th month ₱10,920\.00$/.test(barNames[1])
+  && /Post C · Lobby, Nov 1, 2026 to Dec 31, 2026, projected, 52 duty days at ₱150\.00 an hour, 13th month ₱5,200\.00$/.test(barNames[2]), barNames.join(' | '));
+check('13th month timeline: projected days look different from released pay, with a key', (await page.locator('.tl-bar.is-projected').count()) === 2 && (await page.locator('.tl-key', { hasText: 'Projected' }).count()) === 1 && (await page.locator('.tl-key', { hasText: 'Released' }).count()) === 1);
+const tiles13 = (await page.locator('.tiles').innerText()).replace(/\s+/g, ' ');
+check('13th month: what published payroll released, and what is projected, apart, with their days', /From released payroll ₱33,320\.00 20 published cutoffs, Jan 1 to Oct 31/i.test(tiles13) && /Projected ₱8,666\.67 Nov 1 to Dec 31, not paid yet/i.test(tiles13) && /₱41,986\.67/.test(tiles13), tiles13);
 const barText = await danteBars.evaluateAll((els) => els.map((e) => e.innerText.replace(/\s+/g, ' ').trim()));
 const danteTotal = await page.locator('.tl-row', { hasText: 'Dante Cruz' }).locator('.tl-line > .tl-amount').innerText();
 check('13th month timeline: each bar shows its pro-rated 13th month, the total at the right', barText[0].startsWith('₱5,200.00') && barText[1].startsWith('₱10,920.00') && /₱(5,200\.00|5\.2K)/.test(barText[2]) && /₱21,320\.00/.test(danteTotal), `${barText.join(' | ')} = ${danteTotal}`);
@@ -641,9 +658,9 @@ const barGeometry = await page.evaluate(() => {
 check('13th month timeline: each bar sits on the year by its dates (April 1 to October 31)', Math.abs(barGeometry[1][0] - 90 / 365) < 0.01 && Math.abs(barGeometry[1][1] - 304 / 365) < 0.01, JSON.stringify(barGeometry));
 await danteBars.nth(1).hover();
 const tipText = await page.locator('.tl-tip').innerText();
-check('13th month timeline: pointing at a bar shows its share and its working', /₱10,920\.00/.test(tipText) && /Post B · Warehouse/.test(tipText) && /₱90\.00 an hour/.test(tipText), tipText.replace(/\s+/g, ' '));
+check('13th month timeline: pointing at a bar shows its share and where it comes from', /₱10,920\.00/.test(tipText) && /Post B · Warehouse/.test(tipText) && /Released by 14 published cutoffs · basic pay ₱131,040\.00/.test(tipText), tipText.replace(/\s+/g, ' '));
 await page.getByRole('group', { name: 'Posts' }).getByRole('button', { name: 'Post C · Lobby' }).click();
-check('13th month timeline: the legend picks out one post', (await page.locator('.tl-bar.is-picked').count()) === 1 && (await page.locator('.tl-bar.is-dim').count()) === 3);
+check('13th month timeline: the legend picks out one post', (await page.locator('.tl-bar.is-picked').count()) === 1 && (await page.locator('.tl-bar.is-dim').count()) === 4);
 await page.locator('.tl-row', { hasText: 'Dante Cruz' }).getByRole('button', { name: 'How' }).click();
 check('13th month timeline: "How" opens the working under the row', /₱21,320\.00/.test(await page.locator('.tl-more').innerText()));
 await page.locator('.tl-row', { hasText: 'Dante Cruz' }).getByRole('button', { name: 'Hide' }).click();
@@ -654,15 +671,23 @@ const dante = page.getByRole('row', { name: /Dante Cruz/ });
 await dante.waitFor();
 check('13th month: pro-rated at each post and added up (the DEMO-0001 example)', /₱21,320\.00/.test(await dante.innerText()), (await dante.innerText()).replace(/\s+/g, ' '));
 await dante.getByRole('button', { name: 'How' }).click();
-const how = await page.locator('td[colspan="5"]').innerText();
-check('13th month: the breakdown shows each post, rate and share', /₱5,200\.00/.test(how) && /₱10,920\.00/.test(how) && /₱150\.00/.test(how) && /₱62,400\.00/.test(how), how.replace(/\s+/g, ' ').slice(0, 300));
+const how = await page.locator('td[colspan="6"]').innerText();
+check('13th month: the breakdown shows each post, released or projected, and its share', /₱5,200\.00/.test(how) && /₱10,920\.00/.test(how) && /₱150\.00/.test(how) && /₱62,400\.00/.test(how) && /Released\s*6 published cutoffs/.test(how) && /Projected\s*52 duty days at ₱150\.00 an hour/.test(how), how.replace(/\s+/g, ' ').slice(0, 400));
 await page.getByRole('button', { name: 'Create the payout cutoff' }).click();
+const payoutDialog = page.locator('dialog[open]');
+const includeProjected = payoutDialog.getByRole('checkbox', { name: /Include the projected days \(Nov 1, 2026 to Dec 31, 2026\)/ });
+check('13th month payout: the projected days are included unless payroll leaves them out', await includeProjected.isChecked());
+await includeProjected.uncheck();
+check('13th month payout: left out, only what published cutoffs released is paid', /₱33,320\.00 in all/.test(await payoutDialog.innerText()), (await payoutDialog.innerText()).replace(/\s+/g, ' ').slice(0, 200));
+await includeProjected.check();
 await page.getByRole('button', { name: 'Create the payout', exact: true }).click();
 await page.waitForURL(/\/payroll\/new-/);
 const payout = rpcCalls('import_payslips').at(-1)?.body;
 check('13th month: the payout cutoff gets a 13th month line for each employee', payout?.p_rows.some((r) => r.employee_no === 'G-001' && r['earning: 13th month pay'] === 21320) && payout?.p_rows.some((r) => r.employee_no === 'G-002'), JSON.stringify(payout?.p_rows?.[0]));
 const payoutPeriod = requests.find((r) => r.method === 'POST' && r.path === '/rest/v1/payroll_periods' && r.body.label === '13th month pay 2026');
-check('13th month: the payout is due by 24 December', payoutPeriod?.body.pay_date === '2026-12-24' && payoutPeriod?.body.period_start === '2026-01-01');
+check('13th month: the payout is due by 24 December, as a 13th month cutoff', payoutPeriod?.body.pay_date === '2026-12-24' && payoutPeriod?.body.period_start === '2026-01-01' && payoutPeriod?.body.kind === 'thirteenth_month');
+const danteLine = payout?.p_rows.find((r) => r.employee_no === 'G-001');
+check('13th month: each payslip says which part was released and which projected', /Post A · Main Gate, Jan 1, 2026 to Mar 31, 2026 \(released\): ₱5,200\.00/.test(danteLine?.remarks) && /Post C · Lobby, Nov 1, 2026 to Dec 31, 2026 \(projected\): ₱5,200\.00/.test(danteLine?.remarks), danteLine?.remarks);
 
 await page.goto(`${BASE}/payroll/p1`);
 const tio = page.getByLabel('Time in and out');
@@ -678,20 +703,33 @@ check('cutoff: clients are asked to confirm within two days', JSON.stringify(rpc
 await page.getByRole('button', { name: 'Work out pay' }).click();
 const work = page.locator('dialog[open]');
 await work.getByText('Payslips ready').waitFor();
+await work.getByText('from the time in and out').waitFor();
 await page.screenshot({ path: `${ROOT}tests/shots/work-out-pay.png` });
-check('work out pay: everyone on duty in the cutoff', /Payslips ready\s*2\b/i.test(await work.innerText()), (await work.locator('.tiles').innerText()).replace(/\s+/g, ' '));
+check('work out pay: it starts from the time in and out, without asking', rpcCalls('cutoff_counted_duties').some((r) => r.body.p_period_id === 'p1') && rpcCalls('cutoff_paid_leave').some((r) => r.body.p_period_id === 'p1'));
+check('work out pay: the duties that count and approved paid leave', /3 duties that count, and 1 day of approved paid leave, for 2 assignments at 2 posts/.test(await work.innerText()), (await work.locator('h3 + p').first().innerText()).replace(/\s+/g, ' '));
+check('work out pay: a payslip for whoever was on duty; an assigned guard with no duty gets none', /Payslips ready\s*1\b/i.test(await work.innerText()) && /1 assigned employee has no duty and no paid leave in this cutoff, so no payslip: Dante Cruz/.test(await work.innerText()), (await work.locator('.tiles').innerText()).replace(/\s+/g, ' '));
+check('work out pay: duties at a post with no assignment are pointed out', /G-009: 1 duty at a post they have no assignment for/.test(await work.innerText()));
+const logsDownload = page.waitForEvent('download');
+await work.getByRole('button', { name: 'Download the attendance sheet' }).click();
+const logsCsv = readFileSync(await (await logsDownload).path(), 'utf8');
+check('work out pay: the days come from the duties that count, per assignment, with paid leave', logsCsv.replace(/^\uFEFF/, '').startsWith('employee_no,name,post_code,post,from,to,days,leave_days,duty_hours,shift_start') && logsCsv.includes('G-002,Bea Lim,PA,Post A · Main Gate,2026-11-01,2026-11-15,3,1,12,18:00') && logsCsv.includes('G-001,Dante Cruz,PC,Post C · Lobby,2026-11-01,2026-11-15,0,0,12,06:00'), logsCsv.split('\n').slice(0, 3).join(' | '));
+const beaRow = await work.getByRole('row', { name: /Bea Lim/ }).innerText();
+check('work out pay: approved leave is paid at the post rate for the rule\'s regular hours', /Paid leave/i.test(await work.locator('thead').innerText()) && /₱800\.00/.test(beaRow), beaRow.replace(/\s+/g, ' '));
+await work.getByRole('button', { name: 'Save 1 payslip' }).click();
+await work.getByText('payslips added').waitFor();
+const fromLogs = rpcCalls('import_payslips').at(-1)?.body.p_rows?.[0];
+check('work out pay: saved with the duties, the leave, the basic pay for the 13th month and the post', fromLogs?.employee_no === 'G-002' && fromLogs.days_worked === 4 && fromLogs.basic_pay === 2400 && fromLogs['earning: Paid leave'] === 800 && fromLogs.thirteenth_basic === 3200
+  && fromLogs.posts_detail?.[0]?.site_id === 's1' && fromLogs.posts_detail[0].days === 3 && fromLogs.posts_detail[0].leave_days === 1 && fromLogs.remarks === 'Post A · Main Gate: 3 duties of 12 hours and 1 day of paid leave at ₱100.00 an hour', JSON.stringify(fromLogs));
+await work.getByRole('button', { name: 'Use the schedule instead' }).click();
+await work.getByText('From the schedule, not the time in and out').waitFor();
+check('work out pay: the schedule is the deliberate fallback, and says it is not attendance', /each assignment gets its rule's duty days, whether or not they were worked/.test(await work.innerText()) && /Payslips ready\s*2\b/i.test(await work.innerText()));
 const sheetDownload = page.waitForEvent('download');
 await work.getByRole('button', { name: 'Download the attendance sheet' }).click();
 const sheetCsv = readFileSync(await (await sheetDownload).path(), 'utf8');
-check('work out pay: the attendance sheet comes from the assignments', sheetCsv.includes('G-002,Bea Lim,PA,Post A · Main Gate,2026-11-01,2026-11-15,13,12,18:00') && sheetCsv.includes('G-001,Dante Cruz,PC,Post C · Lobby,2026-11-01,2026-11-15,13,12,06:00'), sheetCsv.split('\n').slice(0, 3).join(' | '));
+check('work out pay: the schedule sheet comes from the assignments', sheetCsv.includes('G-002,Bea Lim,PA,Post A · Main Gate,2026-11-01,2026-11-15,13,0,12,18:00') && sheetCsv.includes('G-001,Dante Cruz,PC,Post C · Lobby,2026-11-01,2026-11-15,13,0,12,06:00'), sheetCsv.split('\n').slice(0, 3).join(' | '));
 await work.getByRole('button', { name: 'Fill the days from time in and out' }).click();
-await work.getByText('read from the time in and out').waitFor();
-const fillDownload = page.waitForEvent('download');
-await work.getByRole('button', { name: 'Download the attendance sheet' }).click();
-const filledCsv = readFileSync(await (await fillDownload).path(), 'utf8');
-check('work out pay: the days come from the duties that count, per assignment', filledCsv.includes('G-002,Bea Lim,PA,Post A · Main Gate,2026-11-01,2026-11-15,3,12,18:00') && filledCsv.includes('G-001,Dante Cruz,PC,Post C · Lobby,2026-11-01,2026-11-15,0,12,06:00'), filledCsv.split('\n').slice(0, 3).join(' | '));
-check('work out pay: duties at a post with no assignment are pointed out', /G-009: 1 duties at a post they have no assignment for/.test(await work.innerText()));
-await work.getByRole('button', { name: 'Use the schedule instead' }).click();
+await work.getByText('from the time in and out').waitFor();
+check('work out pay: back to the time in and out in one click', /Payslips ready\s*1\b/i.test(await work.innerText()));
 const edited = `${RUN}attendance.csv`;
 writeFileSync(edited, 'Employee number,Name,Post code,Post,From,To,Days,Duty hours,Shift start\nG-002,Bea Lim,PA,Post A · Main Gate,2026-11-01,2026-11-15,10,12,18:00\n');
 await work.getByLabel('Upload the filled sheet (CSV)').setInputFiles(edited);
@@ -699,7 +737,7 @@ await work.getByText('1 row read').waitFor();
 await work.getByRole('button', { name: 'Save 1 payslip' }).click();
 await work.getByText('payslips added').waitFor();
 const computed = rpcCalls('import_payslips').at(-1)?.body.p_rows;
-check('work out pay: the last shift earns night differential, at the post rate and the client rule', computed?.length === 1 && computed[0].employee_no === 'G-002' && computed[0].basic_pay === 8000 && computed[0].overtime_pay === 5000 && computed[0].night_diff_pay === 800 && computed[0].night_diff_hours === 80 && computed[0].allowances === 250, JSON.stringify(computed?.[0]));
+check('work out pay: an edited sheet works too; the last shift earns night differential, at the post rate and the client rule', computed?.length === 1 && computed[0].employee_no === 'G-002' && computed[0].basic_pay === 8000 && computed[0].overtime_pay === 5000 && computed[0].night_diff_pay === 800 && computed[0].night_diff_hours === 80 && computed[0].allowances === 250 && computed[0].thirteenth_basic === 8000, JSON.stringify(computed?.[0]));
 await work.getByRole('button', { name: 'Done' }).click();
 
 console.log('Announcements, recruitment, users, posts');
@@ -931,7 +969,9 @@ const hitTitles = await page.locator('.guide-hits b').allInnerTexts();
 check('guide: search finds topics and questions', hitTitles.includes('A guard forgot their app password.') && hitTitles.includes('A guard\'s app account'), hitTitles.join(' | '));
 await page.getByRole('button', { name: /A guard forgot their app password/ }).click();
 await page.waitForURL(/tab=faq/);
-check('guide: a question found opens on the Questions tab', await page.locator('details[open] summary', { hasText: 'A guard forgot their app password.' }).isVisible());
+const foundQuestion = page.locator('details[open] summary', { hasText: 'A guard forgot their app password.' });
+await foundQuestion.waitFor({ timeout: 4000 }).catch(() => null);
+check('guide: a question found opens on the Questions tab', await foundQuestion.isVisible());
 guideText += await page.locator('.guide').innerText();
 const techWords = guideText.match(/supabase|database|\bapi\b|edge function|\brls\b|\bsql\b|json|webhook|bucket|\bs3\b/gi);
 check('guide: features and how-tos only, no technical words', !techWords, (techWords ?? []).join(', '));

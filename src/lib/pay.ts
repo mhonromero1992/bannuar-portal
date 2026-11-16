@@ -396,22 +396,58 @@ function compiledFor(cache: Map<string, Compiled>, rule: PayRule): Compiled {
 const firstError = (c: Compiled) => Object.values(c.errors)[0];
 
 // ---------------------------------------------------------------------------------- 13th month
-export interface ThirteenthPiece {
-  site_id: string; post: string; from: string; to: string; rate: number | null; duty_hours: number;
-  months: number; days: number; basic: number; share: number; problem?: string;
-}
-export interface ThirteenthRow { person: Person; pieces: ThirteenthPiece[]; basic: number; amount: number; problems: string[] }
-
 /**
- * 13th month pay (PD 851: a twelfth of the basic pay earned in the year), worked out for each stretch
- * of a guard's year at one post and one rate, then added up. Basic pay for a stretch is what the
- * post's rule calls basic (lines marked "13th month"), for the rule's duty days a month.
- * Example: ₱100 an hour for January to March at 8 regular hours and 26 days a month is
- * 100 × 8 × 26 × 3 = ₱62,400 basic, so ₱5,200 of 13th month.
+ * A stretch of a guard's 13th month: "released" is basic pay that published cutoffs paid at a post;
+ * "projected" is the rest of the year no published cutoff covers yet, worked out from the assignment
+ * at the post's rate and rule for its duty days (so the payout on 24 December can be complete).
  */
-export function thirteenthMonth(year: number, people: Person[], assignments: Assignment[], posts: Post[], rules: PayRule[], rates: PayRate[]): ThirteenthRow[] {
+export interface ThirteenthPiece {
+  kind: 'released' | 'projected';
+  site_id: string; post: string; from: string; to: string;
+  /** projected: the hourly rate, the duty length, and the months and duty days the schedule gives */
+  rate: number | null; duty_hours: number; months: number; days: number;
+  /** released: the published cutoffs that paid it */
+  cutoffs: number;
+  basic: number; share: number; problem?: string;
+}
+export interface ThirteenthRow {
+  person: Person; pieces: ThirteenthPiece[];
+  /** basic pay counted and the 13th month, in all; then the 13th month by where it comes from */
+  basic: number; amount: number; released: number; projected: number;
+  problems: string[];
+}
+/** What published cutoffs paid, by employee and post (thirteenth_month_released() in the database). */
+export interface ReleasedBasis {
+  cutoffs: { from: string; to: string }[];
+  rows: { employee_id: string; site_id: string | null; post: string; from: string; to: string; basic: number; cutoffs: number }[];
+}
+
+/** The days of a year that no released cutoff covers, as ranges. */
+export function uncovered(year: number, cutoffs: { from: string; to: string }[]): { from: string; to: string }[] {
   const yFrom = `${year}-01-01`;
   const yTo = `${year}-12-31`;
+  const spans = cutoffs.map((c) => ({ from: maxDate(c.from, yFrom), to: minDate(c.to, yTo) })).filter((c) => c.from <= c.to).sort((a, b) => a.from.localeCompare(b.from));
+  const out: { from: string; to: string }[] = [];
+  let next = yFrom;
+  for (const c of spans) {
+    if (c.from > next) out.push({ from: next, to: addDays(c.from, -1) });
+    if (c.to >= next) next = addDays(c.to, 1);
+  }
+  if (next <= yTo) out.push({ from: next, to: yTo });
+  return out;
+}
+
+/**
+ * The 13th month from the schedule (PD 851's twelfth of the basic pay, for each stretch of a guard's
+ * year at one post and one rate): basic pay is what the post's rule calls basic (lines marked
+ * "13th month") for the rule's duty days a month. Only the days in `windows` count (all the year when
+ * left out). Example: ₱100 an hour for January to March at 8 regular hours and 26 days a month is
+ * 100 × 8 × 26 × 3 = ₱62,400 basic, so ₱5,200 of 13th month.
+ */
+export function thirteenthMonth(year: number, people: Person[], assignments: Assignment[], posts: Post[], rules: PayRule[], rates: PayRate[], windows?: { from: string; to: string }[]): ThirteenthRow[] {
+  const yFrom = `${year}-01-01`;
+  const yTo = `${year}-12-31`;
+  const spans = windows ?? [{ from: yFrom, to: yTo }];
   const postById = new Map(posts.map((p) => [p.id, p]));
   const book = rateBook(rates);
   const cache = new Map<string, Compiled>();
@@ -421,51 +457,83 @@ export function thirteenthMonth(year: number, people: Person[], assignments: Ass
   for (const person of people) {
     const pieces: ThirteenthPiece[] = [];
     for (const a of (byPerson.get(person.id) ?? []).sort((x, y) => x.start_date.localeCompare(y.start_date))) {
-      const from = maxDate(a.start_date, yFrom, person.date_hired);
-      const to = minDate(a.end_date ?? yTo, yTo, person.date_separated);
-      if (!from || !to || to < from) continue;
-      const post = postById.get(a.site_id);
-      const rule = ruleFor(post, rules);
-      const parts: RatePiece[] = post ? book.split(post, from, to) : [{ from, to, rate: null }];
-      for (const part of parts) {
-        const months = monthsCovered(part.from, part.to);
-        const days = rule ? Number(rule.days_per_month) * months : 0;
-        const piece: ThirteenthPiece = {
-          site_id: a.site_id, post: post?.name ?? 'A post that no longer exists', from: part.from, to: part.to, rate: part.rate,
-          duty_hours: a.duty_hours, months, days, basic: 0, share: 0,
-        };
-        const compiled = rule ? compiledFor(cache, rule) : null;
-        if (!post) piece.problem = 'The post was not found';
-        else if (!rule) piece.problem = `${post.name} has no pay rule`;
-        else if (part.rate === null) piece.problem = `${post.name} has no hourly rate on ${part.from}`;
-        else if (compiled && firstError(compiled)) piece.problem = `The rule ${rule.name} has a formula to fix: ${firstError(compiled)}`;
-        else {
-          try {
-            const lines = runLines(compiled!.lines, dutyVariables(rule, part.rate, days, a.duty_hours, a.shift_start));
-            piece.basic = money(lines.filter((l) => l.thirteenth && l.kind === 'earning').reduce((t, l) => t + l.amount, 0));
-            piece.share = money(piece.basic / 12);
-          } catch (e) {
-            piece.problem = `${rule.name}: ${e instanceof Error ? e.message : String(e)}`;
+      for (const w of spans) {
+        const from = maxDate(a.start_date, yFrom, w.from, person.date_hired);
+        const to = minDate(a.end_date ?? yTo, yTo, w.to, person.date_separated);
+        if (!from || !to || to < from) continue;
+        const post = postById.get(a.site_id);
+        const rule = ruleFor(post, rules);
+        const parts: RatePiece[] = post ? book.split(post, from, to) : [{ from, to, rate: null }];
+        for (const part of parts) {
+          const months = monthsCovered(part.from, part.to);
+          const days = rule ? Number(rule.days_per_month) * months : 0;
+          const piece: ThirteenthPiece = {
+            kind: 'projected', site_id: a.site_id, post: post?.name ?? 'A post that no longer exists', from: part.from, to: part.to, rate: part.rate,
+            duty_hours: a.duty_hours, months, days, cutoffs: 0, basic: 0, share: 0,
+          };
+          const compiled = rule ? compiledFor(cache, rule) : null;
+          if (!post) piece.problem = 'The post was not found';
+          else if (!rule) piece.problem = `${post.name} has no pay rule`;
+          else if (part.rate === null) piece.problem = `${post.name} has no hourly rate on ${part.from}`;
+          else if (compiled && firstError(compiled)) piece.problem = `The rule ${rule.name} has a formula to fix: ${firstError(compiled)}`;
+          else {
+            try {
+              const lines = runLines(compiled!.lines, dutyVariables(rule, part.rate, days, a.duty_hours, a.shift_start));
+              piece.basic = money(lines.filter((l) => l.thirteenth && l.kind === 'earning').reduce((t, l) => t + l.amount, 0));
+              piece.share = money(piece.basic / 12);
+            } catch (e) {
+              piece.problem = `${rule.name}: ${e instanceof Error ? e.message : String(e)}`;
+            }
           }
+          pieces.push(piece);
         }
-        pieces.push(piece);
       }
     }
     if (!pieces.length) continue;
-    out.push({
-      person,
-      pieces,
-      basic: money(pieces.reduce((t, p) => t + p.basic, 0)),
-      amount: money(pieces.reduce((t, p) => t + p.share, 0)),
-      problems: pieces.flatMap((p) => (p.problem ? [p.problem] : [])),
-    });
+    out.push(totalled(person, pieces));
+  }
+  return out;
+}
+
+function totalled(person: Person, pieces: ThirteenthPiece[]): ThirteenthRow {
+  const sum = (kind: ThirteenthPiece['kind'] | null, key: 'basic' | 'share') => money(pieces.filter((p) => !kind || p.kind === kind).reduce((t, p) => t + p[key], 0));
+  const released = sum('released', 'share');
+  const projected = sum('projected', 'share');
+  return {
+    person, pieces: [...pieces].sort((a, b) => a.from.localeCompare(b.from)),
+    basic: sum(null, 'basic'), amount: money(released + projected), released, projected,
+    problems: pieces.flatMap((p) => (p.problem ? [p.problem] : [])),
+  };
+}
+
+/**
+ * The 13th month as payroll pays it: the basic pay published cutoffs released in the year, at each
+ * post, plus the days no published cutoff covers yet, projected from the assignments (labelled so).
+ */
+export function thirteenthFromPayroll(year: number, released: ReleasedBasis, people: Person[], assignments: Assignment[], posts: Post[], rules: PayRule[], rates: PayRate[]): ThirteenthRow[] {
+  const gaps = uncovered(year, released.cutoffs);
+  const projected = gaps.length ? thirteenthMonth(year, people, assignments, posts, rules, rates, gaps) : [];
+  const pieces = new Map<string, ThirteenthPiece[]>(projected.map((r) => [r.person.id, r.pieces]));
+  for (const x of released.rows) {
+    const basic = money(Number(x.basic));
+    const piece: ThirteenthPiece = {
+      kind: 'released', site_id: x.site_id ?? 'none', post: x.post, from: x.from, to: x.to, rate: null, duty_hours: 0,
+      months: monthsCovered(x.from, x.to), days: 0, cutoffs: Number(x.cutoffs), basic, share: money(basic / 12),
+    };
+    pieces.set(x.employee_id, [...(pieces.get(x.employee_id) ?? []), piece]);
+  }
+  const personById = new Map(people.map((p) => [p.id, p]));
+  const out: ThirteenthRow[] = [];
+  for (const [id, list] of pieces) {
+    const person = personById.get(id);
+    if (person && list.length) out.push(totalled(person, list));
   }
   return out;
 }
 
 // ---------------------------------------------------------------------------------- pay for a cutoff
 /** One row of the attendance sheet: a guard's duty at one post during the cutoff. */
-export interface AttendanceRow { employee_no: string; name?: string; post_code?: string; post: string; site_id?: string; from: string; to: string; days: number; duty_hours: number; shift_start: string }
+export interface AttendanceRow { employee_no: string; name?: string; post_code?: string; post: string; site_id?: string; from: string; to: string; days: number; duty_hours: number; shift_start: string; leave_days?: number }
 
 /** The attendance sheet as scheduled: each assignment in the cutoff, with the rule's duty days for it. */
 export function scheduleSheet(period: { start: string; end: string }, people: Person[], assignments: Assignment[], posts: Post[], rules: PayRule[]): AttendanceRow[] {
@@ -482,18 +550,43 @@ export function scheduleSheet(period: { start: string; end: string }, people: Pe
     const rule = ruleFor(post, rules);
     rows.push({
       employee_no: person.employee_no, name: person.name, post_code: post.code ?? '', post: post.name, site_id: post.id, from, to,
-      days: Math.round(scheduledDays(from, to, Number(rule?.days_per_month ?? 26))), duty_hours: a.duty_hours, shift_start: a.shift_start.slice(0, 5),
+      days: Math.round(scheduledDays(from, to, Number(rule?.days_per_month ?? 26))), duty_hours: a.duty_hours, shift_start: a.shift_start.slice(0, 5), leave_days: 0,
     });
   }
   return rows.sort((x, y) => x.post.localeCompare(y.post) || (x.name ?? '').localeCompare(y.name ?? '') || x.from.localeCompare(y.from));
 }
 
-export const SHEET_COLUMNS = ['employee_no', 'name', 'post_code', 'post', 'from', 'to', 'days', 'duty_hours', 'shift_start'];
+export const SHEET_COLUMNS = ['employee_no', 'name', 'post_code', 'post', 'from', 'to', 'days', 'leave_days', 'duty_hours', 'shift_start'];
+
+/** The cutoff's counted duties (cutoff_counted_duties()) and approved paid leave (cutoff_paid_leave()). */
+export interface CountedDuties { employee_no: string; site_id: string; dates: string[] }
+export interface PaidLeaveDay { employee_no: string; day: string; share: number | string }
+
+/**
+ * The attendance sheet from the time in and out: each assignment row of the schedule gets the duties
+ * that count at its post within its dates, and the approved paid leave days in them (a day the guard
+ * worked is paid as a duty, never also as leave). Duties at a post with no assignment are returned
+ * apart, to be fixed before paying them.
+ */
+export function sheetFromDuties(schedule: AttendanceRow[], counted: CountedDuties[], leave: PaidLeaveDay[]): { rows: AttendanceRow[]; unplaced: CountedDuties[] } {
+  const used = new Set<string>();
+  const key = (no: string, site: string) => `${no.toUpperCase()}|${site}`;
+  const rows = schedule.map((r) => {
+    const no = r.employee_no.toUpperCase();
+    const mine = counted.find((c) => c.employee_no.toUpperCase() === no && c.site_id === r.site_id);
+    if (mine) used.add(key(mine.employee_no, mine.site_id));
+    const worked = (mine?.dates ?? []).filter((d) => d >= r.from && d <= r.to);
+    const anyDuty = new Set(counted.filter((c) => c.employee_no.toUpperCase() === no).flatMap((c) => c.dates));
+    const leaveDays = leave.filter((l) => l.employee_no.toUpperCase() === no && l.day >= r.from && l.day <= r.to && !anyDuty.has(l.day)).reduce((t, l) => t + Number(l.share), 0);
+    return { ...r, days: worked.length, leave_days: roundTo(leaveDays, 2) };
+  });
+  return { rows, unplaced: counted.filter((c) => !used.has(key(c.employee_no, c.site_id))) };
+}
 
 /** Read an attendance sheet back (rows of text keyed by header), checking each value. */
 export function readSheet(rows: Record<string, string>[], period: { start: string; end: string }): { rows: AttendanceRow[]; errors: { row: number; message: string }[] } {
   const norm = (h: string) => h.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
-  const ALIASES: Record<string, string> = { employee_number: 'employee_no', emp_no: 'employee_no', site: 'post', post_name: 'post', code: 'post_code', duty: 'duty_hours', shift: 'shift_start', start: 'shift_start', days_worked: 'days', duties: 'days' };
+  const ALIASES: Record<string, string> = { employee_number: 'employee_no', emp_no: 'employee_no', site: 'post', post_name: 'post', code: 'post_code', duty: 'duty_hours', shift: 'shift_start', start: 'shift_start', days_worked: 'days', duties: 'days', paid_leave: 'leave_days', leave: 'leave_days', paid_leave_days: 'leave_days' };
   const out: AttendanceRow[] = [];
   const errors: { row: number; message: string }[] = [];
   rows.forEach((raw, i) => {
@@ -505,28 +598,34 @@ export function readSheet(rows: Record<string, string>[], period: { start: strin
     const row = i + 2; // the header is line 1
     if (!r.employee_no) return;
     const days = Number(r.days);
+    const leave = r.leave_days ? Number(r.leave_days) : 0;
     const duty = Number(r.duty_hours || 12);
     const from = r.from || period.start;
     const to = r.to || period.end;
     const iso = /^\d{4}-\d{2}-\d{2}$/;
     if (!r.post && !r.post_code) errors.push({ row, message: `${r.employee_no}: the post is missing` });
     else if (r.days === '' || !Number.isFinite(days) || days < 0) errors.push({ row, message: `${r.employee_no}: days must be a number of 0 or more` });
+    else if (!Number.isFinite(leave) || leave < 0) errors.push({ row, message: `${r.employee_no}: paid leave days must be a number of 0 or more` });
     else if (![8, 12, 24].includes(duty)) errors.push({ row, message: `${r.employee_no}: a duty is 8, 12 or 24 hours` });
     else if (!iso.test(from) || !iso.test(to) || to < from) errors.push({ row, message: `${r.employee_no}: write the dates as YYYY-MM-DD, the first before the last` });
     else if (days > dayCount(from, to) * (duty === 24 ? 1 : 24 / duty)) errors.push({ row, message: `${r.employee_no}: ${days} duties do not fit between ${from} and ${to}` });
     else if (r.shift_start && !/^\d{1,2}:\d{2}$/.test(r.shift_start)) errors.push({ row, message: `${r.employee_no}: write the shift start as 18:00` });
-    else out.push({ employee_no: r.employee_no.toUpperCase(), name: r.name, post_code: r.post_code, post: r.post, from, to, days, duty_hours: duty, shift_start: r.shift_start || '06:00' });
+    else if (leave > dayCount(from, to)) errors.push({ row, message: `${r.employee_no}: ${leave} days of leave do not fit between ${from} and ${to}` });
+    else out.push({ employee_no: r.employee_no.toUpperCase(), name: r.name, post_code: r.post_code, post: r.post, from, to, days, duty_hours: duty, shift_start: r.shift_start || '06:00', leave_days: leave });
   });
   return { rows: out, errors };
 }
 
-export interface PayPiece { post: string; from: string; to: string; rate: number; days: number; duty_hours: number; shift_start: string; lines: LineAmount[]; vars: Record<string, number> }
+export interface PayPiece { site_id: string; post: string; from: string; to: string; rate: number; days: number; leave_days: number; duty_hours: number; shift_start: string; lines: LineAmount[]; vars: Record<string, number> }
 export interface PayResult {
-  employee_no: string; name: string; posts: string[]; days: number; regular_hours: number; overtime_hours: number; night_hours: number;
+  employee_no: string; name: string; posts: string[]; days: number; leave_days: number; regular_hours: number; overtime_hours: number; night_hours: number;
   lines: LineAmount[]; pieces: PayPiece[]; problems: string[];
 }
 
-/** Pay for a cutoff from its attendance: each row at its post's rule and rate, added up per guard. */
+/** Approved paid leave is paid at the post's basic rate for the rule's regular hours, and counts for the 13th month. */
+export const PAID_LEAVE = { code: 'paid_leave', label: 'Paid leave' };
+
+/** Pay for a cutoff from its attendance: each row at its post's rule and rate (and its paid leave), added up per guard. */
 export function computePay(rows: AttendanceRow[], people: Person[], posts: Post[], rules: PayRule[], rates: PayRate[]): PayResult[] {
   const personByNo = new Map(people.map((p) => [p.employee_no.toUpperCase(), p]));
   const lower = (s?: string | null) => (s ?? '').trim().toLowerCase();
@@ -541,7 +640,7 @@ export function computePay(rows: AttendanceRow[], people: Person[], posts: Post[
     const person = personByNo.get(r.employee_no.toUpperCase());
     const key = r.employee_no.toUpperCase();
     const res = results.get(key) ?? {
-      employee_no: key, name: person?.name ?? r.name ?? '', posts: [], days: 0, regular_hours: 0, overtime_hours: 0, night_hours: 0, lines: [], pieces: [], problems: [],
+      employee_no: key, name: person?.name ?? r.name ?? '', posts: [], days: 0, leave_days: 0, regular_hours: 0, overtime_hours: 0, night_hours: 0, lines: [], pieces: [], problems: [],
     };
     results.set(key, res);
     const post = findPost(r);
@@ -556,6 +655,7 @@ export function computePay(rows: AttendanceRow[], people: Person[], posts: Post[
     for (const part of book.split(post, r.from, r.to)) {
       if (part.rate === null) { res.problems.push(`${post.name} has no hourly rate on ${part.from}`); continue; }
       const days = (r.days * dayCount(part.from, part.to)) / total;
+      const leave = ((r.leave_days ?? 0) * dayCount(part.from, part.to)) / total;
       const vars = dutyVariables(rule, part.rate, days, r.duty_hours, r.shift_start);
       let lines: LineAmount[];
       try {
@@ -564,8 +664,10 @@ export function computePay(rows: AttendanceRow[], people: Person[], posts: Post[
         res.problems.push(`${rule.name}: ${e instanceof Error ? e.message : String(e)}`);
         continue;
       }
-      res.pieces.push({ post: post.name, from: part.from, to: part.to, rate: part.rate, days, duty_hours: r.duty_hours, shift_start: r.shift_start, lines, vars });
+      if (leave > 0) lines.push({ ...PAID_LEAVE, kind: 'earning', thirteenth: true, amount: money(part.rate * Number(rule.regular_hours) * leave) });
+      res.pieces.push({ site_id: post.id, post: post.name, from: part.from, to: part.to, rate: part.rate, days, leave_days: leave, duty_hours: r.duty_hours, shift_start: r.shift_start, lines, vars });
       res.days += days;
+      res.leave_days += leave;
       res.regular_hours += vars.regular_hours;
       res.overtime_hours += vars.overtime_hours;
       res.night_hours += vars.night_hours;
@@ -581,20 +683,35 @@ export function computePay(rows: AttendanceRow[], people: Person[], posts: Post[
 
 /** Lines with these codes fill the payslip's own columns; any other line is shown under its name. */
 const PAYSLIP_COLUMN: Record<string, string> = { basic: 'basic_pay', overtime: 'overtime_pay', night_diff: 'night_diff_pay', holiday: 'holiday_pay', allowances: 'allowances', allowance: 'allowances' };
+const DEDUCTION_COLUMN: Record<string, string> = { sss: 'sss', philhealth: 'philhealth', phic: 'philhealth', pagibig: 'pagibig', hdmf: 'pagibig', tax: 'withholding_tax', withholding_tax: 'withholding_tax', loans: 'loans', loan: 'loans' };
 
-/** A computed result as a row of the payroll file, which import_payslips() reads. */
-export function toPayrollRow(r: PayResult): Record<string, string | number> {
-  const out: Record<string, string | number> = {
-    employee_no: r.employee_no, site_name: r.posts.join(', '), days_worked: roundTo(r.days, 2), hours_worked: roundTo(r.regular_hours, 2),
+/** The basic pay a set of lines gives the 13th month: the earnings its rule marks "13th month", and paid leave. */
+export const thirteenthBasic = (lines: LineAmount[]) => money(lines.filter((l) => l.kind === 'earning' && l.thirteenth).reduce((t, l) => t + l.amount, 0));
+
+/** A computed result as a row of the payroll file, which import_payslips() reads, with the posts it was earned at. */
+export function toPayrollRow(r: PayResult): Record<string, string | number | object[]> {
+  const out: Record<string, string | number | object[]> = {
+    employee_no: r.employee_no, site_name: r.posts.join(', '), days_worked: roundTo(r.days + r.leave_days, 2), hours_worked: roundTo(r.regular_hours, 2),
     overtime_hours: roundTo(r.overtime_hours, 2), night_diff_hours: roundTo(r.night_hours, 2),
   };
   for (const l of r.lines) {
-    const key = l.kind === 'deduction' ? `deduction: ${l.label}` : PAYSLIP_COLUMN[l.code] ?? `earning: ${l.label}`;
+    const key = l.kind === 'deduction' ? DEDUCTION_COLUMN[l.code] ?? `deduction: ${l.label}` : PAYSLIP_COLUMN[l.code] ?? `earning: ${l.label}`;
     out[key] = money(Number(out[key] ?? 0) + l.amount);
   }
-  out.remarks = r.pieces.map((p) => `${p.post}: ${roundTo(p.days, 2)} duties of ${p.duty_hours} hours at ₱${p.rate.toFixed(2)} an hour`).join('; ');
+  out.thirteenth_basic = thirteenthBasic(r.lines);
+  out.posts_detail = r.pieces.map((p) => ({
+    site_id: p.site_id, post: p.post, from: p.from, to: p.to, rate: p.rate, days: roundTo(p.days, 2), leave_days: roundTo(p.leave_days, 2), basic: thirteenthBasic(p.lines),
+  }));
+  const count = (n: number, one: string, many: string) => `${roundTo(n, 2)} ${roundTo(n, 2) === 1 ? one : many}`;
+  out.remarks = r.pieces.map((p) => `${p.post}: ${count(p.days, 'duty', 'duties')} of ${p.duty_hours} hours${p.leave_days ? ` and ${count(p.leave_days, 'day', 'days')} of paid leave` : ''} at ₱${p.rate.toFixed(2)} an hour`).join('; ');
   return out;
 }
+
+/** The same row for a spreadsheet: the posts stay in the remarks. */
+export const toPayrollCsvRow = (r: PayResult) => {
+  const { posts_detail: _posts, ...rest } = toPayrollRow(r);
+  return rest;
+};
 
 /** CSV for a spreadsheet. A text cell that starts like a formula gets a ' so the sheet shows it as text. */
 export function toCsv(rows: Record<string, unknown>[], headers?: string[]): string {
