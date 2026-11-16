@@ -46,6 +46,10 @@ export function errorText(e: unknown): string {
   if (code === '23503') return 'This record is still used elsewhere, so it cannot be changed this way.';
   if (code === '23514') return 'One of the values is not allowed. Check the form.';
   if (code === 'PGRST301' || err.status === 401) return 'Your session ended. Sign in again.';
+  // the portal is newer than the database: a function, table or column it asks for is not there yet
+  if (['PGRST202', 'PGRST204', 'PGRST205', '42883', '42703', '42P01'].includes(code)) {
+    return 'The database needs the latest update for this. In Supabase, open the SQL Editor, run supabase/schema.sql from the portal\'s repository, then try again.';
+  }
   if (err.message && /fetch|network/i.test(err.message)) return 'No connection to the database. Check your internet and try again.';
   if (err.message && err.message.length < 160) return err.message;
   return 'Something went wrong. Try again in a moment.';
