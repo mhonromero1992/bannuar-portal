@@ -6,6 +6,7 @@ const longDateFmt = new Intl.DateTimeFormat('en-PH', { year: 'numeric', month: '
 const dateTimeFmt = new Intl.DateTimeFormat('en-PH', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: TZ });
 const peso = new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP', minimumFractionDigits: 2 });
 const num = new Intl.NumberFormat('en-PH');
+const amount = new Intl.NumberFormat('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 /** Dates stored as YYYY-MM-DD are calendar days: read them at noon in Manila so no time zone shifts them. */
 const asDate = (v: string) => new Date(v.length === 10 ? `${v}T12:00:00+08:00` : v);
@@ -14,6 +15,8 @@ export const fmtDate = (v?: string | null) => (v ? dateFmt.format(asDate(v)) : '
 export const fmtLongDate = (v?: string | null) => (v ? longDateFmt.format(asDate(v)) : '');
 export const fmtDateTime = (v?: string | null) => (v ? dateTimeFmt.format(new Date(v)) : '');
 export const fmtMoney = (v?: number | string | null) => (v === null || v === undefined || v === '' ? '' : peso.format(Number(v)));
+/** An amount for reading, 1,675,250.00 (files for Excel keep plain numbers). Anything not a number stays as it is. */
+export const fmtAmount = (v?: number | string | null) => (v === null || v === undefined || v === '' ? '' : Number.isFinite(Number(v)) ? amount.format(Number(v)) : String(v));
 export const fmtNum = (v?: number | null) => (v === null || v === undefined ? '' : num.format(v));
 
 export function todayManila(): string {

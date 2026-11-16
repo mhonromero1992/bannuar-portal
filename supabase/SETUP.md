@@ -424,11 +424,49 @@ and requests their company filed. After each cutoff, payroll or operations press
 confirm" on the cutoff's page; each client then has two days to confirm its posts' duties or dispute
 some, and a cutoff not answered in time counts as confirmed. Turn a login off from the same Portal access list.
 
+## 12. The post logbook and reports
+
+**The post logbook.** Where a post still keeps a written logbook, or a guard has no phone, a photo of
+a page is enough. A client sends it from the client portal (Logbook tab), HR or operations from
+Attendance → Post logbooks → Send a logbook page. Claude copies each guard's line: the name
+or employee number, the date, the time in and out, the remarks, and what is hard to read or looks
+written over. The database, not Claude, then matches each name to the post's guards and compares
+each line with the app's time in and out: **matches the app**, **different from the app** (more than
+an hour and a half apart, or at another post), **not in the app**, or **name not matched**. HR adds a
+duty the app missed in one step (marked "From the logbook" for payroll to decide on the cutoff page;
+the guard is told); HR or operations corrects a misread line, and marks the page checked with a note
+the client reads.
+
+1. Run the schema again (step 2): it adds `logbook_pages` and `logbook_lines` and their functions.
+2. The photos go to `company/logbooks/<post>/<year>/<month>/` in the bucket; the `CompanyFiles`
+   statement of step 9b already covers it.
+3. Deploy the function. It uses the same `ANTHROPIC_API_KEY` and AWS secrets as `document-ai`:
+
+```bash
+supabase functions deploy logbook-ai --no-verify-jwt --use-api --project-ref bcynizcgdgqznlxuzwjx
+```
+
+Photos: one page at a time, flat and in good light; JPEG, PNG or WebP up to 5 MB (an iPhone's HEIC
+photos: Settings → Camera → Formats → Most Compatible). A client may send 30 pages an hour. What
+reaches Anthropic: the photo (with the names written on it), the post's name and today's date; the
+guards' records stay in the database. A page costs roughly $0.03 to $0.10 to read. The demo
+(seed-demo.sql) has one page of the Main Gate's logbook: it has no photo, so the portal draws its
+lines as a handwritten page, marked as a drawing.
+
+**Reports.** Reports (in the menu, for staff) lists the reports each role may use: attendance
+summary, client coverage for a cutoff (a basis for billing), payroll register, government
+contributions by month, licenses and documents, headcount and deployment, incident reports,
+discipline cases and leave. Each is filtered on screen and downloaded as an Excel file (CSV, amounts
+as plain numbers) or a PDF (landscape A4 with the Bannuar badge, the filters, totals, page numbers,
+and who made it and when). Nothing to set up beyond running the schema again: it adds
+`report_attendance`, `report_cutoff_coverage` and `report_contributions`. Opening the government
+contributions report is written to the audit log.
+
 ## Tested
 
 `schema.sql` was run against Postgres 16 with stand-ins for Supabase's `auth` and `storage`
 schemas and its `anon` / `authenticated` / `authenticator` roles, connecting the way the Supabase
-API does. 424 checks passed: sign-up rules, employee activation through one-time tickets (rate
+API does. 499 checks passed: sign-up rules, employee activation through one-time tickets (rate
 limits per employee number and per IP, the facts removed from the login's metadata), who sees which
 rows for every role, payroll import and publishing, the leave and COE flows, certificate
 verification, announcements, website forms, storage folders, admin tools, push devices, attendance
@@ -442,9 +480,12 @@ other than the code's, preventive suspension of at most 30 days, what employees 
 (client logins see only their own posts and what their company filed, and nothing once turned off),
 the document checks (whose files Claude may read, which types), the cutoff review (how a time in and out
 become a duty, what counts, payroll's decisions, the client's confirmation and its deadline),
-and the demo scripts on an empty database. Upgrading a database built with the previous `schema.sql` was
+pay from attendance and the 13th month from released payroll, one employee's duties by dates, the
+post logbook (who may send and see a page, how names are matched and lines compared, adding a missed
+duty once, what clients may not do), the reports (who may run which, the figures and totals), and
+the demo scripts on an empty database (the demo logbook page included). Upgrading a database built with the previous `schema.sql` was
 tested too. It has not yet been run inside a real Supabase project.
 
 The Edge Functions have their own tests (Deno, with a mocked admin client, a fake S3 and no
-network): `deno task test` in `supabase/functions` (64 passed, including discipline-ai and document-ai against a fake Claude). The AWS request signing reproduces
+network): `deno task test` in `supabase/functions` (74 passed, including discipline-ai, document-ai and logbook-ai against a fake Claude). The AWS request signing reproduces
 the worked examples in Amazon's S3 documentation exactly.

@@ -773,16 +773,68 @@ create table if not exists public.stored_files (
 alter table public.stored_files drop constraint if exists stored_files_object_key_check;
 alter table public.stored_files add constraint stored_files_object_key_check check (
   (object_key ~ '^employees/[A-Za-z0-9][A-Za-z0-9._-]*/(201-file|work-requirements|lesp|attendance|leave|certificates)/[A-Za-z0-9][A-Za-z0-9/._-]*$'
-   or object_key ~ '^company/code-of-discipline/[A-Za-z0-9][A-Za-z0-9._-]*$')
+   or object_key ~ '^company/code-of-discipline/[A-Za-z0-9][A-Za-z0-9._-]*$'
+   or object_key ~ '^company/logbooks/[A-Za-z0-9][A-Za-z0-9/._-]*$')
   and object_key !~ '/\.' and length(object_key) <= 300);
 alter table public.stored_files drop constraint if exists stored_files_purpose_check;
 alter table public.stored_files add constraint stored_files_purpose_check
-  check (purpose in ('document', 'leave', 'attendance', 'certificate', 'policy'));
+  check (purpose in ('document', 'leave', 'attendance', 'certificate', 'policy', 'logbook'));
 alter table public.stored_files drop constraint if exists stored_files_folder_check;
 alter table public.stored_files add constraint stored_files_folder_check
-  check (folder in ('201-file', 'work-requirements', 'lesp', 'attendance', 'leave', 'certificates', 'code-of-discipline'));
+  check (folder in ('201-file', 'work-requirements', 'lesp', 'attendance', 'leave', 'certificates', 'code-of-discipline', 'logbooks'));
 create index if not exists stored_files_employee_idx on public.stored_files (employee_id, folder, created_at desc);
 create index if not exists stored_files_uploader_idx on public.stored_files (uploaded_by, created_at desc);
+
+-- The post logbook: a photo of a page of the written logbook kept at a post (company/logbooks/<post>/...),
+-- what Claude read on it line by line, and how each line compares with the app's time in and out
+-- (section 21). Logs HR adds from a page are marked "logbook" and wait for payroll's decision.
+create table if not exists public.logbook_pages (
+  id uuid primary key default gen_random_uuid(),
+  site_id uuid not null references public.sites (id) on delete cascade,
+  file_key text not null unique,
+  content_type text not null,
+  uploaded_by uuid references auth.users (id) on delete set null,
+  uploader_name text,
+  from_client boolean not null default false,
+  status text not null default 'reading' check (status in ('reading', 'read', 'unreadable', 'failed', 'checked')),
+  page_date date,
+  legibility text check (legibility in ('clear', 'partly_readable', 'unreadable')),
+  concerns text[] not null default '{}',
+  model text,
+  read_at timestamptz,
+  checked_by uuid references auth.users (id) on delete set null,
+  checked_at timestamptz,
+  note text check (length(note) <= 1000),
+  created_at timestamptz not null default now()
+);
+create index if not exists logbook_pages_site_idx on public.logbook_pages (site_id, created_at desc);
+create table if not exists public.logbook_lines (
+  id uuid primary key default gen_random_uuid(),
+  page_id uuid not null references public.logbook_pages (id) on delete cascade,
+  line_no integer not null check (line_no between 1 and 200),
+  written_name text not null default '',
+  written_no text not null default '',
+  duty_date date,
+  time_in time,
+  time_out time,
+  remarks text not null default '',
+  unclear boolean not null default false,
+  employee_id uuid references public.employees (id) on delete set null,
+  matched_by text check (matched_by in ('number', 'name', 'hr')),
+  match text not null default 'unclear' check (match in ('confirmed', 'differs', 'not_in_app', 'no_guard', 'unclear', 'added')),
+  app_log_id uuid references public.attendance_logs (id) on delete set null,
+  app_time_in timestamptz,
+  app_time_out timestamptz,
+  added_in_id uuid references public.attendance_logs (id) on delete set null,
+  added_out_id uuid references public.attendance_logs (id) on delete set null,
+  unique (page_id, line_no)
+);
+create index if not exists logbook_lines_app_log_idx on public.logbook_lines (app_log_id);
+alter table public.attendance_logs
+  add column if not exists logbook_page_id uuid references public.logbook_pages (id) on delete set null;
+alter table public.attendance_logs drop constraint if exists attendance_logs_source_check;
+alter table public.attendance_logs add constraint attendance_logs_source_check
+  check (source in ('self', 'commander', 'manual', 'logbook'));
 -- What Claude read on an uploaded document (the document-ai function, section 18), for HR's review
 alter table public.stored_files add column if not exists ai_check jsonb, add column if not exists ai_checked_at timestamptz;
 -- Which document types Claude reads at upload (set in section 14: the LESP to start with)
@@ -2537,6 +2589,10 @@ language sql stable security definer set search_path = '' as $$
       -- every employee may read the Code of Discipline in force
       or (f.purpose = 'policy' and public.current_employee_id() is not null and exists (
             select 1 from public.discipline_codes c where c.file_key = f.object_key and c.status = 'active'))
+      -- a client's people see the logbook pages of their own posts
+      or (f.purpose = 'logbook' and public.my_client_id() is not null and exists (
+            select 1 from public.logbook_pages lp join public.sites st on st.id = lp.site_id
+            where lp.file_key = f.object_key and st.client_id = public.my_client_id()))
     )
 $$;
 
@@ -5076,7 +5132,8 @@ language sql stable security definer set search_path = '' as $$
         array[case when d.mock then 'mock' end, case when d.t_in is null then 'no_time_in' end,
               case when d.t_out is null then 'no_time_out' end,
               case when 'commander' = any (d.sources) then 'commander' end,
-              case when 'manual' = any (d.sources) then 'by_hand' end])) x
+              case when 'manual' = any (d.sources) then 'by_hand' end,
+              case when 'logbook' = any (d.sources) then 'logbook' end])) x
       where x is not null order by x) as flags) f
   where d.day between p_start and p_end
 $$;
@@ -5170,7 +5227,8 @@ begin
           'log_id', d.log_id, 'employee_id', d.employee_id, 'employee_no', e.employee_no, 'name', public.full_name(e),
           'post', s.name, 'client', d.client_name, 'date', d.duty_date, 'time_in', d.time_in, 'time_out', d.time_out, 'hours', d.hours,
           'flags', to_jsonb(d.flags), 'clean', d.clean, 'client_reason', d.client_reason, 'decision', d.decision,
-          'decision_note', d.decision_note, 'decided_at', d.decided_at)
+          'decision_note', d.decision_note, 'decided_at', d.decided_at,
+          'logbook', exists (select 1 from public.logbook_lines ll where ll.app_log_id = d.log_id and ll.match = 'confirmed'))
           order by d.decision is not null, d.duty_date, e.last_name), '[]'::jsonb)
         from d join public.employees e on e.id = d.employee_id left join public.sites s on s.id = d.site_id
         where not d.clean or d.client_reason is not null or d.decision is not null),
@@ -5525,3 +5583,566 @@ end $$;
 
 revoke execute on function public.cutoff_paid_leave(uuid), public.thirteenth_month_released(integer) from public, anon;
 grant execute on function public.cutoff_paid_leave(uuid), public.thirteenth_month_released(integer) to authenticated;
+
+-- -------------------------------------------------------------------------------------
+-- 21. The post logbook: Claude reads a photo of a page of the written logbook kept at a post (the
+--     logbook-ai Edge Function); the database matches each line to the post's guards and compares it
+--     with the app's time in and out. HR adds what the app missed, marked "logbook", for payroll to decide.
+-- -------------------------------------------------------------------------------------
+alter table public.logbook_pages enable row level security;
+alter table public.logbook_lines enable row level security;
+drop policy if exists "staff read logbook pages" on public.logbook_pages;
+create policy "staff read logbook pages" on public.logbook_pages for select to authenticated using ((select public.is_staff()));
+drop policy if exists "staff read logbook lines" on public.logbook_lines;
+create policy "staff read logbook lines" on public.logbook_lines for select to authenticated using ((select public.is_staff()));
+do $$ begin
+  drop trigger if exists audit on public.logbook_pages;
+  create trigger audit after insert or update or delete on public.logbook_pages for each row execute function public.audit_row_change();
+end $$;
+
+-- Words of a name, for matching what is written by hand: capitals, no accents or punctuation.
+create or replace function public.name_words(p text) returns text[]
+language sql immutable set search_path = '' as $$
+  select coalesce(array_agg(w), '{}') from unnest(regexp_split_to_array(
+    trim(regexp_replace(translate(upper(coalesce(p, '')), 'ÑÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÂÊÎÔÛ', 'NAEIOUAEIOUAEIOUAEIOU'), '[^A-Z]+', ' ', 'g')), '\s+')) w
+  where w <> ''
+$$;
+
+-- How well a written name fits an employee: the whole surname 2 (part of it 1), a first name 2 (its
+-- initial or a short form of it, "J." or "Ma.", 1). "J. Dela Cruz" fits Juan Dela Cruz with 3; "Santos"
+-- alone gives 2.
+create or replace function public.logbook_name_score(p_written text, p_first text, p_last text) returns integer
+language sql immutable set search_path = '' as $$
+  with w as (select public.name_words(p_written) as words),
+       l as (select array(select x from unnest(public.name_words(p_last)) x where length(x) > 1) as words),
+       f as (select array(select x from unnest(public.name_words(p_first)) x where length(x) > 1) as words)
+  select case when cardinality(l.words) > 0 and l.words <@ w.words then 2
+              when l.words && w.words then 1 else 0 end
+       + case when f.words && w.words then 2
+              when exists (select 1 from unnest(f.words) fw, unnest(w.words) ww
+                           where length(ww) < length(fw) and length(ww) <= 3 and fw like ww || '%'
+                             and not ww = any (l.words)) then 1 else 0 end
+  from w, l, f
+$$;
+
+-- Match one line: the guard (HR's choice stands; else the employee number written; else the name,
+-- among the guards assigned to the post around that day: the best fit, if only one has it and it is
+-- the whole surname or more), then the app's duty that day (excluding logs added from a logbook).
+create or replace function public.logbook_match_line(p_line_id uuid) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  l public.logbook_lines;
+  pg public.logbook_pages;
+  v_day date;
+  v_emp uuid;
+  v_by text;
+  v_in timestamptz;
+  v_out timestamptz;
+  v_log uuid;
+  v_log_site uuid;
+  v_app_in timestamptz;
+  v_app_out timestamptz;
+  v_match text := 'unclear';
+begin
+  select * into l from public.logbook_lines where id = p_line_id for update;
+  if not found or l.match = 'added' then
+    return;
+  end if;
+  select * into pg from public.logbook_pages where id = l.page_id;
+  v_day := coalesce(l.duty_date, pg.page_date, public.manila_today());
+  if l.matched_by = 'hr' and l.employee_id is not null then
+    v_emp := l.employee_id;
+    v_by := 'hr';
+  end if;
+  if v_emp is null and l.written_no <> '' then
+    select e.id into v_emp from public.employees e where upper(e.employee_no) = upper(trim(l.written_no));
+    v_by := case when v_emp is not null then 'number' end;
+  end if;
+  if v_emp is null and l.written_name <> '' then
+    with c as (
+      select e.id, public.logbook_name_score(l.written_name, e.first_name, e.last_name) as score,
+             public.name_words(e.last_name) <@ public.name_words(l.written_name) as last_full
+      from public.employees e
+      where e.site_id = pg.site_id
+         or exists (select 1 from public.employee_assignments a where a.employee_id = e.id and a.site_id = pg.site_id
+                      and a.start_date <= v_day + 1 and coalesce(a.end_date, 'infinity'::date) >= v_day - 1)
+    ), ok as (select * from c where c.score >= 3 or (c.score = 2 and c.last_full))
+    select ok.id into v_emp from ok
+    where ok.score = (select max(score) from ok)
+      and (select count(*) from ok o where o.score = (select max(score) from ok)) = 1;
+    v_by := case when v_emp is not null then 'name' end;
+  end if;
+
+  if v_emp is null then
+    v_match := case when l.written_name = '' and l.written_no = '' then 'unclear' else 'no_guard' end;
+  elsif l.duty_date is not null then
+    if l.time_in is not null then
+      v_in := (l.duty_date + l.time_in) at time zone 'Asia/Manila';
+    end if;
+    if l.time_out is not null then
+      v_out := (l.duty_date + case when l.time_in is not null and l.time_out <= l.time_in then 1 else 0 end + l.time_out)
+               at time zone 'Asia/Manila';
+    end if;
+    -- the app's duty that day: at this post first, then the nearest time
+    select x.log_id, x.site_id, x.time_in, x.time_out into v_log, v_log_site, v_app_in, v_app_out
+    from public.period_duties_for(l.duty_date - 1, l.duty_date + 1, v_emp) x
+    where x.duty_date = l.duty_date and not ('logbook' = any (x.flags))
+    order by x.site_id is distinct from pg.site_id,
+             abs(extract(epoch from coalesce(x.time_in, x.time_out) - coalesce(v_in, v_out, coalesce(x.time_in, x.time_out))))
+    limit 1;
+    if v_log is null then
+      v_match := case when v_in is null and v_out is null then 'unclear' else 'not_in_app' end;
+    elsif v_log_site is distinct from pg.site_id then
+      v_match := 'differs';  -- the app has the guard at another post that day
+    elsif v_in is null and v_out is null then
+      v_match := 'confirmed';  -- the guard is on the page that day, and the app has the duty
+    elsif (v_in is null or (v_app_in is not null and abs(extract(epoch from v_app_in - v_in)) <= 5400))
+          and (v_out is null or v_app_out is null or abs(extract(epoch from v_app_out - v_out)) <= 5400) then
+      v_match := 'confirmed';
+    else
+      v_match := 'differs';
+    end if;
+  end if;
+  update public.logbook_lines
+  set employee_id = v_emp, matched_by = v_by, match = v_match,
+      app_log_id = v_log, app_time_in = v_app_in, app_time_out = v_app_out
+  where id = l.id;
+end $$;
+
+-- Step 1, with the uploader's own token (the logbook-ai function): may they send a page for this post
+-- (HR, operations, or the people of the client whose post it is), and under which key.
+create or replace function public.begin_logbook_page(p_site_id uuid, p_content_type text, p_size_bytes bigint)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  s public.sites;
+  v_staff boolean := public.is_hr() or public.is_ops();
+  v_client uuid := public.my_client_id();
+  v_now timestamp := now() at time zone 'Asia/Manila';
+  v_ext text;
+  v_key text;
+  v_file uuid;
+  v_page uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in first' using errcode = '42501';
+  end if;
+  select * into s from public.sites where id = p_site_id;
+  if not found then
+    raise exception 'Post not found' using errcode = 'P0002';
+  end if;
+  if not v_staff and (v_client is null or s.client_id is distinct from v_client) then
+    raise exception 'Only HR, operations, or the client of this post can send its logbook' using errcode = '42501';
+  end if;
+  if p_content_type is null or p_content_type not in ('image/jpeg', 'image/png', 'image/webp') then
+    raise exception 'Send a photo of the page (JPEG, PNG or WebP)' using errcode = '22023';
+  end if;
+  if p_size_bytes is null or p_size_bytes < 1 or p_size_bytes > 5242880 then
+    raise exception 'The photo is too large: up to 5 MB' using errcode = '22023';
+  end if;
+  if not v_staff and (select count(*) from public.logbook_pages p
+                      where p.uploaded_by = auth.uid() and p.created_at > now() - interval '1 hour') >= 30 then
+    raise exception 'Too many pages in an hour. Try again later.' using errcode = 'P0001';
+  end if;
+  v_ext := case p_content_type when 'image/png' then 'png' when 'image/webp' then 'webp' else 'jpg' end;
+  v_key := 'company/logbooks/' || public.storage_slug(coalesce(nullif(s.code, ''), s.id::text)) || '/'
+        || to_char(v_now, 'YYYY/MM/YYYY-MM-DD_HH24MI') || '_logbook_' || left(replace(gen_random_uuid()::text, '-', ''), 10) || '.' || v_ext;
+  insert into public.stored_files (object_key, employee_id, purpose, folder, content_type, max_bytes, uploaded_by)
+  values (v_key, null, 'logbook', 'logbooks', p_content_type, 5242880, auth.uid())
+  returning id into v_file;
+  insert into public.logbook_pages (site_id, file_key, content_type, uploaded_by, uploader_name, from_client)
+  values (s.id, v_key, p_content_type, auth.uid(),
+          (select pr.full_name from public.profiles pr where pr.id = auth.uid()), not v_staff)
+  returning id into v_page;
+  return jsonb_build_object('page_id', v_page, 'file_id', v_file, 'key', v_key, 'content_type', p_content_type,
+                            'post', s.name, 'today', public.manila_today());
+end $$;
+
+-- Whether the signed-in person may see a page: staff, or the people of the client whose post it is.
+create or replace function public.can_see_logbook_page(p_page_id uuid) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select exists (
+    select 1 from public.logbook_pages p join public.sites s on s.id = p.site_id
+    where p.id = p_page_id
+      and (public.is_staff() or (public.my_client_id() is not null and s.client_id = public.my_client_id())))
+$$;
+
+-- To read a page again (logbook-ai): its photo, for someone who may see it and send it again.
+create or replace function public.logbook_page_context(p_page_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  p public.logbook_pages;
+  f public.stored_files;
+begin
+  if not public.can_see_logbook_page(p_page_id) then
+    raise exception 'Logbook page not found' using errcode = 'P0002';
+  end if;
+  if not (public.is_hr() or public.is_ops() or public.my_client_id() is not null) then
+    raise exception 'Only HR, operations, or the client of this post can have it read' using errcode = '42501';
+  end if;
+  select * into p from public.logbook_pages where id = p_page_id;
+  if exists (select 1 from public.logbook_lines l where l.page_id = p.id and l.match = 'added') then
+    raise exception 'Logs were already added from this page, so it is not read again' using errcode = 'P0001';
+  end if;
+  select * into f from public.stored_files where object_key = p.file_key and status = 'stored';
+  if not found then
+    raise exception 'The photo of this page is not stored' using errcode = 'P0002';
+  end if;
+  return jsonb_build_object('page_id', p.id, 'key', f.object_key, 'content_type', f.content_type, 'size_bytes', f.size_bytes,
+                            'post', (select st.name from public.sites st where st.id = p.site_id), 'today', public.manila_today());
+end $$;
+
+-- Step 2, the logbook-ai function only (service role): what Claude read, kept line by line and matched.
+-- A null reading means Claude could not read it (the page is kept, marked failed, to read again).
+create or replace function public.save_logbook_reading(p_page_id uuid, p_reading jsonb) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  p public.logbook_pages;
+  v_today date := public.manila_today();
+  v_leg text;
+  x jsonb;
+  n integer := 0;
+  v_date date;
+  v_in time;
+  v_out time;
+  v_id uuid;
+  v_site text;
+  v_client text;
+  v_iso constant text := '^\d{4}-\d{2}-\d{2}$';
+  v_hm constant text := '^([01]?\d|2[0-3]):[0-5]\d$';
+begin
+  if not public.is_trusted() then
+    raise exception 'Only the logbook service saves what Claude read' using errcode = '42501';
+  end if;
+  select * into p from public.logbook_pages where id = p_page_id for update;
+  if not found then
+    raise exception 'Logbook page not found' using errcode = 'P0002';
+  end if;
+  if exists (select 1 from public.logbook_lines l where l.page_id = p.id and l.match = 'added') then
+    raise exception 'Logs were already added from this page' using errcode = 'P0001';
+  end if;
+  if p_reading is null or jsonb_typeof(p_reading) <> 'object' then
+    update public.logbook_pages set status = 'failed' where id = p.id;
+    return jsonb_build_object('page_id', p.id, 'status', 'failed');
+  end if;
+
+  delete from public.logbook_lines where page_id = p.id;
+  v_leg := case when p_reading ->> 'legibility' in ('clear', 'partly_readable', 'unreadable') then p_reading ->> 'legibility' end;
+  for x in select * from jsonb_array_elements(case when jsonb_typeof(p_reading -> 'lines') = 'array' then p_reading -> 'lines' else '[]'::jsonb end)
+  loop
+    exit when n >= 120;
+    continue when jsonb_typeof(x) <> 'object';
+    v_date := case when coalesce(x ->> 'date', '') ~ v_iso then (x ->> 'date')::date end;
+    if v_date is not null and (v_date > v_today + 1 or v_date < v_today - 180) then
+      v_date := null;
+    end if;
+    v_in := case when coalesce(x ->> 'time_in', '') ~ v_hm then (x ->> 'time_in')::time end;
+    v_out := case when coalesce(x ->> 'time_out', '') ~ v_hm then (x ->> 'time_out')::time end;
+    continue when coalesce(trim(x ->> 'name'), '') = '' and coalesce(trim(x ->> 'employee_no'), '') = '' and v_in is null and v_out is null;
+    n := n + 1;
+    insert into public.logbook_lines (page_id, line_no, written_name, written_no, duty_date, time_in, time_out, remarks, unclear)
+    values (p.id, n, left(coalesce(trim(x ->> 'name'), ''), 120), left(coalesce(trim(x ->> 'employee_no'), ''), 40),
+            v_date, v_in, v_out, left(coalesce(trim(x ->> 'remarks'), ''), 300),
+            coalesce((x ->> 'unclear')::boolean, false) or v_date is null)
+    returning id into v_id;
+    perform public.logbook_match_line(v_id);
+  end loop;
+
+  update public.logbook_pages
+  set status = case when v_leg = 'unreadable' and n = 0 then 'unreadable' else 'read' end,
+      legibility = v_leg,
+      page_date = coalesce(case when coalesce(p_reading ->> 'page_date', '') ~ v_iso
+                                 and (p_reading ->> 'page_date')::date between v_today - 180 and v_today + 1
+                                then (p_reading ->> 'page_date')::date end,
+                           (select min(l.duty_date) from public.logbook_lines l where l.page_id = p.id)),
+      concerns = coalesce(array(select left(c, 300) from jsonb_array_elements_text(
+                   case when jsonb_typeof(p_reading -> 'concerns') = 'array' then p_reading -> 'concerns' else '[]'::jsonb end) c limit 6), '{}'),
+      model = left(coalesce(p_reading ->> 'model', ''), 80),
+      read_at = now()
+  where id = p.id;
+
+  if p.from_client then
+    select s.name, c.name into v_site, v_client from public.sites s left join public.clients c on c.id = s.client_id where s.id = p.site_id;
+    perform public.notify_roles(array['hr_admin', 'hr_staff', 'operations']::public.app_role[], 'A logbook page to check',
+      coalesce(v_client || ' · ', '') || coalesce(v_site, 'a post') || ' · ' || n || ' lines', 'logbook', jsonb_build_object('page_id', p.id));
+  end if;
+  return public.logbook_page_detail_internal(p.id);
+end $$;
+
+-- A page with its lines, the guard each matched and the app's times (staff, or the client of the post).
+create or replace function public.logbook_page_detail_internal(p_page_id uuid) returns jsonb
+language sql stable security definer set search_path = '' as $$
+  select jsonb_build_object(
+    'id', p.id, 'site_id', p.site_id, 'post', s.name, 'client', c.name, 'file_key', p.file_key, 'status', p.status,
+    'page_date', p.page_date, 'legibility', p.legibility, 'concerns', to_jsonb(p.concerns), 'from_client', p.from_client,
+    'uploader', p.uploader_name, 'created_at', p.created_at, 'read_at', p.read_at, 'checked_at', p.checked_at, 'note', p.note,
+    'lines', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', l.id, 'line_no', l.line_no, 'written_name', l.written_name, 'written_no', l.written_no, 'date', l.duty_date,
+        'time_in', to_char(l.time_in, 'HH24:MI'), 'time_out', to_char(l.time_out, 'HH24:MI'), 'remarks', l.remarks, 'unclear', l.unclear,
+        'employee_id', l.employee_id, 'employee_no', e.employee_no, 'name', case when e.id is not null then public.full_name(e) end,
+        'matched_by', l.matched_by, 'match', l.match, 'app_time_in', l.app_time_in, 'app_time_out', l.app_time_out)
+        order by l.line_no)
+      from public.logbook_lines l left join public.employees e on e.id = l.employee_id where l.page_id = p.id), '[]'::jsonb))
+  from public.logbook_pages p join public.sites s on s.id = p.site_id left join public.clients c on c.id = s.client_id
+  where p.id = p_page_id
+$$;
+
+create or replace function public.logbook_page_detail(p_page_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+begin
+  if not public.can_see_logbook_page(p_page_id) then
+    raise exception 'Logbook page not found' using errcode = 'P0002';
+  end if;
+  return public.logbook_page_detail_internal(p_page_id);
+end $$;
+
+-- The latest pages: staff see every post's (or one post's), a client its own posts'.
+create or replace function public.logbook_pages_list(p_site_id uuid default null, p_limit integer default 50) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_staff boolean := public.is_staff();
+  v_client uuid := public.my_client_id();
+begin
+  if not v_staff and v_client is null then
+    raise exception 'Only staff and clients see logbook pages' using errcode = '42501';
+  end if;
+  return (select coalesce(jsonb_agg(x order by x ->> 'created_at' desc), '[]'::jsonb) from (
+    select jsonb_build_object(
+      'id', p.id, 'site_id', p.site_id, 'post', s.name, 'client', c.name, 'status', p.status, 'page_date', p.page_date,
+      'from_client', p.from_client, 'uploader', p.uploader_name, 'created_at', p.created_at, 'checked_at', p.checked_at,
+      'lines', (select count(*) from public.logbook_lines l where l.page_id = p.id),
+      'confirmed', (select count(*) from public.logbook_lines l where l.page_id = p.id and l.match = 'confirmed'),
+      'differs', (select count(*) from public.logbook_lines l where l.page_id = p.id and l.match = 'differs'),
+      'not_in_app', (select count(*) from public.logbook_lines l where l.page_id = p.id and l.match = 'not_in_app'),
+      'unmatched', (select count(*) from public.logbook_lines l where l.page_id = p.id and l.match in ('no_guard', 'unclear')),
+      'added', (select count(*) from public.logbook_lines l where l.page_id = p.id and l.match = 'added')) as x
+    from public.logbook_pages p join public.sites s on s.id = p.site_id left join public.clients c on c.id = s.client_id
+    where (v_staff or s.client_id = v_client) and (p_site_id is null or p.site_id = p_site_id)
+    order by p.created_at desc
+    limit least(greatest(coalesce(p_limit, 50), 1), 200)) t);
+end $$;
+
+-- HR or operations corrects a line Claude misread: the guard, the date, the times. It is matched again.
+create or replace function public.update_logbook_line(p_line_id uuid, p_employee_id uuid, p_date date, p_time_in time, p_time_out time)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  l public.logbook_lines;
+begin
+  if not (public.is_hr() or public.is_ops()) then
+    raise exception 'Only HR or operations corrects a logbook line' using errcode = '42501';
+  end if;
+  select * into l from public.logbook_lines where id = p_line_id for update;
+  if not found then
+    raise exception 'Logbook line not found' using errcode = 'P0002';
+  end if;
+  if l.match = 'added' then
+    raise exception 'Logs were already added from this line' using errcode = 'P0001';
+  end if;
+  if p_date is not null and (p_date > public.manila_today() or p_date < public.manila_today() - 180) then
+    raise exception 'Choose a date from the last 180 days' using errcode = '22023';
+  end if;
+  if p_employee_id is not null and not exists (select 1 from public.employees where id = p_employee_id) then
+    raise exception 'Employee not found' using errcode = 'P0002';
+  end if;
+  update public.logbook_lines
+  set employee_id = p_employee_id, matched_by = case when p_employee_id is not null then 'hr' end,
+      duty_date = p_date, time_in = p_time_in, time_out = p_time_out, unclear = false
+  where id = l.id;
+  perform public.logbook_match_line(l.id);
+  return public.logbook_page_detail_internal(l.page_id);
+end $$;
+
+-- HR adds the duties the app missed, from the lines HR picks: a time in (and the time out, if written)
+-- at the post, marked "logbook" with the page, no photo and no location. Never a time already in the
+-- app within two hours, nothing older than 62 days; the guard is told, and payroll decides them.
+create or replace function public.add_logbook_logs(p_page_id uuid, p_line_ids uuid[]) returns integer
+language plpgsql security definer set search_path = '' as $$
+declare
+  p public.logbook_pages;
+  l public.logbook_lines;
+  v_site text;
+  v_in timestamptz;
+  v_out timestamptz;
+  v_in_id uuid;
+  v_out_id uuid;
+  n integer := 0;
+begin
+  if not public.is_hr() then
+    raise exception 'Only HR adds attendance from a logbook' using errcode = '42501';
+  end if;
+  select * into p from public.logbook_pages where id = p_page_id for update;
+  if not found then
+    raise exception 'Logbook page not found' using errcode = 'P0002';
+  end if;
+  select name into v_site from public.sites where id = p.site_id;
+  for l in select * from public.logbook_lines where page_id = p.id and id = any (coalesce(p_line_ids, '{}')) order by line_no for update
+  loop
+    perform public.logbook_match_line(l.id);  -- the app may have caught up since the page was read
+    select * into l from public.logbook_lines where id = l.id;
+    if l.match <> 'not_in_app' or l.employee_id is null or l.duty_date is null or l.time_in is null then
+      raise exception 'Line %: only a guard''s line with a date and a time in, not in the app, can be added', l.line_no using errcode = 'P0001';
+    end if;
+    v_in := (l.duty_date + l.time_in) at time zone 'Asia/Manila';
+    v_out := case when l.time_out is not null then
+               (l.duty_date + case when l.time_out <= l.time_in then 1 else 0 end + l.time_out) at time zone 'Asia/Manila' end;
+    if v_in > now() + interval '5 minutes' or v_in < now() - interval '62 days' or v_out > now() + interval '5 minutes' then
+      raise exception 'Line %: only times from the last 62 days, not in the future, can be added', l.line_no using errcode = '22023';
+    end if;
+    if exists (select 1 from public.attendance_logs a where a.employee_id = l.employee_id
+                 and (abs(extract(epoch from a.logged_at - v_in)) < 7200 or (v_out is not null and abs(extract(epoch from a.logged_at - v_out)) < 7200))) then
+      raise exception 'Line %: the app already has a time in or out near these times', l.line_no using errcode = 'P0001';
+    end if;
+    insert into public.attendance_logs (employee_id, site_id, kind, logged_at, photo_path, location_check, source, logged_by, manual_reason, logbook_page_id)
+    values (l.employee_id, p.site_id, 'time_in', v_in, null, 'manual', 'logbook', auth.uid(),
+            'From the post logbook: ' || coalesce(v_site, 'the post') || ', line ' || l.line_no, p.id)
+    returning id into v_in_id;
+    v_out_id := null;
+    if v_out is not null then
+      insert into public.attendance_logs (employee_id, site_id, kind, logged_at, photo_path, location_check, source, logged_by, manual_reason, logbook_page_id)
+      values (l.employee_id, p.site_id, 'time_out', v_out, null, 'manual', 'logbook', auth.uid(),
+              'From the post logbook: ' || coalesce(v_site, 'the post') || ', line ' || l.line_no, p.id)
+      returning id into v_out_id;
+    end if;
+    update public.logbook_lines set match = 'added', added_in_id = v_in_id, added_out_id = v_out_id where id = l.id;
+    insert into public.audit_log (actor_id, action, table_name, record_id, new_data, note)
+    values (auth.uid(), 'INSERT', 'attendance_logs', v_in_id::text,
+            jsonb_build_object('employee_id', l.employee_id, 'logged_at', v_in, 'time_out', v_out, 'source', 'logbook', 'page_id', p.id),
+            'From the post logbook, line ' || l.line_no);
+    perform public.notify_employee(l.employee_id, 'Your duty was added from the post logbook',
+      coalesce(v_site, 'Your post') || ' · ' || to_char(l.duty_date, 'Mon DD') || ' · time in ' || to_char(l.time_in, 'HH12:MI AM'),
+      'attendance', jsonb_build_object('screen', 'Attendance'));
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+-- HR or operations marks a page as checked, with a note.
+create or replace function public.check_logbook_page(p_page_id uuid, p_note text default null) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not (public.is_hr() or public.is_ops()) then
+    raise exception 'Only HR or operations checks a logbook page' using errcode = '42501';
+  end if;
+  update public.logbook_pages
+  set status = 'checked', checked_by = auth.uid(), checked_at = now(), note = nullif(left(trim(coalesce(p_note, '')), 1000), '')
+  where id = p_page_id and status in ('read', 'unreadable', 'checked');
+  if not found then
+    raise exception 'Logbook page not found, or not read yet' using errcode = 'P0002';
+  end if;
+end $$;
+
+revoke execute on function public.name_words(text), public.logbook_name_score(text, text, text) from public, anon;
+revoke execute on function public.logbook_match_line(uuid), public.logbook_page_detail_internal(uuid) from public, anon, authenticated;
+revoke execute on function public.save_logbook_reading(uuid, jsonb) from public, anon, authenticated;
+grant execute on function public.save_logbook_reading(uuid, jsonb), public.logbook_match_line(uuid), public.logbook_page_detail_internal(uuid) to service_role;
+revoke execute on function public.begin_logbook_page(uuid, text, bigint), public.can_see_logbook_page(uuid),
+  public.logbook_page_context(uuid), public.logbook_page_detail(uuid), public.logbook_pages_list(uuid, integer),
+  public.update_logbook_line(uuid, uuid, date, time, time), public.add_logbook_logs(uuid, uuid[]), public.check_logbook_page(uuid, text)
+  from public, anon;
+grant execute on function public.begin_logbook_page(uuid, text, bigint), public.can_see_logbook_page(uuid),
+  public.logbook_page_context(uuid), public.logbook_page_detail(uuid), public.logbook_pages_list(uuid, integer),
+  public.update_logbook_line(uuid, uuid, date, time, time), public.add_logbook_logs(uuid, uuid[]), public.check_logbook_page(uuid, text)
+  to authenticated;
+
+-- -------------------------------------------------------------------------------------
+-- 22. Reports (the portal's Reports page): the figures the tables alone cannot give
+-- -------------------------------------------------------------------------------------
+-- Attendance between two dates, per guard and post: duties, those that count on their own, those for
+-- payroll to look at, and the hours (staff; six months at most).
+create or replace function public.report_attendance(p_from date, p_to date, p_client_id uuid default null, p_site_id uuid default null)
+returns table (employee_id uuid, employee_no text, name text, post text, client text, duties bigint, clean bigint, to_look bigint,
+               hours numeric, first_day date, last_day date)
+language plpgsql stable security definer set search_path = '' as $$
+begin
+  if not public.is_staff() then
+    raise exception 'Only staff see reports' using errcode = '42501';
+  end if;
+  if p_from is null or p_to is null or p_to < p_from then
+    raise exception 'Choose a start date, and an end date on or after it' using errcode = '22023';
+  end if;
+  if p_to - p_from > 186 then
+    raise exception 'Choose six months or less' using errcode = '22023';
+  end if;
+  return query
+    with a as (
+      select d.employee_id as emp, d.site_id as site, count(*) as n, count(*) filter (where d.clean) as n_clean,
+             count(*) filter (where not d.clean) as n_look,
+             coalesce(sum(d.hours) filter (where d.time_in is not null and d.time_out is not null), 0) as h,
+             min(d.duty_date) as d1, max(d.duty_date) as d2
+      from public.period_duties(p_from, p_to) d
+      group by d.employee_id, d.site_id)
+    select a.emp, e.employee_no, public.full_name(e), s.name, c.name, a.n, a.n_clean, a.n_look, a.h, a.d1, a.d2
+    from a join public.employees e on e.id = a.emp
+    left join public.sites s on s.id = a.site left join public.clients c on c.id = s.client_id
+    where (p_site_id is null or a.site = p_site_id) and (p_client_id is null or s.client_id = p_client_id)
+    order by c.name nulls last, s.name nulls last, e.last_name, e.first_name;
+end $$;
+
+-- A cutoff's coverage per client and post: duties logged, counted, not counted, still to decide,
+-- disputed, the hours that count, and where the client's confirmation stands (payroll, HR, operations).
+create or replace function public.report_cutoff_coverage(p_period_id uuid)
+returns table (client text, post text, duties bigint, counted bigint, not_counted bigint, to_decide bigint, disputed bigint,
+               hours_counted numeric, client_status text)
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  p public.payroll_periods;
+begin
+  if not (public.is_payroll() or public.is_hr() or public.is_ops()) then
+    raise exception 'Only payroll, HR and operations see this' using errcode = '42501';
+  end if;
+  select * into p from public.payroll_periods where id = p_period_id;
+  if not found then
+    raise exception 'Cutoff not found' using errcode = 'P0002';
+  end if;
+  return query
+    with d as (
+      select x.site_id as site, x.clean, x.hours, dd.decision, dd.client_reason,
+             (x.clean and dd.decision is distinct from 'not_count') or dd.decision = 'count' as counts
+      from public.period_duties(p.period_start, p.period_end) x
+      left join public.duty_decisions dd on dd.period_id = p.id and dd.log_id = x.log_id)
+    select c.name, s.name, count(*), count(*) filter (where d.counts), count(*) filter (where d.decision = 'not_count'),
+           count(*) filter (where (not d.clean or d.client_reason is not null) and d.decision is null),
+           count(*) filter (where d.client_reason is not null),
+           coalesce(sum(d.hours) filter (where d.counts and d.hours is not null), 0),
+           max(case when r.id is null then 'not_asked' when r.response is not null then r.response
+                    when now() > r.due_at then 'deemed_confirmed' else 'waiting' end)
+    from d left join public.sites s on s.id = d.site left join public.clients c on c.id = s.client_id
+    left join public.cutoff_client_reviews r on r.period_id = p.id and r.client_id = c.id
+    group by c.name, s.name
+    order by c.name nulls last, s.name nulls last;
+end $$;
+
+-- Government contributions for a month: each employee's SSS, PhilHealth and Pag-IBIG shares and
+-- withholding tax on the published cutoffs ending in it, with their numbers, to prepare remittances
+-- (payroll). The numbers are shown in full, so the report is written to the audit log.
+create or replace function public.report_contributions(p_month date)
+returns table (employee_no text, name text, sss_no text, philhealth_no text, pagibig_no text, tin text, cutoffs bigint,
+               gross numeric, sss numeric, philhealth numeric, pagibig numeric, withholding_tax numeric)
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_from date := date_trunc('month', p_month)::date;
+  v_to date := (date_trunc('month', p_month) + interval '1 month - 1 day')::date;
+begin
+  if not public.is_payroll() then
+    raise exception 'Only payroll sees contributions' using errcode = '42501';
+  end if;
+  if p_month is null then
+    raise exception 'Choose the month' using errcode = '22023';
+  end if;
+  insert into public.audit_log (actor_id, action, table_name, record_id, note)
+  values (auth.uid(), 'VIEW', 'employee_government_ids', to_char(v_from, 'YYYY-MM'), 'Government contributions report, ' || to_char(v_from, 'FMMonth YYYY'));
+  return query
+    with a as (
+      select s.employee_id as emp, count(distinct s.payroll_period_id) as n, sum(s.gross_pay) as g, sum(s.sss) as x_sss,
+             sum(s.philhealth) as x_ph, sum(s.pagibig) as x_hdmf, sum(s.withholding_tax) as x_tax
+      from public.payslips s join public.payroll_periods pp on pp.id = s.payroll_period_id
+      where pp.status = 'published' and pp.kind = 'regular' and pp.period_end between v_from and v_to
+      group by s.employee_id)
+    select e.employee_no, public.full_name(e), g.sss_no, g.philhealth_no, g.pagibig_no, g.tin, a.n, a.g, a.x_sss, a.x_ph, a.x_hdmf, a.x_tax
+    from a join public.employees e on e.id = a.emp left join public.employee_government_ids g on g.employee_id = e.id
+    order by e.last_name, e.first_name;
+end $$;
+
+revoke execute on function public.report_attendance(date, date, uuid, uuid), public.report_cutoff_coverage(uuid),
+  public.report_contributions(date) from public, anon;
+grant execute on function public.report_attendance(date, date, uuid, uuid), public.report_cutoff_coverage(uuid),
+  public.report_contributions(date) to authenticated;

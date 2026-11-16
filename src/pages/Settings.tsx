@@ -40,7 +40,12 @@ const S3_FOLDERS: [string, string, string][] = [
   ['attendance', 'Attendance', 'Time in and time out selfies, by year and month'],
   ['leave', 'Leave', 'Supporting documents attached to leave requests'],
   ['certificates', 'Certificates', 'Certificates of employment as issued (PDF)'],
+  ['code-of-discipline', 'Code of Discipline', 'The company\'s code as uploaded (PDF), each version'],
+  ['logbooks', 'Post logbooks', 'Photos of pages of the written logbooks at the posts, by post, year and month'],
 ];
+
+/** Folders of the company's own files, under company/ rather than an employee's folder. */
+const COMPANY_FOLDERS = ['code-of-discipline', 'logbooks'];
 
 /** Super admins: where files go in Amazon S3, how many are there, and a live check of the set-up. */
 function FileStorage() {
@@ -75,13 +80,13 @@ function FileStorage() {
       <div className="panel">
         <div className="panel-head"><h2>Where files go</h2></div>
         <div className="panel-pad stack">
-          <p className="muted">Employee files are kept in a private Amazon S3 bucket, one folder per employee, named after the employee number: <span className="code">employees/&lt;employee number&gt;/</span>. Each document type files into one of the first three folders (Document types tab). Payslips are not stored: their PDF is made each time someone downloads it.</p>
+          <p className="muted">Employee files are kept in a private Amazon S3 bucket, one folder per employee, named after the employee number: <span className="code">employees/&lt;employee number&gt;/</span>. Each document type files into one of the first three folders (Document types tab). The company's own files, the Code of Discipline and the photos of post logbook pages, go under <span className="code">company/</span>. Payslips are not stored: their PDF is made each time someone downloads it.</p>
           <div className="table-wrap">
             <table className="table">
               <thead><tr><th>Folder</th><th>What goes in it</th><th className="num">Files</th></tr></thead>
               <tbody>{S3_FOLDERS.map(([folder, name, what]) => (
                 <tr key={folder}>
-                  <td><b>{name}</b><span className="cell-sub"><span className="code">{folder}/</span></span></td>
+                  <td><b>{name}</b><span className="cell-sub"><span className="code">{COMPANY_FOLDERS.includes(folder) ? `company/${folder}/` : `${folder}/`}</span></span></td>
                   <td>{what}</td>
                   <td className="num">{counts.data ? fmtNum(counts.data[folder]) : '·'}</td>
                 </tr>

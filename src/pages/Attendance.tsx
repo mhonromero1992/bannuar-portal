@@ -6,8 +6,9 @@ import { useAuth } from '../lib/auth';
 import { errorText, fmtLongDate, fullName, todayManila } from '../lib/format';
 import { ATTENDANCE_SELECT, manilaDay, NEEDS_A_LOOK, type AttendanceLog } from '../lib/attendance';
 import { useSites } from '../lib/refs';
-import { Dialog, Empty, ErrorState, Loading, PageHead, Pager, SelectField, TextArea, TextField, useToast } from '../ui/kit';
+import { Dialog, Empty, ErrorState, Loading, PageHead, Pager, SelectField, Tabs, TextArea, TextField, useToast } from '../ui/kit';
 import { AttendanceTable, selfieLinks } from './attendanceShared';
+import { LogbooksPanel } from './logbook';
 
 const PAGE = 50;
 
@@ -16,6 +17,14 @@ export default function Attendance() {
   const day = params.get('day') || todayManila();
   const site = params.get('site') ?? '';
   const show = params.get('show') === 'look' ? 'look' : params.get('show') === 'other' ? 'other' : 'all';
+  // the app's time in and out, or the posts' written logbooks read by Claude
+  const tab: 'logs' | 'logbooks' = params.get('tab') === 'logbooks' ? 'logbooks' : 'logs';
+  const setTab = (t: 'logs' | 'logbooks') => {
+    const next = new URLSearchParams(params);
+    if (t === 'logs') next.delete('tab');
+    else next.set('tab', t);
+    setParams(next, { replace: true });
+  };
   const [page, setPage] = useState(0);
   const [adding, setAdding] = useState(false);
   const { can } = useAuth();
@@ -29,6 +38,7 @@ export default function Attendance() {
   };
   const q = useQuery({
     queryKey: ['attendance', day, site, show, page],
+    enabled: tab === 'logs',
     queryFn: async () => {
       const { from, to } = manilaDay(day);
       let req = supabase.from('attendance_logs').select(ATTENDANCE_SELECT, { count: 'exact' })
@@ -49,8 +59,12 @@ export default function Attendance() {
       <PageHead
         title="Attendance"
         intro="Time in and time out from the app. Each log has a photo taken then, the database's time, and the phone's location checked against the guard's post. GPS can be off indoors and can be faked, so look at the photo when a log is marked. A guard without a phone is logged by the post's commander, or by HR here."
-        actions={can.hr ? <button className="btn" type="button" onClick={() => setAdding(true)}>Add a manual log</button> : undefined}
+        actions={can.hr && tab === 'logs' ? <button className="btn" type="button" onClick={() => setAdding(true)}>Add a manual log</button> : undefined}
       />
+      <Tabs label="Attendance" tabs={[{ id: 'logs', label: 'Time in and out' }, { id: 'logbooks', label: 'Post logbooks' }]} value={tab} onChange={setTab} />
+      {tab === 'logbooks' ? (
+        <LogbooksPanel posts={(sites.data ?? []).filter((x) => x.is_active).map((x) => ({ id: x.id, name: x.name }))} role={can.hr ? 'hr' : can.ops ? 'ops' : 'view'} />
+      ) : (
       <div className="panel">
         <div className="toolbar">
           <label className="visually-hidden" htmlFor="att-day">Day</label>
@@ -72,6 +86,7 @@ export default function Attendance() {
         )}
         <Pager page={page} pageSize={PAGE} total={q.data?.count ?? null} onPage={setPage} />
       </div>
+      )}
       <Dialog open={adding} title="Add a manual log" onClose={() => setAdding(false)}>
         {adding && <ManualLog onDone={() => setAdding(false)} />}
       </Dialog>

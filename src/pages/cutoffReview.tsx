@@ -13,6 +13,8 @@ export interface Exception {
   log_id: string; employee_id: string; employee_no: string; name: string; post: string | null; client: string | null; date: string;
   time_in: string | null; time_out: string | null; hours: number | null; flags: string[]; clean: boolean; client_reason: string | null;
   decision: 'count' | 'not_count' | null; decision_note: string | null; decided_at: string | null;
+  /** a line of the post logbook (read by Claude) matches this duty */
+  logbook?: boolean;
 }
 export interface Review {
   period: { id: string; label: string; start: string; end: string; status: string; ended: boolean };
@@ -105,7 +107,7 @@ export function CutoffReview({ periodId, draft }: { periodId: string; draft: boo
                   <td><b>{x.name}</b><span className="cell-sub tabular">{x.employee_no}{x.post ? ` · ${x.post}` : ''}</span></td>
                   <td className="tabular">{fmtDate(x.date)}<span className="cell-sub">{time(x.time_in)} to {time(x.time_out)}{x.hours ? ` · ${x.hours} h` : ''}</span></td>
                   <td>
-                    <span className="row">{x.flags.filter((f) => DUTY_FLAG[f]).map((f) => <StatusBadge key={f} map={DUTY_FLAG} value={f} />)}{x.client_reason && <Badge tone="bad">Disputed by {x.client ?? 'the client'}</Badge>}</span>
+                    <span className="row">{x.flags.filter((f) => DUTY_FLAG[f]).map((f) => <StatusBadge key={f} map={DUTY_FLAG} value={f} />)}{x.client_reason && <Badge tone="bad">Disputed by {x.client ?? 'the client'}</Badge>}{x.logbook && <Badge tone="ok">The post logbook agrees</Badge>}</span>
                     {x.client_reason && <span className="cell-sub">“{x.client_reason}”</span>}
                   </td>
                   <td>

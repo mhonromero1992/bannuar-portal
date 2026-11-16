@@ -7,6 +7,7 @@ import { errorText, fmtDate, fmtDateTime, todayManila } from '../lib/format';
 import { CLIENT_REPORT_STATUS, CLIENT_REQUEST_KIND, CLIENT_REQUEST_STATUS, CUTOFF_CLIENT_STATUS, options } from '../lib/labels';
 import { manilaIso } from '../lib/discipline';
 import { Badge, Dialog, Empty, ErrorState, Loading, SelectField, StatusBadge, TextArea, TextField, useToast } from '../ui/kit';
+import { LogbooksPanel } from './logbook';
 
 /**
  * The client portal: people at a client company see their posts and the guards on duty, attendance by
@@ -15,7 +16,7 @@ import { Badge, Dialog, Empty, ErrorState, Loading, SelectField, StatusBadge, Te
  * (schema.sql section 17); no pay, addresses, government numbers, photos, locations or discipline
  * records reach a client.
  */
-type View = 'posts' | 'attendance' | 'cutoffs' | 'reports' | 'requests' | 'help';
+type View = 'posts' | 'attendance' | 'logbook' | 'cutoffs' | 'reports' | 'requests' | 'help';
 const ClientHelp = lazy(() => import('../guide/ClientHelp'));
 type Guard = { id: string; name: string; position: string; on_duty_since: string | null };
 type Post = { id: string; name: string; city: string | null; guards_required: number; guards: Guard[] };
@@ -41,6 +42,7 @@ export default function ClientApp() {
   const views: { id: View; label: string }[] = [
     { id: 'posts', label: 'Posts and guards' },
     { id: 'attendance', label: 'Attendance' },
+    { id: 'logbook', label: 'Logbook' },
     { id: 'cutoffs', label: waiting ? `Cutoffs to confirm (${waiting})` : 'Cutoffs' },
     { id: 'reports', label: 'Incident reports' },
     { id: 'requests', label: 'Requests' },
@@ -68,6 +70,7 @@ export default function ClientApp() {
       <main className="client-main" id="content">
         {view === 'posts' && <PostsView />}
         {view === 'attendance' && <AttendanceView />}
+        {view === 'logbook' && <LogbookView />}
         {view === 'cutoffs' && <CutoffsView />}
         {view === 'reports' && <ReportsView />}
         {view === 'requests' && <RequestsView />}
@@ -78,6 +81,14 @@ export default function ClientApp() {
       </footer>
     </div>
   );
+}
+
+/** Pages of the posts' written logbooks, read by Claude and compared with the app. */
+function LogbookView() {
+  const q = useOverview();
+  if (q.isLoading) return <Loading />;
+  if (q.error || !q.data) return <ErrorState error={errorText(q.error)} retry={() => q.refetch()} />;
+  return <LogbooksPanel posts={q.data.posts.map((p) => ({ id: p.id, name: p.name }))} role="client" />;
 }
 
 function PostsView() {

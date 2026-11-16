@@ -412,3 +412,88 @@ begin
   where s.employee_id = v_maria and pp.status = 'published'
   order by pp.period_end desc limit 1;
 end $$;
+
+-- -------------------------------------------------------------------------------------
+-- 3. A page of the Main Gate's written logbook that the client sent, as Claude would read it. There
+--    is no photo: the portal draws the page from its lines, marked as a drawing. Three days on the
+--    page: duties that agree with the app, a duty the app does not have (DEMO-0003 wrote "lowbat":
+--    his phone's battery was empty), a time in written over that disagrees with the app, and a trainee with no record
+--    here. Attendance → Post logbooks shows it, ready to correct, add to attendance, and check.
+-- -------------------------------------------------------------------------------------
+do $$
+declare
+  v_site1 constant uuid := 'd0000000-0000-4000-8000-000000000201';
+  v_maria constant uuid := 'd0000000-0000-4000-8000-000000000302';
+  v_jose constant uuid := 'd0000000-0000-4000-8000-000000000303';
+  v_today constant date := public.manila_today();
+  v_off date;
+  v_page uuid;
+  v_line uuid;
+  n integer := 0;
+  r record;
+begin
+  if not exists (select 1 from public.employees where id = v_jose)
+     or exists (select 1 from public.logbook_pages where file_key like 'demo/%') then
+    return;
+  end if;
+  -- the page's middle day: DEMO-0003's latest day without the app in three weeks (a day off in the
+  -- demo year), with a duty of his on the day before and the day after
+  select d::date into v_off
+  from generate_series(v_today - 2, v_today - 21, interval '-1 day') d
+  where not exists (select 1 from public.attendance_logs a where a.employee_id = v_jose and (a.logged_at at time zone 'Asia/Manila')::date = d::date)
+    and exists (select 1 from public.attendance_logs a where a.employee_id = v_jose and a.kind = 'time_out' and (a.logged_at at time zone 'Asia/Manila')::date = d::date - 1)
+    and exists (select 1 from public.attendance_logs a where a.employee_id = v_jose and a.kind = 'time_out' and (a.logged_at at time zone 'Asia/Manila')::date = d::date + 1)
+  order by d desc limit 1;
+  if v_off is null then
+    raise notice 'No recent days fit the demo logbook page; it was left out.';
+    return;
+  end if;
+
+  insert into public.logbook_pages (site_id, file_key, content_type, uploader_name, from_client, status, page_date, legibility,
+                                    concerns, model, read_at, created_at)
+  values (v_site1, 'demo/logbook/' || to_char(v_off, 'YYYY-MM-DD') || '.svg', 'image/svg+xml', 'Demo Contact', true, 'read', v_off - 1,
+          'partly_readable', '{}', 'demo', now() - interval '3 hours', now() - interval '3 hours')
+  returning id into v_page;
+
+  -- the lines in the order written: each guard's duty as the app has it (to the minute), except where
+  -- the story differs
+  for r in
+    with duty as (
+      select a.employee_id, (a.logged_at at time zone 'Asia/Manila')::date as day, a.logged_at as t_in,
+             (select o.logged_at from public.attendance_logs o where o.employee_id = a.employee_id and o.kind = 'time_out'
+                and o.logged_at > a.logged_at and o.logged_at < a.logged_at + interval '16 hours' order by o.logged_at limit 1) as t_out
+      from public.attendance_logs a
+      where a.employee_id in (v_jose, v_maria) and a.kind = 'time_in' and a.site_id = v_site1
+        and (a.logged_at at time zone 'Asia/Manila')::date between v_off - 1 and v_off + 1
+    ), hm as (
+      select employee_id, day, to_char(t_in at time zone 'Asia/Manila', 'HH24:MI') as t_in, to_char(t_out at time zone 'Asia/Manila', 'HH24:MI') as t_out
+      from duty
+    )
+    select * from (
+      select 1 as ord, 'J. Ramos' as name, v_off - 1 as day, h.t_in, h.t_out, '' as remarks, false as unclear from hm h where h.employee_id = v_jose and h.day = v_off - 1
+      union all
+      select 2, 'M. Santos', v_off - 1, h.t_in, h.t_out, '', false from hm h where h.employee_id = v_maria and h.day = v_off - 1
+      union all
+      select 3, 'J. Ramos', v_off, '05:52', '18:04', 'lowbat', false
+      union all
+      select 4, 'M. Santos', v_off, h.t_in, h.t_out, '', false from hm h where h.employee_id = v_maria and h.day = v_off
+      union all
+      select 5, 'J. Ramos', v_off + 1, to_char(h.t_in::time + interval '2 hours 25 minutes', 'HH24:MI'), h.t_out, 'came late', true
+        from hm h where h.employee_id = v_jose and h.day = v_off + 1
+      union all
+      select 6, 'R. Dizon', v_off + 1, '08:00', '17:00', 'trainee', false
+      union all
+      select 7, 'M. Santos', v_off + 1, h.t_in, h.t_out, '', false from hm h where h.employee_id = v_maria and h.day = v_off + 1
+    ) x
+    order by ord
+  loop
+    n := n + 1;
+    insert into public.logbook_lines (page_id, line_no, written_name, duty_date, time_in, time_out, remarks, unclear)
+    values (v_page, n, r.name, r.day, r.t_in::time, r.t_out::time, r.remarks, r.unclear)
+    returning id into v_line;
+    perform public.logbook_match_line(v_line);
+    if r.unclear then
+      update public.logbook_pages set concerns = array['Line ' || n || ': the time in looks written over'] where id = v_page;
+    end if;
+  end loop;
+end $$;

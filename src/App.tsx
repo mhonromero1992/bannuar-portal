@@ -28,6 +28,8 @@ import NotFound from './pages/NotFound';
 
 // the guide carries its own words and pictures: it loads when someone opens it
 const Guide = lazy(() => import('./pages/Guide'));
+// reports load their PDF maker only when one is downloaded
+const Reports = lazy(() => import('./pages/Reports'));
 
 function Protected({ children }: { children: ReactNode }) {
   const { ready, session, access, can, recovering } = useAuth();
@@ -75,6 +77,7 @@ const router = createBrowserRouter([
       { path: 'settings', element: <Settings /> },
       { path: 'account', element: <ChangePassword /> },
       { path: 'guide', element: <Suspense fallback={<Loading what="Opening the guide" />}><Guide /></Suspense> },
+      { path: 'reports', element: <Suspense fallback={<Loading what="Opening the reports" />}><Reports /></Suspense> },
       { path: '*', element: <NotFound /> },
     ],
   },

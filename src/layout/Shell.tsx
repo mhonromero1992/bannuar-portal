@@ -222,6 +222,7 @@ export default function Shell() {
         { to: '/discipline', label: 'Discipline', show: can.hr || can.ops },
         { to: '/announcements', label: 'Announcements', show: true },
         { to: '/payroll', label: 'Payroll', show: can.payroll },
+        { to: '/reports', label: 'Reports', show: can.staff },
         { to: '/recruitment', label: 'Recruitment', show: can.hr, count: d?.applications_new },
         { to: '/inquiries', label: 'Proposal requests', show: true, count: d?.inquiries_new },
       ],

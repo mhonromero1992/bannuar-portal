@@ -23,6 +23,16 @@ where n.link ->> 'id' in (
   union all select id::text from public.inquiries where source = 'demo'
   union all select 'd0000000-0000-4000-8000-000000000501');
 
+-- logbook pages of the demo posts, with what staff were told about them (the lines and any time in
+-- and out added from them go with the pages and the demo people). A photo someone sent for a demo
+-- post stays in S3 under company/logbooks/ (Settings → File storage counts them).
+delete from public.notifications n
+where n.kind = 'logbook'
+  and n.link ->> 'page_id' in (select id::text from public.logbook_pages
+                               where site_id in ('d0000000-0000-4000-8000-000000000201', 'd0000000-0000-4000-8000-000000000202', 'd0000000-0000-4000-8000-000000000203'));
+delete from public.logbook_pages
+where site_id in ('d0000000-0000-4000-8000-000000000201', 'd0000000-0000-4000-8000-000000000202', 'd0000000-0000-4000-8000-000000000203');
+
 -- the demo applicant, if they were hired while trying the portal, with what came with them
 delete from public.employees
 where employee_no not like 'DEMO-%'

@@ -108,7 +108,10 @@ export function Dialog({ open, title, onClose, wide, className, children }: { op
     if (!open && d.open) d.close();
   }, [open]);
   return (
-    <dialog ref={ref} className={`dialog${wide ? ' wide' : ''}${className ? ` ${className}` : ''}`} aria-labelledby={titleId} onClose={onClose} onCancel={(e) => { e.preventDefault(); onClose(); }}>
+    // only this dialog's own close or Escape: a dialog opened inside it must not close it too
+    <dialog ref={ref} className={`dialog${wide ? ' wide' : ''}${className ? ` ${className}` : ''}`} aria-labelledby={titleId}
+      onClose={(e) => { if (e.target === ref.current) onClose(); }}
+      onCancel={(e) => { if (e.target !== ref.current) return; e.preventDefault(); onClose(); }}>
       {open && (
         <>
           <div className="dialog-head">

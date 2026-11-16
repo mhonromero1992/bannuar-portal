@@ -818,6 +818,65 @@ r=$(as_user "$HR" "select count(*) from public.employee_duties('$BEA_EMP', $TD, 
 r=$(as_user "$HR" "select count(*) from public.employee_duties('$BEA_EMP', '2025-01-01', '2026-06-30')"); check_has "a year at most" "$r" "a year or less"
 r=$(as_user "$BEA" "select count(*) from public.period_duties_for($TD - 12, $TD - 2, '$BEA_EMP')"); check_has "the internal function stays closed" "$r" "permission denied"
 
+echo "== The post logbook: Claude's reading matched to the post's guards and the app"
+check "a written name fits by surname and first name or its short form" "$(pg "select concat(public.logbook_name_score('J. Dela Cruz', 'Juan', 'Dela Cruz'), public.logbook_name_score('Ma. Santos', 'Maria', 'Santos'), public.logbook_name_score('Santos', 'Maria', 'Santos'), public.logbook_name_score('Pedro Reyes', 'Juan', 'Dela Cruz'), public.logbook_name_score('PEÑA, JOSÉ', 'Jose', 'Pena'))")" "33204"
+r=$(as_user "$BEA" "select public.begin_logbook_page('$SITE1', 'image/jpeg', 200000)"); check_has "a guard does not send logbook pages" "$r" "client of this post"
+r=$(as_user "$CU" "select public.begin_logbook_page('$SITE2', 'image/jpeg', 200000)"); check_has "a client sends only its own posts' pages" "$r" "client of this post"
+r=$(as_user "$CU" "select public.begin_logbook_page('$SITE1', 'image/heic', 200000)"); check_has "only photos Claude reads" "$r" "JPEG, PNG or WebP"
+LB=$(as_user "$CU" "select public.begin_logbook_page('$SITE1', 'image/jpeg', 200000)")
+LBP=$(echo "$LB" | jget page_id); LBF=$(echo "$LB" | jget file_id); LBK=$(echo "$LB" | jget key)
+check_has "the client's page is kept under the post, from the client" "$LBK:$(pg "select from_client || ':' || status from public.logbook_pages where id = '$LBP'")" "company/logbooks/"
+check "the photo is stored like any other file" "$(as_service "select public.finish_file_upload('$LBF', 200000) ->> 'key'")" "$LBK"
+r=$(as_user "$CU" "select public.save_logbook_reading('$LBP', '{}'::jsonb)"); check_has "only the logbook service saves what Claude read" "$r" "permission denied"
+READ=$(pg "select jsonb_build_object('legibility', 'partly_readable', 'page_date', ($TD - 10)::text, 'model', 'claude-opus-5-5', 'concerns', jsonb_build_array('Line 2 looks overwritten'), 'lines', jsonb_build_array(
+  jsonb_build_object('name', 'B. Lim', 'employee_no', '', 'date', ($TD - 10)::text, 'time_in', '06:00', 'time_out', '18:00', 'remarks', '', 'unclear', false),
+  jsonb_build_object('name', 'Bea Lim', 'employee_no', '', 'date', ($TD - 9)::text, 'time_in', '08:30', 'time_out', '18:00', 'remarks', '', 'unclear', true),
+  jsonb_build_object('name', 'Lim', 'employee_no', '', 'date', ($TD - 2)::text, 'time_in', '06:00', 'time_out', '18:00', 'remarks', 'no phone', 'unclear', false),
+  jsonb_build_object('name', 'Pedro Reyes', 'employee_no', '', 'date', ($TD - 2)::text, 'time_in', '18:00', 'time_out', '06:00', 'remarks', '', 'unclear', false),
+  jsonb_build_object('name', '', 'employee_no', 'G-004', 'date', ($TD - 6)::text, 'time_in', '06:00', 'time_out', '18:00', 'remarks', '', 'unclear', false),
+  jsonb_build_object('name', 'Bea Lim', 'employee_no', '', 'date', ($TD - 4)::text, 'time_in', '06:10', 'time_out', '18:00', 'remarks', '', 'unclear', false),
+  jsonb_build_object('name', '', 'employee_no', '', 'date', '', 'time_in', '', 'time_out', '', 'remarks', 'Visitor: water delivery', 'unclear', false),
+  jsonb_build_object('name', 'Bea Lim', 'employee_no', '', 'date', '2019-01-01', 'time_in', '25:00', 'time_out', '', 'remarks', '', 'unclear', false)))")
+DET=$(as_service "select public.save_logbook_reading('$LBP', '$READ'::jsonb)")
+check "each line matched: confirmed, different time, not in the app, no such guard, at another post, confirmed; empty lines left out" "$(echo "$DET" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['status'], ' '.join(l['match'] + ':' + (l['employee_no'] or '-') for l in d['lines']))")" "read confirmed:G-002 differs:G-002 not_in_app:G-002 no_guard:- differs:G-004 confirmed:G-002 unclear:G-002"
+check "an impossible date or time is not kept" "$(pg "select coalesce(duty_date::text, 'none') || ':' || coalesce(time_in::text, 'none') || ':' || unclear from public.logbook_lines where page_id = '$LBP' and line_no = 7")" "none:none:true"
+check "HR and operations are told a client sent a page" "$(pg "select count(*) > 0 from public.notifications where user_id = '$HR' and kind = 'logbook'")" "t"
+check "the client sees its page and how it compares; a guard does not" "$(as_user "$CU" "select jsonb_array_length(public.logbook_page_detail('$LBP') -> 'lines') || ':' || jsonb_array_length(public.logbook_pages_list())"):$(as_user "$BEA" "select public.logbook_page_detail('$LBP')" | grep -c 'not found')" "7:1:1"
+check "the client opens the page's photo; a guard does not" "$(as_user "$CU" "select count(*) from public.authorize_file_reads(array['$LBK'])"):$(as_user "$BEA" "select count(*) from public.authorize_file_reads(array['$LBK'])")" "1:0"
+L2=$(pg "select id from public.logbook_lines where page_id = '$LBP' and line_no = 2")
+L3=$(pg "select id from public.logbook_lines where page_id = '$LBP' and line_no = 3")
+L1=$(pg "select id from public.logbook_lines where page_id = '$LBP' and line_no = 1")
+r=$(as_user "$CU" "select public.update_logbook_line('$L2', '$BEA_EMP', $TD - 9, '06:05', '18:00')"); check_has "a client does not correct lines" "$r" "Only HR or operations"
+check "HR corrects a misread time: matched again" "$(as_user "$OPS" "select l ->> 'match' from jsonb_array_elements(public.update_logbook_line('$L2', '$BEA_EMP', $TD - 9, '06:05', '18:00') -> 'lines') l where (l ->> 'line_no')::int = 2")" "confirmed"
+r=$(as_user "$OPS" "select public.add_logbook_logs('$LBP', array['$L3']::uuid[])"); check_has "only HR adds attendance from a logbook" "$r" "Only HR"
+r=$(as_user "$HR" "select public.add_logbook_logs('$LBP', array['$L1']::uuid[])"); check_has "a line the app already has is not added" "$r" "not in the app"
+NB=$(pg "select count(*) from public.notifications where user_id = '$BEA'")
+check "HR adds the duty the app missed: a time in and out at the post, marked logbook" "$(as_user "$HR" "select public.add_logbook_logs('$LBP', array['$L3']::uuid[])"):$(pg "select string_agg(kind || '/' || source || '/' || location_check || '/' || (logbook_page_id = '$LBP')::text, ' ' order by logged_at) from public.attendance_logs where employee_id = '$BEA_EMP' and source = 'logbook'")" "1:time_in/logbook/manual/true time_out/logbook/manual/true"
+check "the guard is told, and the line shows it was added" "$(pg "select count(*) - $NB from public.notifications where user_id = '$BEA'"):$(pg "select match from public.logbook_lines where id = '$L3'")" "1:added"
+check "it is a duty for payroll to decide, flagged as from the logbook" "$(pg "select ('logbook' = any (flags))::text || ':' || clean || ':' || hours from public.period_duties($TD - 2, $TD - 2) where employee_id = '$BEA_EMP'")" "true:false:12.00"
+r=$(as_user "$HR" "select public.add_logbook_logs('$LBP', array['$L3']::uuid[])"); check_has "never twice" "$r" "not in the app"
+r=$(as_service "select public.save_logbook_reading('$LBP', '$READ'::jsonb)"); check_has "a page logs came from is not read again" "$r" "already added"
+check "the cutoff shows payroll which exceptions the post logbook confirms" "$(as_user "$HR" "select string_agg((x ->> 'date')::date - $TD || ':' || (x ->> 'logbook'), ' ' order by x ->> 'date') from jsonb_array_elements(public.cutoff_review('$CUT') -> 'exceptions') x where x ->> 'employee_id' = '$BEA_EMP' and (x ->> 'logbook')::boolean")" "-10:true -9:true -4:true"
+r=$(as_user "$CU" "select public.check_logbook_page('$LBP', 'Seen')"); check_has "the client does not mark pages checked" "$r" "Only HR or operations"
+as_user "$HR" "select public.check_logbook_page('$LBP', 'Line 3 added; line 4 is a reliever from another agency')" >/dev/null
+check "HR marks the page checked, with a note" "$(pg "select status || ':' || (checked_by = '$HR')::text from public.logbook_pages where id = '$LBP'")" "checked:true"
+r=$(as_user "$HR" "insert into public.logbook_lines (page_id, line_no) values ('$LBP', 99)"); check_has "lines change only through the functions, even for HR" "$r" "row-level security"
+
+echo "== Reports"
+check "attendance report: each guard's duties per post, the same as the duties payroll works from" "$(as_user "$HR" "select duties || ':' || clean || ':' || to_look || ':' || hours from public.report_attendance($TD - 12, $TD - 2) where employee_no = 'G-002'")" "$(pg "select count(*) || ':' || count(*) filter (where clean) || ':' || count(*) filter (where not clean) || ':' || coalesce(sum(hours) filter (where time_in is not null and time_out is not null), 0) from public.period_duties($TD - 12, $TD - 2) where employee_id = '$BEA_EMP'")"
+check "it filters by post and client" "$(as_user "$MGMT" "select count(*) from public.report_attendance($TD - 12, $TD - 2, null, '$SITE2')"):$(as_user "$MGMT" "select count(*) from public.report_attendance($TD - 12, $TD - 2, '$CLIENT', null)")" "$(pg "select count(distinct employee_id) from public.period_duties($TD - 12, $TD - 2) where site_id = '$SITE2'"):$(pg "select count(distinct (d.employee_id, d.site_id)) from public.period_duties($TD - 12, $TD - 2) d join public.sites s on s.id = d.site_id where s.client_id = '$CLIENT'")"
+r=$(as_user "$BEA" "select count(*) from public.report_attendance($TD - 12, $TD - 2)"); check_has "guards do not run reports" "$r" "Only staff"
+r=$(as_user "$CU" "select count(*) from public.report_attendance($TD - 12, $TD - 2)"); check_has "nor clients" "$r" "Only staff"
+r=$(as_user "$HR" "select count(*) from public.report_attendance($TD - 400, $TD)"); check_has "six months at most" "$r" "six months or less"
+check "coverage report: per client and post, adding up to the cutoff review's counted duties" "$(as_user "$PAY" "select sum(counted) || ':' || sum(duties) from public.report_cutoff_coverage('$CUT')")" "$(as_user "$HR" "select (public.cutoff_review('$CUT') ->> 'counted') || ':' || (public.cutoff_review('$CUT') ->> 'duties')")"
+check "with each client's answer" "$(as_user "$PAY" "select string_agg(distinct client_status, ',' order by client_status) from public.report_cutoff_coverage('$CUT')")" "deemed_confirmed,disputed"
+r=$(as_user "$BEA" "select count(*) from public.report_cutoff_coverage('$CUT')"); check_has "guards do not see it" "$r" "Only payroll, HR and operations"
+NA=$(pg "select count(*) from public.audit_log where action = 'VIEW' and note like 'Government contributions report%'")
+check "contributions report: a month's shares from the published cutoffs ending in it, with the numbers" "$(as_user "$PAY" "select employee_no || ':' || coalesce(sss_no, '-') || ':' || cutoffs || ':' || sss || ':' || philhealth || ':' || pagibig from public.report_contributions('2026-10-15') where employee_no = 'G-002'")" "G-002:$(pg "select coalesce(sss_no, '-') from public.employee_government_ids where employee_id = '$BEA_EMP'"):1:450.00:250.00:100.00"
+check "opening it is written to the audit log" "$(pg "select count(*) - $NA from public.audit_log where action = 'VIEW' and note like 'Government contributions report%'")" "1"
+r=$(as_user "$OPS" "select count(*) from public.report_contributions('2026-10-01')"); check_has "only payroll sees contributions" "$r" "Only payroll"
+r=$(as_anon "select count(*) from public.report_contributions('2026-10-01')"); check_has "never anon" "$r" "permission denied"
+
 echo "== Demo scripts still match the schema (on a second, empty database)"
 D="$(dirname "$0")/.."
 DEMO_DB="${PGDATABASE:-bannuar_test}_demo"
@@ -840,6 +899,13 @@ r=$(run_file seed-demo.sql); check "seed-demo.sql run again leaves the demo as i
 DEMO_CLIENT=$(pgd "select id from auth.users where email = 'client@ibits.digital'")
 check "the demo client login belongs to the demo client, with no staff role" "$(pgd "select c.name || ':' || (select count(*) from public.user_roles r where r.user_id = cu.user_id) from public.client_users cu join public.clients c on c.id = cu.client_id where cu.user_id = '$DEMO_CLIENT'")" "Demo Client Corporation:0"
 check "the demo client sees its posts and the cutoff waiting for it, not the payslips" "$(as_demo "$DEMO_CLIENT" "select (select count(*) from public.sites) || ':' || (select count(*) from jsonb_array_elements(public.client_cutoffs()) c where c ->> 'status' = 'waiting') || ':' || (select count(*) from public.payslips)")" "3:1:0"
+# the Main Gate's logbook page, as Claude would have read it: DEMO-0003's three days (one agrees, one the
+# app does not have, one written over that disagrees), DEMO-0002's nights, and a trainee with no record
+LB="from public.logbook_lines l join public.logbook_pages p on p.id = l.page_id where p.file_key like 'demo/%'"
+check "the demo logbook page: lines that agree, a duty the app does not have, a time that differs, a trainee with no record" \
+  "$(pgd "select coalesce((select string_agg(l.match, ',' order by l.line_no) $LB and l.written_name = 'J. Ramos'), '-') || ':' || coalesce((select string_agg(distinct l.match, ',') $LB and l.written_name = 'M. Santos'), 'confirmed') || ':' || coalesce((select string_agg(l.match, ',') $LB and l.written_name = 'R. Dizon'), '-') || ':' || coalesce((select p.status || '/' || p.from_client || '/' || p.concerns[1] from public.logbook_pages p where p.file_key like 'demo/%'), '-')")" \
+  "confirmed,not_in_app,differs:confirmed:no_guard:read/true/Line $(pgd "select l.line_no $LB and l.unclear"): the time in looks written over"
+check "the demo client sees the page of its post" "$(as_demo "$DEMO_CLIENT" "select jsonb_array_length(public.logbook_pages_list(null, 50))")" "1"
 # every published payslip, the draft cutoff and the 13th month against the portal's pay engine
 if command -v node >/dev/null; then
   r=$(DEMO_PSQL="psql $DH -U postgres" node "$D/tests/seed-check.mjs" 2>&1)
@@ -856,7 +922,7 @@ as_demo "$DEMO_ADMIN" "insert into public.payroll_periods (label, period_start, 
 check "trying the portal: the demo applicant hired, an empty cutoff made" "$(pgd "select (select count(*) from public.employees where employee_no = 'G-9001') || ':' || (select count(*) from public.payroll_periods where label = 'Jan 1 to 15, 2030')")" "1:1"
 r=$(run_file remove-demo.sql)
 check_has "remove-demo.sql keeps the demo admin while it is the only super admin, and says so" "$r:$(pgd "select count(*) from auth.users where email = 'bannuar@ibits.digital'")" "still your only super admin"
-check "remove-demo.sql takes out every demo record and the demo client login, the hired demo applicant and the empty cutoff" "$(pgd "select (select count(*) from public.employees) || ':' || (select count(*) from public.payroll_periods) || ':' || (select count(*) from public.payslips) || ':' || (select count(*) from public.attendance_logs) || ':' || (select count(*) from public.clients) || ':' || (select count(*) from public.sites) || ':' || (select count(*) from public.pay_rules where client_id is not null) || ':' || (select count(*) from auth.users where email <> 'bannuar@ibits.digital') || ':' || (select count(*) from public.staff_invitations where client_id is not null)")" "0:0:0:0:0:0:0:0:0"
+check "remove-demo.sql takes out every demo record and the demo client login, the hired demo applicant and the empty cutoff" "$(pgd "select (select count(*) from public.logbook_pages) || ':' || (select count(*) from public.employees) || ':' || (select count(*) from public.payroll_periods) || ':' || (select count(*) from public.payslips) || ':' || (select count(*) from public.attendance_logs) || ':' || (select count(*) from public.clients) || ':' || (select count(*) from public.sites) || ':' || (select count(*) from public.pay_rules where client_id is not null) || ':' || (select count(*) from auth.users where email <> 'bannuar@ibits.digital') || ':' || (select count(*) from public.staff_invitations where client_id is not null)")" "0:0:0:0:0:0:0:0:0:0"
 # once a real super admin signs in, running it again removes the demo admin too
 pgd "insert into public.staff_invitations (email, full_name, roles, code, expires_at) values ('owner@bannuar.test', 'Real Owner', '{super_admin}', 'REAL-0001', now() + interval '1 hour')" >/dev/null
 pgd "insert into auth.users (email, raw_user_meta_data) values ('owner@bannuar.test', '{\"invite_code\":\"REAL-0001\"}')" >/dev/null

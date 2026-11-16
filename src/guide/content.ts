@@ -69,8 +69,8 @@ export const seconds = (at: string) => at.split(':').reduce((s, part) => s * 60 
 /** The four parts of the system, on the Start here tab. */
 export const PARTS = [
   { name: 'Website', who: 'Applicants, companies, banks', what: 'Applicants apply for open posts. Companies ask for a security proposal. Anyone checks a certificate of employment.' },
-  { name: 'HR portal', who: 'HR, payroll, operations, management', what: 'The office: 201 files, posts and deployment, attendance, requests, payroll, discipline and announcements.' },
-  { name: 'Client portal', who: 'People at each client company', what: 'On a tablet at the client\'s desk: their posts, guards on duty, attendance, cutoffs to confirm, reports and requests.' },
+  { name: 'HR portal', who: 'HR, payroll, operations, management', what: 'The office: 201 files, posts and deployment, attendance and post logbooks, requests, payroll, discipline, announcements and reports.' },
+  { name: 'Client portal', who: 'People at each client company', what: 'On a tablet at the client\'s desk: their posts, guards on duty, attendance, logbook pages, cutoffs to confirm, reports and requests.' },
   { name: 'Employee app', who: 'Guards and detachment commanders', what: 'Time in and out at the post, payslips, leave, certificates, licenses and notices. Commanders run their post from it.' },
 ];
 
@@ -246,6 +246,24 @@ export const SECTIONS: Section[] = [
         ],
         tips: ['One guard\'s month: open them in **Employees** → **Attendance** and pick the **Month**, or any **From** and **To** dates. **Duties** shows each time in with its time out, the hours, and what counts for pay; **Every log, with photos** shows each log.'],
         video: '2:01',
+      },
+      {
+        id: 'post-logbooks',
+        title: 'Post logbooks',
+        who: 'HR and operations',
+        lead: 'Where a post still keeps a written logbook, or a guard has no phone, send a photo of the page. Claude reads each line, and the portal checks it against the time in and out in the app.',
+        steps: [
+          'In **Attendance**, open the **Post logbooks** tab and click **Send a logbook page**. Choose the **Post**, take or choose the photo, and click **Send the page**. Claude reads it in up to a minute.',
+          'Each line shows what was written, the guard it matched, and the app\'s time beside it: **Matches the app**, **Different from the app**, **Not in the app**, or **Name not matched**.',
+          'A line read wrong, or matched to no one: **Correct** it (the guard, the date, the times). It is compared again.',
+          'A duty the app does not have: tick its line, then **Add 1 to attendance**. It is marked **From the logbook** for payroll to decide on the cutoff, and the guard is told. (HR only.)',
+          'When the page is done: **Mark as checked**, with a note the client can read.',
+        ],
+        tips: [
+          'One page per photo: flat, in good light, the whole page in the frame. JPEG, PNG or WebP up to 5 MB. On an iPhone: Settings → Camera → Formats → **Most Compatible**.',
+          'Lines marked **Hard to read** are worth a look at the photo. Claude only copies what is written; the matching to guards is done by the portal.',
+          'Clients send pages of their own posts from the client portal. Their pages show here too, marked **From the client**.',
+        ],
       },
       {
         id: 'leave',
@@ -428,6 +446,22 @@ export const SECTIONS: Section[] = [
         pics: [{ shot: 'hr-audit' }],
         steps: ['Filter by the kind of record to find a change, then read who made it and when.'],
         video: '4:24',
+      },
+      {
+        id: 'reports',
+        title: 'Reports',
+        who: 'Staff, by role',
+        lead: 'Attendance, client coverage, the payroll register, government contributions, licenses, headcount, incidents, cases and leave, each ready to download as an Excel file or a PDF.',
+        steps: [
+          'Open **Reports** in the menu and choose a report.',
+          'Set its filters: the dates, the client, the post, the cutoff or the month. The table shows the first 100 rows and the totals.',
+          '**Download Excel (CSV)** for a file to work on, or **Download PDF** to print or send: it has the badge, the filters, the totals, page numbers, and who made it.',
+        ],
+        tips: [
+          'Each role sees only the reports it may use: payroll the register and contributions, HR the cases, and so on.',
+          '**Client coverage for a cutoff** is a basis for billing: per client and post, the duties that count, those still to decide, and the client\'s answer.',
+          'Opening **Government contributions** is written in the audit log, as it shows government numbers.',
+        ],
       },
       {
         id: 'settings',
@@ -618,6 +652,18 @@ export const SECTIONS: Section[] = [
         pics: [{ shot: 'client-attendance', pins: { 1: 'day' } }],
         steps: ['Pick the **Day**. Each log shows the guard, the time, and whether it was at the post or logged by the commander.'],
         video: '4:56',
+        client: true,
+      },
+      {
+        id: 'client-logbook',
+        title: 'Send a page of the logbook',
+        who: 'Clients',
+        lead: 'If your post keeps a written logbook, send a photo of a page. Claude reads it, and you see how each line compares with the guards\' time in and out in the app.',
+        steps: [
+          'Open the **Logbook** tab and click **Send a logbook page**. Choose the post if you have more than one, take or choose the photo, and click **Send the page**.',
+          'Each line shows the guard and the result: **Matches the app**, **Different from the app**, **Not in the app**, or **Name not matched**. Bannuar\'s office checks the page and may leave a note.',
+        ],
+        tips: ['One page per photo: flat, in good light, the whole page in the frame.'],
         client: true,
       },
       {
@@ -961,6 +1007,7 @@ export const FAQ: Faq[] = [
   // attendance
   { group: 'Attendance', q: 'Why does a time in say "Away from the post"?', a: ['The phone was farther from the post than the allowed distance set for it. GPS can be off indoors, so the guard can still log, and HR sees the distance and the photo.', 'In the cutoff, payroll decides whether that duty counts. If many logs at one post are away, check the post\'s location (**Set the location** on its page).'] },
   { group: 'Attendance', q: 'A guard came without a phone. How is the duty logged?', a: ['The detachment commander logs it from the app (**My post** → the guard → **Log time in for them**), with the guard\'s photo. If that is not possible, HR adds a log in **Attendance** → **Add a manual log**, with a reason. The guard is told either way.'] },
+  { group: 'Attendance', q: 'Our posts still keep a written logbook. Can the portal use it?', a: ['Yes. Send a photo of a page (**Attendance** → **Post logbooks**, or the client\'s **Logbook** tab). Claude reads each line, and the portal compares it with the app: a duty the app missed can be added for payroll to decide, and a time that differs is shown beside the app\'s.'], client: true },
   { group: 'Attendance', q: 'What is a "mock location app"?', a: ['An app that fakes the phone\'s location. A time in made while one is on is flagged for HR to look at.'] },
   { group: 'Attendance', q: 'Does the app track guards all day?', a: ['No. The app reads the location only while a guard logs a time in or out, never in the background.'] },
 
@@ -995,7 +1042,7 @@ export const FAQ: Faq[] = [
   { group: 'The app', q: 'A guard changed their mobile number.', a: ['They send it from the app (More → **Change my details**). HR applies it in **Requests** → **Contact detail changes**.'] },
 
   // for clients only (the client portal's Help)
-  { group: 'Using the client portal', q: 'What do we see here?', a: ['Your own posts, the guards on duty and since when, attendance by day, cutoffs to confirm, and the incident reports and requests you send. Bannuar keeps pay, addresses, government numbers, photos and locations to itself.'], clientOnly: true },
+  { group: 'Using the client portal', q: 'What do we see here?', a: ['Your own posts, the guards on duty and since when, attendance by day, cutoffs to confirm, pages of your posts\' logbooks with how they compare, and the incident reports and requests you send. Bannuar keeps pay, addresses, government numbers, photos and locations to itself.'], clientOnly: true },
   { group: 'Using the client portal', q: 'What if we do not answer a cutoff in two days?', a: ['The duties count as confirmed. You can still report a problem as an incident.'], clientOnly: true },
   { group: 'Using the client portal', q: 'There is an emergency at a post.', a: ['Call the detachment commander at the post. Reports and requests here go to Bannuar\'s office.'], clientOnly: true },
   { group: 'Using the client portal', q: 'Can more people from our company have a login?', a: ['Yes. Ask Bannuar\'s operations team; they send each person their own invitation.'], clientOnly: true },

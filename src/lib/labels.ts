@@ -83,7 +83,17 @@ export const ROLE_HINT: Record<string, string> = {
 export const DUTY_FLAG: Map = {
   away: ['Away from the post', 'bad'], unsure: ['GPS too rough', 'warn'], no_location: ['No location', 'warn'], post_not_set: ['Post location not set', 'neutral'],
   no_post: ['No post', 'neutral'], mock: ['Mock location app', 'bad'], no_time_in: ['No time in', 'warn'], no_time_out: ['No time out', 'warn'],
-  commander: ['By the commander', 'info'], by_hand: ['By hand', 'warn'],
+  commander: ['By the commander', 'info'], by_hand: ['By hand', 'warn'], logbook: ['From the logbook', 'info'],
+};
+
+// The post logbook (schema.sql section 21): each line Claude read, against the app
+export const LOGBOOK_MATCH: Map = {
+  confirmed: ['Matches the app', 'ok'], differs: ['Different from the app', 'warn'], not_in_app: ['Not in the app', 'bad'],
+  no_guard: ['Name not matched', 'neutral'], unclear: ['Hard to read', 'warn'], added: ['Added from the logbook', 'info'],
+};
+export const LOGBOOK_STATUS: Map = {
+  reading: ['Reading', 'neutral'], read: ['Read', 'info'], unreadable: ['Could not be read', 'warn'], failed: ['Not read yet', 'warn'],
+  checked: ['Checked by Bannuar', 'ok'],
 };
 export const CUTOFF_CLIENT_STATUS: Map = {
   not_asked: ['Not asked yet', 'neutral'], waiting: ['Waiting', 'warn'], confirmed: ['Confirmed', 'ok'], disputed: ['Disputed', 'bad'],

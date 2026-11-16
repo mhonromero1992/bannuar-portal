@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { inflateSync } from 'node:zlib';
 
 const { chromium } = createRequire(import.meta.url)('playwright');
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -105,7 +106,7 @@ const T = {
   profile_change_requests: [{ id: 'pc1', employee_id: 'e2', changes: { mobile_no: '09179998888' }, reason: 'New SIM', status: 'pending', created_at: now, employee: { ...empMini(E.e2), mobile_no: '09171110002' } }],
   payroll_concerns: [{ id: 'pq1', employee_id: 'e2', category: 'overtime', description: 'Missing 4 hours OT', status: 'open', resolution: null, created_at: now, employee: empMini(E.e2), payslip: { net_pay: 9530, period: { label: 'Oct 16 to 31, 2026' } } }],
   announcements: [{ id: 'an1', title: 'Fire drill Friday', body: 'Every post joins the drill.', category: 'advisory', priority: 'important', audience: 'all', area_ids: [], site_ids: [], requires_ack: true, pinned: false, status: 'published', published_at: now, expires_at: null, created_at: now }],
-  payroll_periods: [{ id: 'p1', label: 'Nov 1 to 15, 2026', period_start: '2026-11-01', period_end: '2026-11-15', pay_date: '2026-11-20', status: 'draft', published_at: null, created_at: now, payslips: [{ count: 2 }] }],
+  payroll_periods: [{ id: 'p1', label: 'Nov 1 to 15, 2026', period_start: '2026-11-01', period_end: '2026-11-15', pay_date: '2026-11-20', status: 'draft', kind: 'regular', published_at: null, created_at: now, payslips: [{ count: 2 }] }],
   payslips: [
     { id: 'ps1', payroll_period_id: 'p1', employee_id: 'e2', site_name: 'Post A', days_worked: 13, hours_worked: 104, overtime_hours: 52, night_diff_hours: 56, basic_pay: 7020, overtime_pay: 3510, night_diff_pay: 378, holiday_pay: 540, allowances: 0, other_earnings: 0, gross_pay: 11448, sss: 450, philhealth: 250, pagibig: 100, withholding_tax: 0, loans: 0, other_deductions: 200, total_deductions: 1000, net_pay: 10448, deductions_detail: [{ label: 'Uniform', amount: 200 }], earnings_detail: [], created_at: now, employee: empMini(E.e2), period: { label: 'Nov 1 to 15, 2026', status: 'draft', pay_date: '2026-11-20', period_end: '2026-11-15' } },
   ],
@@ -169,7 +170,32 @@ const clientAccess = { user_id: 'u-mia', roles: [], full_name: 'Mia Manager', em
 const access = { user_id: 'u-admin', roles: ['super_admin'], full_name: 'Ana Admin', email: 'ana@bannuar.test', must_change_password: false, employee: null };
 const dashboard = { employees_by_status: { active: 2, floating: 1 }, employees_current: 3, sites_active: 1, guards_required: 3, guards_deployed: 2, sites_short: 1, floating: 1, floating_over_150_days: 1, leave_pending_supervisor: 0, leave_pending_hr: 1, on_leave_today: 0, coe_pending: 1, coe_overdue: 1, profile_changes_pending: 1, payroll_concerns_open: 1, documents_expired: 0, documents_expiring: 1, compliance_gaps: 1, applications_new: 1, inquiries_new: 1, latest_period: { id: 'p1', label: 'Nov 1 to 15, 2026', status: 'draft', pay_date: '2026-11-20', payslips: 2 } };
 const certificate = { id: 'cert1', certificate_no: 'COE-2026-000001', verification_code: 'K7QM-3XPD-8RTA', employee_id: 'e2', employee_name: 'Bea Lim', position: 'Security Guard', date_hired: '2023-01-10', date_separated: null, purpose: 'bank_loan', include_compensation: true, compensation_text: '₱540.00 a day', signatory_name: 'Hector HR', signatory_title: 'HR Manager', issued_at: now, file_path: null };
+// a page of Post A's written logbook that the client sent, read by Claude and compared with the app
+const logbookPage = {
+  id: 'lb1', site_id: 's1', post: 'Post A · Main Gate', client: 'Acme Mart', file_key: 'company/logbooks/pa/2026/11/2026-11-14_0930_logbook_mock.jpg',
+  status: 'read', page_date: '2026-11-13', legibility: 'partly_readable', concerns: ['Line 2: the time in looks overwritten'], from_client: true,
+  uploader: 'Mia Manager', created_at: now, read_at: now, checked_at: null, note: null,
+  lines: [
+    { id: 'll1', line_no: 1, written_name: 'B. Lim', written_no: '', date: '2026-11-13', time_in: '17:50', time_out: '06:05', remarks: '', unclear: false, employee_id: 'e2', employee_no: 'G-002', name: 'Bea Lim', matched_by: 'name', match: 'confirmed', app_time_in: '2026-11-13T09:52:00Z', app_time_out: '2026-11-13T22:04:00Z' },
+    { id: 'll2', line_no: 2, written_name: 'D. Cruz', written_no: '', date: '2026-11-13', time_in: '08:30', time_out: '18:00', remarks: 'came late', unclear: true, employee_id: 'e1', employee_no: 'G-001', name: 'Dante Cruz', matched_by: 'name', match: 'differs', app_time_in: '2026-11-12T22:01:00Z', app_time_out: '2026-11-13T10:00:00Z' },
+    { id: 'll3', line_no: 3, written_name: 'Cruz', written_no: '', date: '2026-11-12', time_in: '06:00', time_out: '18:00', remarks: 'no phone', unclear: false, employee_id: 'e1', employee_no: 'G-001', name: 'Dante Cruz', matched_by: 'name', match: 'not_in_app', app_time_in: null, app_time_out: null },
+    { id: 'll4', line_no: 4, written_name: 'Pedro Reyes', written_no: '', date: '2026-11-12', time_in: '18:00', time_out: '06:00', remarks: 'reliever', unclear: false, employee_id: null, employee_no: null, name: null, matched_by: null, match: 'no_guard', app_time_in: null, app_time_out: null },
+  ],
+};
+const logbookRow = { id: 'lb1', site_id: 's1', post: 'Post A · Main Gate', client: 'Acme Mart', status: 'read', page_date: '2026-11-13', from_client: true, uploader: 'Mia Manager', created_at: now, checked_at: null, lines: 4, confirmed: 1, differs: 1, not_in_app: 1, unmatched: 1, added: 0 };
+const logbookSends = []; // what the portal sent the logbook-ai function
+
 const RPC = {
+  report_attendance: () => [
+    { employee_id: 'e2', employee_no: 'G-002', name: 'Bea Lim', post: 'Post A · Main Gate', client: 'Acme Mart', duties: 12, clean: 11, to_look: 1, hours: 146.5, first_day: '2026-11-01', last_day: '2026-11-15' },
+    { employee_id: 'e1', employee_no: 'G-001', name: 'Dante Cruz', post: 'Post C · Lobby', client: 'Acme Mart', duties: 13, clean: 13, to_look: 0, hours: 156, first_day: '2026-11-01', last_day: '2026-11-15' }],
+  report_cutoff_coverage: () => [{ client: 'Acme Mart', post: 'Post A · Main Gate', duties: 28, counted: 26, not_counted: 0, to_decide: 2, disputed: 1, hours_counted: 312, client_status: 'disputed' }],
+  report_contributions: () => [{ employee_no: 'G-002', name: 'Bea Lim', sss_no: '34-1234567-8', philhealth_no: '12-345678901-2', pagibig_no: '1234-5678-9012', tin: '123-456-789-000', cutoffs: 2, gross: 37000, sss: 1500, philhealth: 925, pagibig: 400, withholding_tax: 0 }],
+  logbook_pages_list: () => [logbookRow],
+  logbook_page_detail: () => logbookPage,
+  update_logbook_line: (b) => { Object.assign(logbookPage.lines.find((l) => l.id === b.p_line_id), { employee_id: b.p_employee_id, matched_by: 'hr', match: 'not_in_app', name: 'Bea Lim', employee_no: 'G-002' }); return logbookPage; },
+  add_logbook_logs: (b) => b.p_line_ids.length,
+  check_logbook_page: () => null,
   my_access: () => access,
   portal_dashboard: () => dashboard,
   get_government_ids: () => [{ sss_no: '02-2345678-9', philhealth_no: null, pagibig_no: null, tin: '123-456-789-000', updated_at: now }],
@@ -308,6 +334,16 @@ async function api(route) {
     }
     if (body?.action === 'sign') return json(200, { urls: Object.fromEntries(body.keys.map((k) => [k, `${MOCK}/s3-mock/${k}?X-Amz-Expires=300&download=${body.download ? 1 : 0}`])), expires_in: 300 });
     if (body?.action === 'check') return json(200, { ok: true, bucket: 'bannuar-hr-files', region: 'ap-southeast-1' });
+    return json(400, { code: 'invalid_input', message: 'Something is missing from the request. Try again.' });
+  }
+  // the logbook-ai Edge Function (Claude reads a page of a post's written logbook)
+  if (path === '/functions/v1/logbook-ai') {
+    if ((req.headers()['content-type'] ?? '').startsWith('multipart/form-data')) {
+      const text = req.postDataBuffer().toString('latin1');
+      logbookSends.push({ site_id: /name="site_id"\r\n\r\n([^\r]*)/.exec(text)?.[1] ?? '', has_file: /name="file"/.test(text) });
+      return json(200, { status: 'read', page: logbookPage });
+    }
+    if (body?.action === 'read') return json(200, { status: 'read', page: logbookPage });
     return json(400, { code: 'invalid_input', message: 'Something is missing from the request. Try again.' });
   }
   // the document-ai Edge Function (Claude reads an uploaded document)
@@ -590,8 +626,9 @@ const folderPatch = requests.filter((r) => r.method === 'PATCH' && r.path === '/
 check('document types: HR moves a type to another folder', folderPatch?.body.storage_folder === '201-file' && /id=eq\.dt2/.test(folderPatch?.url), JSON.stringify(folderPatch?.body));
 await page.getByRole('tab', { name: 'File storage' }).click();
 const countIn = (name) => page.getByRole('row', { name: new RegExp(`^${name} `) }).locator('td.num');
-await page.waitForFunction(() => [...document.querySelectorAll('td.num')].length === 6 && ![...document.querySelectorAll('td.num')].some((td) => td.textContent === '·'));
+await page.waitForFunction(() => [...document.querySelectorAll('td.num')].length === 8 && ![...document.querySelectorAll('td.num')].some((td) => td.textContent === '·'));
 check('file storage: files counted by folder, stored ones only', (await countIn('LESP').innerText()) === '1' && (await countIn('Attendance').innerText()) === '2' && (await countIn('Leave').innerText()) === '0');
+check('file storage: the company\'s own folders, the code and the post logbooks, sit under company/', /company\/logbooks\//.test(await page.getByRole('row', { name: /^Post logbooks / }).innerText()) && /company\/code-of-discipline\//.test(await page.getByRole('row', { name: /^Code of Discipline / }).innerText()));
 await page.getByRole('button', { name: 'Check S3 now' }).click();
 await page.getByText('Connected', { exact: true }).waitFor();
 const storageText = await page.locator('.panel').last().innerText();
@@ -748,6 +785,55 @@ const computed = rpcCalls('import_payslips').at(-1)?.body.p_rows;
 check('work out pay: an edited sheet works too; the last shift earns night differential, at the post rate and the client rule', computed?.length === 1 && computed[0].employee_no === 'G-002' && computed[0].basic_pay === 8000 && computed[0].overtime_pay === 5000 && computed[0].night_diff_pay === 800 && computed[0].night_diff_hours === 80 && computed[0].allowances === 250 && computed[0].thirteenth_basic === 8000, JSON.stringify(computed?.[0]));
 await work.getByRole('button', { name: 'Done' }).click();
 
+console.log('Reports');
+await page.goto(`${BASE}/reports`);
+const reportTabs = page.getByRole('tablist', { name: 'Reports' }).getByRole('tab');
+await page.locator('.report-total').waitFor();
+check('reports: the nine reports a super admin may use', (await reportTabs.count()) === 9 && (await reportTabs.allInnerTexts()).some((t) => t.startsWith('Payroll register')));
+const manilaDay = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date());
+check('reports: attendance summary for this month, all clients and posts', JSON.stringify(rpcCalls('report_attendance').at(-1)?.body) === JSON.stringify({ p_from: `${manilaDay.slice(0, 7)}-01`, p_to: manilaDay, p_client_id: null, p_site_id: null })
+  && /2 guard-post rows\s*25\s*24\s*1\s*302\.5/.test(await page.locator('.report-total').innerText()), await page.locator('.report-total').innerText());
+const repCsv = page.waitForEvent('download');
+await page.getByRole('button', { name: 'Download Excel (CSV)' }).click();
+const repCsvText = readFileSync(await (await repCsv).path(), 'utf8').replace(/^\uFEFF/, '');
+check('reports: the Excel file has every row and the totals', repCsvText.startsWith('No.,Name,Client,Post,Duties,Count,Needs a look,Hours,First,Last') && repCsvText.includes('G-002,Bea Lim,Acme Mart,Post A · Main Gate,12,11,1,146.5') && repCsvText.includes('2 guard-post rows,,,25,24,1,302.5'), repCsvText.split('\n').slice(0, 2).join(' | '));
+const repPdf = page.waitForEvent('download');
+await page.getByRole('button', { name: 'Download PDF' }).click();
+const repPdfFile = await repPdf;
+const repPdfBytes = readFileSync(await repPdfFile.path());
+check('reports: the PDF is a real PDF, named after the report and its dates', repPdfBytes.subarray(0, 5).toString() === '%PDF-' && repPdfBytes.length > 2000 && repPdfFile.suggestedFilename().startsWith('Attendance summary'), repPdfFile.suggestedFilename());
+await page.screenshot({ path: `${ROOT}tests/shots/reports.png`, fullPage: true });
+await page.getByRole('tab', { name: /Client coverage for a cutoff/ }).click();
+await page.getByRole('cell', { name: 'Disputed', exact: true }).waitFor();
+check('reports: client coverage for the latest cutoff, with the client\'s answer', JSON.stringify(rpcCalls('report_cutoff_coverage').at(-1)?.body) === JSON.stringify({ p_period_id: 'p1' }) && /Total\s*28\s*26/.test(await page.locator('.report-total').innerText()));
+await page.getByRole('tab', { name: /Payroll register/ }).click();
+await page.getByRole('columnheader', { name: 'Net pay' }).waitFor();
+check('reports: the payroll register reads the cutoff\'s payslips', requests.some((r) => r.path === '/rest/v1/payslips' && /payroll_period_id=eq\.p1/.test(r.url)) && (await page.locator('tbody tr').count()) >= 2);
+{
+  // the text drawn in the PDF (pdf-lib writes each piece as a hex string in a compressed content stream)
+  const drawn = (bytes) => [...bytes.toString('latin1').matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)].flatMap((m) => {
+    try {
+      return [...inflateSync(Buffer.from(m[1], 'latin1')).toString('latin1').matchAll(/<([0-9A-Fa-f]+)> Tj/g)].map((t) => Buffer.from(t[1], 'hex').toString('latin1'));
+    } catch {
+      return [];
+    }
+  });
+  const regPdf = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download PDF' }).click();
+  const text = drawn(readFileSync(await (await regPdf).path()));
+  const amounts = text.filter((t) => /^\d{1,3}(,\d{3})*\.\d{2}$/.test(t));
+  check('reports: the register PDF writes amounts as 7,020.00, cuts none, and wraps long column names', amounts.includes('7,020.00') && amounts.length >= 30 && !text.some((t) => /\d…$/.test(t)) && text.includes('Other') && text.includes('deductions') && text.includes('Net pay'), text.slice(0, 40).join(' | '));
+}
+await page.getByRole('tab', { name: /Government contributions/ }).click();
+await page.getByText('34-1234567-8').waitFor();
+check('reports: contributions for this month, with the numbers', JSON.stringify(rpcCalls('report_contributions').at(-1)?.body) === JSON.stringify({ p_month: `${manilaDay.slice(0, 7)}-01` }) && /1,500\.00/.test(await page.locator('.report-total').innerText()));
+await page.getByRole('tab', { name: /Licenses and documents/ }).click();
+await page.getByText('Expires in 20 days').waitFor();
+check('reports: licenses expiring and missing, together', (await page.getByText('Missing', { exact: true }).count()) === 1);
+await page.getByRole('tab', { name: /Headcount and deployment/ }).click();
+await page.getByText(/Employees: \d+ active/).waitFor();
+check('reports: each post against the guards its client needs', /Total\s*1 post\s*3\s*2\s*1/.test(await page.locator('.report-total').innerText()), await page.locator('.report-total').innerText());
+
 console.log('Announcements, recruitment, users, posts');
 await page.goto(`${BASE}/announcements`);
 await page.getByText('1 of 3 read').waitFor({ timeout: 5000 }).catch(() => null);
@@ -867,6 +953,54 @@ const empAtt = requests.filter((r) => r.path === '/rest/v1/attendance_logs').at(
 const empAttUrl = decodeURIComponent(empAtt?.url ?? '');
 check('employee attendance: every log of those dates, with photos', /employee_id=eq\.e2/.test(empAttUrl) && empAttUrl.includes('logged_at=gte.2026-11-03T16:00:00.000Z') && empAttUrl.includes('logged_at=lt.2026-11-06T16:00:00.000Z'), empAttUrl);
 
+await page.goto(`${BASE}/attendance?tab=logbooks`);
+const lbPanel = page.locator('.panel', { hasText: 'Post logbooks' });
+await lbPanel.getByRole('row', { name: /Post A · Main Gate/ }).waitFor();
+check('post logbooks: the pages clients and staff sent, compared with the app', /1 match · 1 different · 1 not in the app · 1 not matched/.test(await lbPanel.getByRole('row', { name: /Post A · Main Gate/ }).innerText()) && /From the client · Mia Manager/.test(await lbPanel.innerText()));
+await lbPanel.getByRole('button', { name: 'Open' }).first().click();
+const lbDlg = page.getByRole('dialog', { name: 'Logbook page', exact: true });
+await lbDlg.getByRole('row', { name: /Pedro Reyes/ }).waitFor();
+const lbText = (await lbDlg.innerText()).replace(/\s+/g, ' ');
+check('logbook page: each line Claude read, the guard it matched, and the app\'s time beside it', /B\. Lim Bea Lim G-002 Nov 13, 2026 5:50 PM to 6:05 AM 5:52 PM to 6:04 AM, Nov 14, 2026 Matches the app/i.test(lbText) && /Not in the app/.test(lbText) && /Name not matched/.test(lbText) && /Claude noticed: Line 2: the time in looks overwritten/.test(lbText), lbText.slice(0, 400));
+await lbDlg.locator('.logbook-photo img').waitFor();
+check('logbook page: the photo opens from S3 through a signed link', (await lbDlg.locator('.logbook-photo img').getAttribute('src') ?? '').includes('/s3-mock/company/logbooks/pa/'));
+await page.screenshot({ path: `${ROOT}tests/shots/logbook-page.png` });
+await lbDlg.getByRole('row', { name: /Pedro Reyes/ }).getByRole('button', { name: 'Correct' }).click();
+const lineDlg = page.getByRole('dialog', { name: 'Correct line 4' });
+await lineDlg.getByLabel('Guard').selectOption('e2');
+await lineDlg.getByRole('button', { name: 'Save the line' }).click();
+await page.getByText('Line corrected and compared again.').waitFor();
+check('logbook: HR corrects a line Claude could not match, and it is compared again', JSON.stringify(rpcCalls('update_logbook_line').at(-1)?.body) === JSON.stringify({ p_line_id: 'll4', p_employee_id: 'e2', p_date: '2026-11-12', p_time_in: '18:00', p_time_out: '06:00' }));
+await lbDlg.getByRole('checkbox', { name: 'Add line 3' }).check();
+await lbDlg.getByRole('button', { name: 'Add 1 to attendance' }).click();
+await page.getByText('1 duty added from the logbook').waitFor();
+check('logbook: HR adds the duty the app missed', JSON.stringify(rpcCalls('add_logbook_logs').at(-1)?.body) === JSON.stringify({ p_page_id: 'lb1', p_line_ids: ['ll3'] }));
+await lbDlg.getByRole('button', { name: 'Mark as checked' }).click();
+const chkDlg = page.getByRole('dialog', { name: 'Mark the page as checked' });
+await chkDlg.getByLabel(/Note/).fill('Line 4 is a reliever from another agency.');
+await chkDlg.getByRole('button', { name: 'Mark as checked' }).click();
+await page.getByText('Page marked as checked.').waitFor();
+check('logbook: the page is marked checked, with a note the client sees', JSON.stringify(rpcCalls('check_logbook_page').at(-1)?.body) === JSON.stringify({ p_page_id: 'lb1', p_note: 'Line 4 is a reliever from another agency.' }));
+await page.keyboard.press('Escape');
+await lbPanel.getByRole('button', { name: 'Send a logbook page' }).click();
+const sendDlg = page.getByRole('dialog', { name: 'Send a logbook page' });
+await sendDlg.getByLabel('Post').selectOption('s1');
+await sendDlg.getByLabel('Photo of the logbook page').setInputFiles({ name: 'page.jpg', mimeType: 'image/jpeg', buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]) });
+await sendDlg.getByRole('button', { name: 'Send the page' }).click();
+await page.getByRole('dialog', { name: 'Logbook page', exact: true }).getByRole('row', { name: /Pedro Reyes/ }).waitFor();
+check('logbook: HR sends a page; Claude\'s reading opens at once', logbookSends.at(-1)?.site_id === 's1' && logbookSends.at(-1)?.has_file === true);
+await page.keyboard.press('Escape');
+// a demo page (seed-demo.sql) has no photo: the portal draws its lines as a handwritten page, marked as a drawing
+logbookPage.file_key = 'demo/logbook/2026-11-13.svg';
+await page.goto(`${BASE}/attendance?tab=logbooks`); // a fresh load: the page's details are cached for 30 seconds
+await lbPanel.getByRole('button', { name: 'Open' }).first().click();
+const demoDrawing = page.getByRole('dialog', { name: 'Logbook page', exact: true }).getByRole('img', { name: /^Demo: a drawing of a logbook page/ });
+await demoDrawing.waitFor();
+check('logbook: a demo page is drawn from its lines, labelled as a drawing, and nothing is signed for it', /Pedro Reyes/.test(await demoDrawing.textContent() ?? '') && /a drawing for the example, not a photo/.test(await demoDrawing.textContent() ?? '') && !requests.some((r) => JSON.stringify(r.body ?? '').includes('demo/logbook')));
+await page.screenshot({ path: `${ROOT}tests/shots/logbook-demo.png` });
+logbookPage.file_key = 'company/logbooks/pa/2026/11/2026-11-14_0930_logbook_mock.jpg';
+await page.keyboard.press('Escape');
+
 console.log('Discipline');
 await page.goto(`${BASE}/discipline?tab=code`);
 await page.getByText(/Fines taken from wages/).waitFor();
@@ -970,7 +1104,7 @@ const tourSrc = await page.locator('.video iframe').getAttribute('src');
 check('guide: playing loads the video from YouTube, without cookies', /^https:\/\/www\.youtube-nocookie\.com\/embed\/lytYE9LJOAk\?/.test(tourSrc ?? '') && /start=0\b/.test(tourSrc), tourSrc);
 await page.locator('.chapters button', { hasText: 'Payroll' }).click();
 check('guide: a chapter starts the video at its time (Payroll at 2:44)', /start=164\b/.test((await page.locator('.video iframe').getAttribute('src')) ?? ''));
-const guideTabs = { start: 4, hr: 20, payroll: 10, client: 6, app: 14, website: 3 };
+const guideTabs = { start: 4, hr: 22, payroll: 10, client: 7, app: 14, website: 3 };
 let guideText = '';
 for (const [tab, topics] of Object.entries(guideTabs)) {
   await page.goto(`${BASE}/guide?tab=${tab}`);
@@ -1124,6 +1258,19 @@ await page.screenshot({ path: `${ROOT}tests/shots/client-tablet.png` });
 await page.locator('.client-tab', { hasText: 'Attendance' }).click();
 await page.getByText('At the post').waitFor();
 check('client: attendance of the day, with who logged it', JSON.stringify(rpcCalls('client_attendance').at(-1)?.body) === JSON.stringify({ p_day: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date()) }) && (await page.getByText('Logged by the commander').count()) === 1 && (await page.getByText('Not confirmed').count()) === 1);
+await page.locator('.client-tab', { hasText: 'Logbook' }).click();
+const cLb = page.locator('.panel', { hasText: 'Your posts\' logbooks' });
+await cLb.getByRole('row', { name: /Post A · Main Gate/ }).waitFor();
+await cLb.getByRole('button', { name: 'Send a logbook page' }).click();
+const cSend = page.getByRole('dialog', { name: 'Send a logbook page' });
+check('client logbook: one post, so no post to choose', (await cSend.getByLabel('Post').count()) === 0);
+await cSend.getByLabel('Photo of the logbook page').setInputFiles({ name: 'page.jpg', mimeType: 'image/jpeg', buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]) });
+await cSend.getByRole('button', { name: 'Send the page' }).click();
+const cPage = page.getByRole('dialog', { name: 'Logbook page', exact: true });
+await cPage.getByRole('row', { name: /Pedro Reyes/ }).waitFor();
+check('client logbook: the client sends a page of its post and sees how it compares, without HR\'s controls', logbookSends.at(-1)?.site_id === 's1' && (await cPage.getByRole('button', { name: 'Correct' }).count()) === 0 && (await cPage.getByRole('button', { name: /to attendance/ }).count()) === 0 && (await cPage.getByRole('button', { name: 'Mark as checked' }).count()) === 0);
+await page.screenshot({ path: `${ROOT}tests/shots/client-logbook.png` });
+await page.keyboard.press('Escape');
 await page.locator('.client-tab', { hasText: 'Incident reports' }).click();
 await page.getByText('We are looking into it').waitFor();
 await page.screenshot({ path: `${ROOT}tests/shots/client-reports.png` });
@@ -1166,8 +1313,8 @@ check('client: no sideways scroll on a phone either', !(await page.evaluate(() =
 await page.locator('.client-tab', { hasText: 'Help' }).click();
 await page.getByRole('heading', { name: 'How to use the client portal' }).waitFor();
 const helpTopics = await page.locator('article.topic h3').allInnerTexts();
-check('client help: the client\'s part of the guide only', helpTopics.length === 7 && helpTopics[0] === 'Getting a login' && helpTopics.includes('Confirm each cutoff') && !helpTopics.some((t) => /pay rules|13th|discipline|payslip/i.test(t)), helpTopics.join(' | '));
-check('client help: questions for clients, and the client part of the video', (await page.locator('.faq-item').count()) === 7 && /Watch the client portal part/.test(await page.locator('.video-facade').innerText()));
+check('client help: the client\'s part of the guide only', helpTopics.length === 8 && helpTopics[0] === 'Getting a login' && helpTopics.includes('Send a page of the logbook') && helpTopics.includes('Confirm each cutoff') && !helpTopics.some((t) => /pay rules|13th|discipline|payslip/i.test(t)), helpTopics.join(' | '));
+check('client help: questions for clients, and the client part of the video', (await page.locator('.faq-item').count()) === 8 && /Watch the client portal part/.test(await page.locator('.video-facade').innerText()));
 check('client help: no sideways scroll on a phone', !(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)));
 await page.locator('.client-tab', { hasText: 'Posts and guards' }).click();
 const manifest = await (await fetch(`${BASE}/manifest.webmanifest`)).json().catch(() => null);
